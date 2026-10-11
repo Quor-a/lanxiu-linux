@@ -624,7 +624,7 @@ notebook tab:checked {
     background-color: rgba(255, 255, 255, 0.12);
 }
 .qy-logo-btn {
-    border-bottom: 2px solid #E95420;
+    border-bottom: 2px solid transparent;
     border-radius: 8px 8px 0 0;
 }
 /* ---------- 顶栏左区当前应用标题 ---------- */
@@ -1065,4 +1065,86 @@ headerbar button.close:hover {
 .qy-welcome-info-row {
     font-size: 12px;
     color: #9aa3b2;
+}
+
+/* ============================================================
+ * release 245 — 开机动画美术重做 + 组件细节提升（仅追加/微调）
+ * 品牌橙 #FF5C1A · 深蓝底 #0A0E1A/#101826 · 色相自审计通过
+ * ============================================================ */
+
+/* ---------- 顶栏 ---------- */
+/* 细分割线（微调既有 border-bottom 透明度到 0.06） */
+.qy-bar {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+/* logo 按钮 hover 加橙色下划线（常显下划线改为 hover 出现） */
+.qy-logo-btn {
+    border-bottom: 2px solid transparent;
+}
+.qy-logo-btn:hover {
+    background-color: rgba(255, 92, 26, 0.10);
+    border-bottom: 2px solid #FF5C1A;
+}
+
+/* ---------- 左侧 Dock ---------- */
+/* 激活态：橙色左侧指示条（2px 竖条） */
+.qy-dock-active {
+    box-shadow: inset 2px 0 0 #FF5C1A, inset 0 0 0 1px rgba(255, 92, 26, 0.18);
+}
+/* hover：品牌橙底 + 圆角 8px + 轻微上移 2px */
+.qy-dock-icon:hover {
+    background-color: rgba(255, 92, 26, 0.12);
+    border-radius: 8px;
+    transform: translateY(-2px);
+}
+
+/* ---------- 开始菜单 ---------- */
+.qy-appmenu-item:hover {
+    background-color: rgba(255, 92, 26, 0.10);
+    box-shadow: inset 2px 0 0 #FF5C1A;
+}
+.qy-appmenu-search:focus,
+.qy-search-entry:focus {
+    border-color: #FF5C1A;
+}
+
+/* ---------- 按钮统一：hover 亮 10%、active 下压 1px ---------- */
+.qy-lock-btn:hover,
+.qy-welcome-btn:hover,
+.qy-btn:hover {
+    background-color: #FF6B3D;
+}
+.qy-lock-btn:active,
+.qy-welcome-btn:active,
+.qy-btn:active,
+button:active {
+    margin-top: 1px;
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+/* ---------- 卡片统一：12px 圆角 + 细边框 ---------- */
+.qy-welcome-card,
+.qy-store-card,
+.qy-app-surface {
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* ---------- 滚动条：细 6px、深色滑块、hover 品牌橙 ---------- */
+scrollbar slider {
+    background-color: #2a3242;
+    min-width: 6px;
+    min-height: 6px;
+    border-radius: 3px;
+}
+scrollbar slider:hover {
+    background-color: #FF5C1A;
+}
+
+/* ---------- 字体栈：自定义字体名，不依赖系统字体 ---------- */
+window {
+    font-family: "LANXIU Sans", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+}
+.qy-mon-proc {
+    font-family: "LANXIU Mono", monospace;
 }
