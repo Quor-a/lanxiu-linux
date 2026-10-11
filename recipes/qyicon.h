@@ -67,6 +67,7 @@ typedef enum {
     QY_ICON_KEYBOARD, /* 键盘 */
     QY_ICON_WEATHER,   /* 天气 */
     QY_ICON_NOTE,      /* 笔记 */
+    QY_ICON_DRIVE,     /* 磁盘 */
     QY_ICON_COUNT
 } QyIconId;
 

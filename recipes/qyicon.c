@@ -540,6 +540,22 @@ static void draw_note(cairo_t *cr, double x, double y, double s) {
     cairo_stroke(cr);
 }
 
+static void draw_drive(cairo_t *cr, double x, double y, double s) {
+    SET_LINE(cr);
+    /* 硬盘外壳 */
+    qy_rounded_rect(cr, PX(4.5), PY(7.0), PX(15), PY(10), PX(2));
+    cairo_stroke(cr);
+    /* 磁盘主轴圆点 */
+    cairo_arc(cr, PX(8.5), PY(12), PX(1.4), 0, 2 * G_PI);
+    cairo_stroke(cr);
+    /* 读写臂槽线 */
+    cairo_move_to(cr, PX(11.5), PY(12)); cairo_line_to(cr, PX(17.5), PY(12));
+    cairo_stroke(cr);
+    /* 顶部状态灯 */
+    cairo_arc(cr, PX(17.0), PY(8.8), PX(0.9), 0, 2 * G_PI);
+    cairo_fill(cr);
+}
+
 #undef SET_LINE
 
 /* ---------- 函数表 ---------- */
@@ -560,7 +576,7 @@ static void (* const drawers[QY_ICON_COUNT])(cairo_t *, double, double, double) 
     draw_list, draw_calc, draw_save,
     draw_rotate, draw_fit, draw_open,
     draw_clock, draw_keyboard,
-    draw_weather, draw_note,
+    draw_weather, draw_note, draw_drive,
 };
 
 /* ---------- 统一分发器 ---------- */
@@ -634,5 +650,8 @@ QyIconId qy_icon_for_app(const char *app) {
     if (g_str_has_prefix(app, "qyusers")) return QY_ICON_USERS;
     if (g_str_has_prefix(app, "qydriver")) return QY_ICON_DRIVER;
     if (g_str_has_prefix(app, "qygit")) return QY_ICON_FILES;
+    if (g_str_has_prefix(app, "qyconvert")) return QY_ICON_CALC;
+    if (g_str_has_prefix(app, "qyhelp")) return QY_ICON_DOC;
+    if (g_str_has_prefix(app, "qydisk")) return QY_ICON_DRIVE;
     return QY_ICON_GRID;
 }
