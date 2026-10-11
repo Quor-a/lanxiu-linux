@@ -1,10 +1,13 @@
 /* qyshot.c — 澜岫截图工具
  * 在 X11 显示后端下截取整个屏幕（gdk_get_default_root_window），
- * 支持保存 PNG / 复制到剪贴板 / 自动截图（QYSHOT_AUTO）。
+ * 支持延时截图（3/5/10 秒）、PNG/JPEG/BMP 格式选择、
+ * 截图后弹出 GtkFileChooserNative 保存对话框，
+ * 以及自动截图（QYSHOT_AUTO）与复制到剪贴板。
  */
 #include <gtk/gtk.h>
 #include <gdk/gdk.h>
 #include <string.h>
+#include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
 #include "qytheme.h"
@@ -13,7 +16,14 @@
 static GtkWidget *preview = NULL;      /* 截图预览 */
 static GdkPixbuf *shot_pixbuf = NULL;
 static GtkWidget *status_label = NULL;
+static GtkWidget *win = NULL;           /* 主窗口（保存对话框父窗口） */
+static GtkWidget *cap_btn = NULL;       /* 全屏截图按钮（倒计时文字） */
+static GtkWidget *delay_combo = NULL;   /* 延时选择 */
+static GtkWidget *format_combo = NULL; /* 保存格式选择 */
 static char last_path[512] = "";
+
+static guint countdown_id = 0;          /* 倒计时定时器 id */
+static int countdown_secs = 0;          /* 剩余秒数 */
 
 static gboolean on_capture_wrap(gpointer p);   /* 前向声明 */
 
@@ -92,14 +102,104 @@ static GdkPixbuf *capture_screen(void) {
     return pb;
 }
 
-/* 生成默认文件名: 截图_年月日_时分秒.png */
-static void make_default_path(char *buf, size_t sz) {
+/* 生成默认文件名: 截图_年月日_时分秒.<ext> */
+static void make_default_path(char *buf, size_t sz, const char *fmt) {
     time_t t = time(NULL);
     struct tm *tm = localtime(&t);
-    g_snprintf(buf, sz, "%s/截图_%04d%02d%02d_%02d%02d%02d.png",
+    const char *ext = !strcmp(fmt, "jpeg") ? "jpg" : fmt;
+    g_snprintf(buf, sz, "%s/截图_%04d%02d%02d_%02d%02d%02d.%s",
                g_get_user_special_dir(G_USER_DIRECTORY_PICTURES),
                tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
-               tm->tm_hour, tm->tm_min, tm->tm_sec);
+               tm->tm_hour, tm->tm_min, tm->tm_sec, ext);
+}
+
+/* 手动写出 24-bit BMP（gdk-pixbuf 无 BMP 写入模块时兜底） */
+static gboolean write_bmp(GdkPixbuf *pb, const char *path, GError **err) {
+    int w = gdk_pixbuf_get_width(pb);
+    int h = gdk_pixbuf_get_height(pb);
+    int row_size = (w * 3 + 3) & ~3;
+    int data_size = row_size * h;
+    int file_size = 54 + data_size;
+    unsigned char hdr[54];
+    memset(hdr, 0, sizeof hdr);
+    hdr[0] = 'B'; hdr[1] = 'M';
+    hdr[2] = file_size & 0xFF;
+    hdr[3] = (file_size >> 8) & 0xFF;
+    hdr[4] = (file_size >> 16) & 0xFF;
+    hdr[5] = (file_size >> 24) & 0xFF;
+    hdr[10] = 54;                       /* 像素数据偏移 */
+    hdr[14] = 40;                       /* DIB 头大小 */
+    hdr[18] = w & 0xFF;
+    hdr[19] = (w >> 8) & 0xFF;
+    hdr[20] = (w >> 16) & 0xFF;
+    hdr[21] = (w >> 24) & 0xFF;
+    hdr[22] = h & 0xFF;
+    hdr[23] = (h >> 8) & 0xFF;
+    hdr[24] = (h >> 16) & 0xFF;
+    hdr[25] = (h >> 24) & 0xFF;
+    hdr[26] = 1;                        /* 颜色平面 */
+    hdr[28] = 24;                       /* 每像素位数 */
+    hdr[34] = data_size & 0xFF;
+    hdr[35] = (data_size >> 8) & 0xFF;
+    hdr[36] = (data_size >> 16) & 0xFF;
+    hdr[37] = (data_size >> 24) & 0xFF;
+
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        g_set_error(err, G_FILE_ERROR, G_FILE_ERROR_FAILED, "cannot open %s", path);
+        return FALSE;
+    }
+    if (fwrite(hdr, 1, 54, f) != 54) {
+        g_set_error(err, G_FILE_ERROR, G_FILE_ERROR_FAILED, "write header failed");
+        fclose(f);
+        return FALSE;
+    }
+    int n_channels = gdk_pixbuf_get_n_channels(pb);
+    int rowstride = gdk_pixbuf_get_rowstride(pb);
+    const guchar *pixels = gdk_pixbuf_get_pixels(pb);
+    unsigned char *row = malloc(row_size);
+    if (!row) {
+        g_set_error(err, G_FILE_ERROR, G_FILE_ERROR_NOMEM, "out of memory");
+        fclose(f);
+        return FALSE;
+    }
+    for (int y = 0; y < h; y++) {
+        const guchar *src = pixels + (h - 1 - y) * rowstride;  /* BMP 自底向上 */
+        for (int x = 0; x < w; x++) {
+            row[x * 3]     = src[x * n_channels + 2];  /* B */
+            row[x * 3 + 1] = src[x * n_channels + 1];  /* G */
+            row[x * 3 + 2] = src[x * n_channels];      /* R */
+        }
+        if (fwrite(row, 1, row_size, f) != (size_t)row_size) {
+            g_set_error(err, G_FILE_ERROR, G_FILE_ERROR_FAILED, "write pixels failed");
+            free(row);
+            fclose(f);
+            return FALSE;
+        }
+    }
+    free(row);
+    fclose(f);
+    return TRUE;
+}
+
+/* 按格式保存 pixbuf；JPEG 质量 85，BMP 优先 gdk-pixbuf 写入、失败时手动兜底 */
+static gboolean save_pixbuf(GdkPixbuf *pb, const char *path, const char *fmt, GError **err) {
+    if (!strcmp(fmt, "jpeg"))
+        return gdk_pixbuf_save(pb, path, "jpeg", err, "quality", "85", NULL);
+    if (!strcmp(fmt, "bmp")) {
+        if (gdk_pixbuf_save(pb, path, "bmp", err, NULL))
+            return TRUE;
+        g_clear_error(err);
+        return write_bmp(pb, path, err);
+    }
+    return gdk_pixbuf_save(pb, path, "png", err, NULL);
+}
+
+/* 当前选中的保存格式: png / jpeg / bmp */
+static const char *current_format(void) {
+    const char *id = format_combo ? gtk_combo_box_get_active_id(GTK_COMBO_BOX(format_combo)) : NULL;
+    if (id && id[0]) return id;
+    return "png";
 }
 
 static void update_preview(void) {
@@ -118,7 +218,45 @@ static void update_preview(void) {
     }
 }
 
-/* 全屏截图 */
+/* 保存对话框（GtkFileChooserNative） */
+static void on_save(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (!shot_pixbuf) return;
+    const char *fmt = current_format();
+    char def[512];
+    make_default_path(def, sizeof def, fmt);
+    gchar *base = g_path_get_basename(def);
+
+    GtkFileChooserNative *dlg = gtk_file_chooser_native_new(
+        TR("保存截图"), GTK_WINDOW(win), GTK_FILE_CHOOSER_ACTION_SAVE,
+        TR("保存"), TR("取消"));
+    gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(dlg), base);
+    gtk_file_chooser_set_do_overwrite_confirmation(GTK_FILE_CHOOSER(dlg), TRUE);
+    g_free(base);
+
+    if (gtk_native_dialog_run(GTK_NATIVE_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
+        char *path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
+        if (path) {
+            GError *err = NULL;
+            if (save_pixbuf(shot_pixbuf, path, fmt, &err)) {
+                g_strlcpy(last_path, path, sizeof last_path);
+                char st[640];
+                g_snprintf(st, sizeof st, "%s: %s", TR("已保存"), path);
+                gtk_label_set_text(GTK_LABEL(status_label), st);
+                gchar *title = g_strdup_printf("%s - %s", TR("澜岫截图"), path);
+                gtk_window_set_title(GTK_WINDOW(win), title);
+                g_free(title);
+            } else {
+                gtk_label_set_text(GTK_LABEL(status_label), err ? err->message : TR("保存失败"));
+                g_clear_error(&err);
+            }
+            g_free(path);
+        }
+    }
+    g_object_unref(dlg);
+}
+
+/* 全屏截图（截完后自动弹保存对话框） */
 static void on_capture(GtkWidget *w, gpointer ud) {
     (void)w; (void)ud;
     if (shot_pixbuf) { g_object_unref(shot_pixbuf); shot_pixbuf = NULL; }
@@ -133,35 +271,46 @@ static void on_capture(GtkWidget *w, gpointer ud) {
                gdk_pixbuf_get_width(shot_pixbuf), gdk_pixbuf_get_height(shot_pixbuf),
                TR("截图完成"));
     gtk_label_set_text(GTK_LABEL(status_label), st);
+    /* 截图后自动弹出保存对话框（QYSHOT_AUTO 自动化模式除外） */
+    if (!g_getenv("QYSHOT_AUTO"))
+        on_save(NULL, NULL);
 }
 
-/* 保存 */
-static void on_save(GtkWidget *w, gpointer ud) {
-    (void)w; (void)ud;
-    if (!shot_pixbuf) return;
-    char def[512];
-    make_default_path(def, sizeof def);
-    GtkWidget *dlg = gtk_file_chooser_dialog_new(
-        TR("保存截图"), NULL, GTK_FILE_CHOOSER_ACTION_SAVE,
-        TR("取消"), GTK_RESPONSE_CANCEL, TR("保存"), GTK_RESPONSE_ACCEPT, NULL);
-    gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(dlg), g_path_get_basename(def));
-    if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
-        char *path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
-        if (path) {
-            GError *err = NULL;
-            if (gdk_pixbuf_save(shot_pixbuf, path, "png", &err, NULL)) {
-                g_strlcpy(last_path, path, sizeof last_path);
-                char st[512];
-                g_snprintf(st, sizeof st, "%s: %s", TR("已保存"), path);
-                gtk_label_set_text(GTK_LABEL(status_label), st);
-            } else {
-                gtk_label_set_text(GTK_LABEL(status_label), err ? err->message : TR("保存失败"));
-                g_clear_error(&err);
-            }
-            g_free(path);
-        }
+/* 倒计时：每秒更新按钮文字，到 0 执行截图 */
+static gboolean countdown_tick(gpointer p) {
+    (void)p;
+    countdown_secs--;
+    if (countdown_secs <= 0) {
+        countdown_id = 0;
+        gtk_button_set_label(GTK_BUTTON(cap_btn), TR("全屏截图"));
+        gtk_widget_set_sensitive(cap_btn, TRUE);
+        on_capture(NULL, NULL);
+        return G_SOURCE_REMOVE;
     }
-    gtk_widget_destroy(dlg);
+    char buf[64];
+    g_snprintf(buf, sizeof buf, TR("%d 秒后截图..."), countdown_secs);
+    gtk_button_set_label(GTK_BUTTON(cap_btn), buf);
+    return G_SOURCE_CONTINUE;
+}
+
+/* 截图按钮：有延时则启动倒计时，否则立即截图 */
+static void on_capture_clicked(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (countdown_id) return;   /* 倒计时中忽略重复点击 */
+    int delay = 0;
+    const char *sel = gtk_combo_box_get_active_id(GTK_COMBO_BOX(delay_combo));
+    if (sel) delay = atoi(sel);
+    if (delay > 0) {
+        countdown_secs = delay;
+        gtk_widget_set_sensitive(cap_btn, FALSE);
+        char buf[64];
+        g_snprintf(buf, sizeof buf, TR("%d 秒后截图..."), countdown_secs);
+        gtk_button_set_label(GTK_BUTTON(cap_btn), buf);
+        countdown_id = g_timeout_add_seconds(1, countdown_tick, NULL);
+        g_printerr("QYSHOTDBG: delay %ds start\n", delay);
+    } else {
+        on_capture(NULL, NULL);
+    }
 }
 
 /* 复制到剪贴板 */
@@ -195,7 +344,7 @@ static gboolean auto_shot(gpointer p) {
 static void activate(GtkApplication *app, gpointer ud) {
     (void)ud;
     qy_load_theme();
-    GtkWidget *win = gtk_application_window_new(app);
+    win = gtk_application_window_new(app);
     gtk_window_set_title(GTK_WINDOW(win), TR("澜岫截图"));
     gtk_window_set_default_size(GTK_WINDOW(win), 640, 480);
 
@@ -215,15 +364,38 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_container_add(GTK_CONTAINER(sw), preview);
     gtk_box_pack_start(GTK_BOX(vbox), sw, TRUE, TRUE, 0);
 
+    /* 控制行：延时 + 格式 */
+    GtkWidget *ctl = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_pack_start(GTK_BOX(ctl), gtk_label_new(TR("延时:")), FALSE, FALSE, 0);
+    delay_combo = gtk_combo_box_text_new();
+    qy_add_class(delay_combo, "qy-shot-combo");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(delay_combo), "0",  TR("0 秒（立即）"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(delay_combo), "3",  TR("3 秒"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(delay_combo), "5",  TR("5 秒"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(delay_combo), "10", TR("10 秒"));
+    gtk_combo_box_set_active(GTK_COMBO_BOX(delay_combo), 0);
+    gtk_box_pack_start(GTK_BOX(ctl), delay_combo, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(ctl), gtk_label_new(TR("格式:")), FALSE, FALSE, 0);
+    format_combo = gtk_combo_box_text_new();
+    qy_add_class(format_combo, "qy-shot-combo");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(format_combo), "png",  "PNG");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(format_combo), "jpeg", "JPEG");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(format_combo), "bmp",  "BMP");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(format_combo), 0);
+    gtk_box_pack_start(GTK_BOX(ctl), format_combo, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), ctl, FALSE, FALSE, 0);
+
     /* 按钮行 */
     GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    GtkWidget *b_cap = qy_icon_button(QY_ICON_SHOT, 18, TR("全屏截图"), NULL);
+    cap_btn = gtk_button_new_with_label(TR("全屏截图"));
+    qy_add_class(cap_btn, "qy-shot-btn");
     GtkWidget *b_save = qy_icon_button(QY_ICON_SAVE, 18, TR("保存"), NULL);
     GtkWidget *b_copy = qy_icon_button(QY_ICON_COPY, 18, TR("复制到剪贴板"), NULL);
-    g_signal_connect(b_cap, "clicked", G_CALLBACK(on_capture), NULL);
+    g_signal_connect(cap_btn, "clicked", G_CALLBACK(on_capture_clicked), NULL);
     g_signal_connect(b_save, "clicked", G_CALLBACK(on_save), NULL);
     g_signal_connect(b_copy, "clicked", G_CALLBACK(on_copy), NULL);
-    gtk_box_pack_start(GTK_BOX(bar), b_cap, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), cap_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), b_save, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), b_copy, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), bar, FALSE, FALSE, 0);

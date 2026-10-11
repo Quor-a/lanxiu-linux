@@ -29,6 +29,7 @@ static AppEntry apps[] = {
     { "软件中心", "qystore",         0, "工具" },
     { "浏览器", "qybrowser",       0, "工具" },
     { "截图工具", "qyshot",          0, "工具" },
+    { "屏幕录制", "qyrec",           0, "工具" },
     { "剪贴板", "qyclip",          0, "工具" },
     { "锁屏", "qylock",          0, "系统" },
     { "全局搜索", "qysearch",        0, "系统" },
@@ -140,6 +141,7 @@ static QyIconId app_icon_id(const AppEntry *a) {
     if (strstr(n, "设置")) return QY_ICON_SETTINGS;
     if (strstr(n, "回收")) return QY_ICON_TRASH;
     if (strstr(n, "截图")) return QY_ICON_SHOT;
+    if (strstr(n, "录制") || strstr(n, "录屏")) return QY_ICON_VIDEO;
     if (strstr(n, "剪贴")) return QY_ICON_CLIPBOARD;
     if (strstr(n, "锁")) return QY_ICON_LOCK;
     if (strstr(n, "搜索")) return QY_ICON_SEARCH;

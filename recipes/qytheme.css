@@ -1690,3 +1690,86 @@ scrollbar slider:hover {
     min-width: 12px;
     min-height: 12px;
 }
+
+/* ---------- release 250 polish ---------- */
+/* 文本编辑器：行号栏由 qyedit 自绘（#101826 背景 / #9AA7B8 文字 / 右分隔线），
+ * 此处补充查找替换面板与控件样式。 */
+.qy-editor-find {
+    background-color: #131a28;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.qy-editor-find entry {
+    background-color: #0f1622;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 5px;
+    color: #e6e6e6;
+    caret-color: #E95420;
+    min-height: 26px;
+}
+.qy-editor-find entry:focus {
+    border-color: rgba(233, 84, 32, 0.6);
+}
+.qy-editor-find label {
+    font-size: 12px;
+    color: #9aa3b2;
+}
+
+/* 截图工具：按钮与下拉框 */
+.qy-shot-btn {
+    background-color: #E95420;
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    padding: 4px 16px;
+    font-size: 13px;
+    font-weight: 600;
+}
+.qy-shot-btn:hover {
+    background-color: #ff6b3d;
+    color: #ffffff;
+}
+.qy-shot-combo {
+    background-color: #1b2430;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    color: #e6e6e6;
+    min-height: 28px;
+}
+
+/* 屏幕录制应用 */
+#qy-rec-win {
+    background-color: #0A0E1A;
+}
+#qy-rec-status {
+    font-size: 17px;
+    font-weight: 700;
+    color: #e8ecf4;
+    padding: 4px 0;
+}
+#qy-rec-status.qy-rec-err {
+    color: #ff8080;
+}
+.qy-rec-btn {
+    background-image: none;
+    background-color: #E95420;
+    border: none;
+    border-radius: 8px;
+    color: #ffffff;
+    font-size: 15px;
+    font-weight: 600;
+    box-shadow: none;
+}
+.qy-rec-btn:hover {
+    background-color: #ff6b3d;
+    color: #ffffff;
+}
+.qy-rec-btn-stop,
+.qy-rec-btn-stop:hover {
+    background-color: #E5484D;
+    color: #ffffff;
+}
+.qy-rec-hint {
+    font-size: 11px;
+    color: #9aa3b2;
+}

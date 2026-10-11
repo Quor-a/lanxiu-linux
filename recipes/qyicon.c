@@ -636,6 +636,7 @@ QyIconId qy_icon_for_app(const char *app) {
     if (g_str_has_prefix(app, "qysearch")) return QY_ICON_SEARCH;
     if (g_str_has_prefix(app, "qycalc")) return QY_ICON_CALC;
     if (g_str_has_prefix(app, "qyshot")) return QY_ICON_SHOT;
+    if (g_str_has_prefix(app, "qyrec")) return QY_ICON_VIDEO;
     if (g_str_has_prefix(app, "qyclip")) return QY_ICON_CLIPBOARD;
     if (g_str_has_prefix(app, "qylock")) return QY_ICON_LOCK;
     if (g_str_has_prefix(app, "qysetup")) return QY_ICON_SETUP;
