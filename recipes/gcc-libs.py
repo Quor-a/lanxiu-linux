@@ -16,7 +16,7 @@ source = ["https://mirrors.aliyun.com/gnu/gcc/gcc-15.2.0/gcc-15.2.0.tar.xz"]
 sha256 = ["438fd996826b0c82485a29da03a72d71d6e3541a83ec702df4271f6fe025d24e"]
 
 depends = []
-makedepends = ["gcc"]
+makedepends = ["gcc", "gmp", "mpfr", "mpc"]
 provides = ["libstdc++.so.6", "libgomp.so.1", "libgcc_s.so.1"]
 
 requires_build_machine = True

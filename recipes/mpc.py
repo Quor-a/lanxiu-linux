@@ -20,7 +20,7 @@ depends = ["gmp", "mpfr"]
 def build(ctx):
     # 显式把 sysroot 头文件与库目录交给 configure（沙箱有时不自动注入依赖包的 CPATH）
     env = "CFLAGS=-I{0}/usr/include LDFLAGS=-L{0}/usr/lib".format(ctx.sysroot)
-    ctx.run("./configure" + " " .join(ctx.configure_args()) + " --prefix=/usr --disable-static " + env)
+    ctx.run("./configure " + " ".join(ctx.configure_args()) + " --prefix=/usr --disable-static " + env)
     ctx.run("make")
 
 
