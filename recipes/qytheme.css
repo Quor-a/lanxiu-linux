@@ -1148,3 +1148,75 @@ window {
 .qy-mon-proc {
     font-family: "LANXIU Mono", monospace;
 }
+
+/* ============================================================
+ * release 246 component polish — 组件/界面细节样式（仅追加，不改写既有规则）
+ * 品牌橙 #FF5C1A · hover #FF6B2B · 深蓝底 #0A0E1A/#101826 · 面板 #111724
+ * 文字 #E8ECF4 · 次要 #9AA7B8 · 滚动条滑块 #2a3242
+ * ============================================================ */
+
+/* ---------- 顶栏：底部 1px 微光分割线 + logo hover 橙色下划线 ---------- */
+.qy-bar {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.qy-logo-btn:hover {
+    border-bottom: 2px solid transparent;
+    box-shadow: inset 0 -2px 0 #FF5C1A;
+}
+
+/* ---------- 左侧 Dock：激活项左侧 2px 橙色指示条 ---------- */
+.qy-dock-active {
+    box-shadow: inset 2px 0 0 #FF5C1A;
+}
+
+/* Dock 图标 hover：橙色底 + 圆角 8px + 轻微上移 2px（margin-top 方案） */
+.qy-dock-icon {
+    transition: margin-top 120ms ease, background-color 120ms ease,
+                border-radius 120ms ease, box-shadow 120ms ease;
+}
+.qy-dock-icon:hover {
+    background-color: rgba(255, 92, 26, 0.12);
+    border-radius: 8px;
+    margin-top: -2px;
+    transform: none;
+}
+
+/* ---------- 开始菜单：hover 橙底 + 左侧 2px 橙条；搜索框聚焦橙边框 ---------- */
+.qy-appmenu-item:hover {
+    background-color: rgba(255, 92, 26, 0.10);
+    box-shadow: inset 2px 0 0 #FF5C1A;
+}
+.qy-appmenu-search:focus {
+    border-color: #FF5C1A;
+}
+
+/* ---------- 按钮统一：hover 品牌橙 #FF6B2B，active 下压 1px ---------- */
+.qy-lock-btn:hover,
+.qy-welcome-btn:hover,
+.qy-bar button:hover {
+    background: #FF6B2B;
+}
+.qy-lock-btn:active,
+.qy-welcome-btn:active,
+.qy-bar button:active {
+    margin-top: 1px;
+}
+
+/* ---------- 卡片统一：12px 圆角 + 细边框 ---------- */
+.qy-welcome-card,
+.qy-settings-group {
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* ---------- 滚动条：细 6px、深色滑块、hover 品牌橙 ---------- */
+scrollbar {
+    width: 6px;
+}
+scrollbar slider {
+    background: #2a3242;
+    border-radius: 3px;
+}
+scrollbar slider:hover {
+    background: #FF5C1A;
+}
