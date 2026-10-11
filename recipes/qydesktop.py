@@ -185,7 +185,7 @@ def package(ctx):
     ctx.run("cp qysudo {}/usr/bin/qysudo && chmod 4755 {}/usr/bin/qysudo".format(ctx.destdir, ctx.destdir, ctx.destdir))
     ctx.install_file("qysudoers", "etc/qysudoers")
     ctx.run("mkdir -p {}/etc/qyinit.d && cp qyinitpw.sh {}/etc/qyinit.d/40-initpw && chmod +x {}/etc/qyinit.d/40-initpw".format(ctx.destdir, ctx.destdir, ctx.destdir))
-    ctx.run("$CC qyboot.c -o {}/usr/bin/qyboot -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) -O2 && chmod 755 {}/usr/bin/qyboot".format(ctx.destdir, ctx.destdir))
+    ctx.run("$CC qyboot.c -o {}/usr/bin/qyboot -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) -O2 -lm && chmod 755 {}/usr/bin/qyboot".format(ctx.destdir, ctx.destdir))
     ctx.install_file("qyboot.unit", "etc/qyinit.d/qyboot.unit")
     ctx.run("cp qywelcome {}/usr/bin/qywelcome".format(ctx.destdir))
     # 网络自启单元 (busybox udhcpc DHCP)：
