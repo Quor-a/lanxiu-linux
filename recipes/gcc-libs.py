@@ -24,27 +24,24 @@ network = False
 
 
 def build(ctx):
-    # 只构建 target 库（libstdc++-v3 / libgomp / libgcc）
-    ctx.run("mkdir -p build && cd build && ../configure --prefix=/usr "
-            "--host=aarch64-qiyuan-linux-gnu "
-            "--disable-multilib --enable-languages=c,c++ "
-            "--enable-shared --disable-bootstrap "
-            "--with-sysroot={root} --with-gxx-include-dir=/usr/include/c++/15.2.0 "
-            "--disable-nls --enable-linker-build-id".format(root=str(ctx.sysroot)))
-    ctx.run("cd build && make -j2")
+    # 运行库来自交叉工具链的 target 树（Ubuntu gcc-15-aarch64 自带
+    # libstdc++/libgcc_s/libgomp 的 aarch64 版），无需重编整棵 GCC。
+    # 拷到工作目录以便 package 阶段统一处理。
+    ctx.run("mkdir -p out && cp -a /usr/aarch64-linux-gnu/lib/libstdc++.so.6* "
+            "/usr/aarch64-linux-gnu/lib/libgcc_s.so.1 out/ 2>/dev/null || true")
+    ctx.run("cp -a /usr/aarch64-linux-gnu/lib/libgomp.so.1* out/ 2>/dev/null || true")
+    ctx.run("ls out/")
 
 
 def package(ctx):
     import glob, os, shutil
     destdir = str(ctx.destdir)
-    # 从 gcc 已安装的系统树与构建树收集运行库
-    for libdir in ['usr/lib', 'usr/lib64']:
-        src = os.path.join('build', 'x86_64-pc-linux-gnu', libdir.split('/')[-1])
-        if os.path.isdir(src):
-            for f in glob.glob(src + '/.libs/lib*.so*'):
-                shutil.copy(f, os.path.join(destdir, 'usr/lib'))
     ctx.run("mkdir -p {}/usr/lib".format(destdir))
-    # configure 生成的库
-    ctx.run("find build -name 'libstdc++.so.6*' -o -name 'libgomp.so.1*' -o -name 'libgcc_s.so.1*' -o -name 'libitm.so.1*' | while read f; do cp -P \"$f\" {}/usr/lib/ 2>/dev/null || true; done".format(destdir))
+    for f in glob.glob("out/libstdc++*") + glob.glob("out/libgcc_s*") + glob.glob("out/libgomp*"):
+        if os.path.islink(f):
+            link = os.readlink(f)
+            os.symlink(link, os.path.join(destdir, "usr/lib", os.path.basename(f)))
+        else:
+            shutil.copy2(f, os.path.join(destdir, "usr/lib"))
     # dev symlink：g++ 链接需要 -lstdc++ 找到 libstdc++.so
     ctx.run("cd {}/usr/lib && ln -sf libstdc++.so.6 libstdc++.so || true".format(destdir))
