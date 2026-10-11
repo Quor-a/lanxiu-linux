@@ -1,6 +1,7 @@
-/* qyview — 澜岫图片查看器 v1
+/* qyview — 澜岫图片查看器 v2
  * 数据源: GdkPixbuf (PNG/JPEG/BMP 等), cairo 缩放绘制
- * 功能: 打开单图 (argv[1]), 窗口自适应缩放, 滚轮缩放, 拖拽平移, 左右键切换同目录图片
+ * 功能: 打开单图 (argv[1]), 窗口自适应缩放, 滚轮缩放, 拖拽平移, 左右键切换同目录图片,
+ *       F11 全屏切换, 空格播放/暂停幻灯片 (每 3s), 底部悬浮工具条
  * 架构: 单文件 GTK3, 与 qyfiles 同款编译方式
  */
 #include <gtk/gtk.h>
@@ -19,12 +20,17 @@ static GPtrArray *dir_files = NULL;    /* 同目录图片文件列表 */
 static int dir_idx = -1;
 static double zoom = 1.0;
 static double pan_x = 0, pan_y = 0;
-static GtkWidget *page_label = NULL;   /* 底部页码标签 */
-static GtkWindow *g_win = NULL;        /* 主窗口: 标题显示当前文件名 */
+static GtkWidget *page_label = NULL;   /* 右下角页码 */
+static GtkWindow *g_win = NULL;        /* 主窗口: 标题显示当前文件名 (n/N) */
 static gchar *current_path = NULL;     /* 当前图片完整路径（保存用） */
 static GtkWidget *save_status = NULL;  /* 底部保存结果提示 */
 static GtkWidget *image_info = NULL;   /* 底部图片尺寸/格式/大小信息 */
 static GtkWidget *zoom_label = NULL;   /* 底部当前缩放百分比 */
+static GtkWidget *play_btn = NULL;      /* 悬浮条播放/暂停按钮 */
+static GtkWidget *file_label = NULL;   /* 左下角文件名 */
+static GtkWidget *g_da = NULL;          /* 绘图区（幻灯片定时器回调用） */
+static guint slide_timer = 0;           /* 幻灯片定时器 id */
+static gboolean slide_on = FALSE;      /* 幻灯片是否运行 */
 
 /* 刷新底部缩放百分比显示 */
 static void update_zoom(void) {
@@ -101,8 +107,11 @@ static void load_by_index(GtkWidget *da, int idx) {
     gchar *full = g_build_filename(cur_dir, (gchar*)dir_files->pdata[idx], NULL);
     if (load_path(full)) {
         dir_idx = idx;
+        /* 窗口标题: 文件名 (n/N) */
         if (g_win) {
-            gchar *ttl = g_strdup_printf("%s — 图片查看", (gchar *)dir_files->pdata[idx]);
+            gchar *ttl = g_strdup_printf("%s (%d/%d)",
+                                          (gchar *)dir_files->pdata[idx],
+                                          dir_idx + 1, dir_files->len);
             gtk_window_set_title(g_win, ttl);
             g_free(ttl);
         }
@@ -111,6 +120,8 @@ static void load_by_index(GtkWidget *da, int idx) {
             g_snprintf(buf, sizeof buf, "%d / %d", dir_idx + 1, dir_files->len);
             gtk_label_set_text(GTK_LABEL(page_label), buf);
         }
+        if (file_label)
+            gtk_label_set_text(GTK_LABEL(file_label), (gchar*)dir_files->pdata[idx]);
         gtk_widget_queue_draw(da);
     }
     g_free(full);
@@ -130,6 +141,22 @@ static void on_next(GtkButton *b, gpointer ud) {
 
 static void on_fit(GtkButton *b, gpointer ud) {
     zoom = 1.0; pan_x = pan_y = 0;
+    update_zoom();
+    gtk_widget_queue_draw(GTK_WIDGET(ud));
+}
+
+static void on_zoomin(GtkButton *b, gpointer ud) {
+    (void)b;
+    zoom *= 1.15;
+    if (zoom > 20) zoom = 20;
+    update_zoom();
+    gtk_widget_queue_draw(GTK_WIDGET(ud));
+}
+
+static void on_zoomout(GtkButton *b, gpointer ud) {
+    (void)b;
+    zoom /= 1.15;
+    if (zoom < 0.05) zoom = 0.05;
     update_zoom();
     gtk_widget_queue_draw(GTK_WIDGET(ud));
 }
@@ -184,6 +211,60 @@ static gboolean save_once(gpointer ud) {
     return G_SOURCE_REMOVE;
 }
 
+/* ---------- 幻灯片 ---------- */
+static void set_play_icon(gboolean playing) {
+    if (!play_btn) return;
+    GtkWidget *child = gtk_bin_get_child(GTK_BIN(play_btn));
+    if (child) gtk_widget_destroy(child);
+    GdkPixbuf *pb = qy_icon_pixbuf(playing ? QY_ICON_PAUSE : QY_ICON_PLAY, 18, NULL);
+    gtk_container_add(GTK_CONTAINER(play_btn), gtk_image_new_from_pixbuf(pb));
+    g_object_unref(pb);
+    gtk_widget_show_all(play_btn);
+    gtk_widget_set_tooltip_text(play_btn, playing ? TR("暂停幻灯片 (空格)") : TR("播放幻灯片 (空格)"));
+}
+
+static gboolean slide_tick(gpointer ud) {
+    if (!slide_on) return G_SOURCE_REMOVE;
+    if (dir_files && dir_files->len > 1) {
+        int n = (dir_idx + 1) % (int)dir_files->len;
+        load_by_index(GTK_WIDGET(ud), n);
+    }
+    return G_SOURCE_CONTINUE;
+}
+
+static void toggle_slideshow(void) {
+    if (!dir_files || dir_files->len < 2) return;
+    slide_on = !slide_on;
+    if (slide_on) {
+        if (!slide_timer) slide_timer = g_timeout_add(3000, slide_tick, g_da);
+        set_play_icon(TRUE);
+    } else {
+        if (slide_timer) { g_source_remove(slide_timer); slide_timer = 0; }
+        set_play_icon(FALSE);
+    }
+}
+
+static void on_play(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    toggle_slideshow();
+}
+
+/* ---------- F11 全屏切换 ---------- */
+static void toggle_fullscreen(void) {
+    if (!g_win) return;
+    GdkWindow *gdkw = gtk_widget_get_window(GTK_WIDGET(g_win));
+    gboolean fs = gdkw && (gdk_window_get_state(gdkw) & GDK_WINDOW_STATE_FULLSCREEN);
+    if (fs)
+        gtk_window_unfullscreen(g_win);
+    else
+        gtk_window_fullscreen(g_win);
+}
+
+static void on_fullscreen(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    toggle_fullscreen();
+}
+
 static gboolean on_draw(GtkWidget *da, cairo_t *cr, gpointer ud) {
     GtkAllocation a; gtk_widget_get_allocation(da, &a);
     cairo_set_source_rgb(cr, 0.1, 0.1, 0.12);
@@ -226,6 +307,16 @@ static gboolean on_scroll(GtkWidget *w, GdkEventScroll *ev, gpointer ud) {
 }
 
 static gboolean on_key(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
+    /* F11 全屏切换 */
+    if (ev->keyval == GDK_KEY_F11) {
+        toggle_fullscreen();
+        return TRUE;
+    }
+    /* 空格: 播放/暂停幻灯片 */
+    if (ev->keyval == GDK_KEY_space) {
+        toggle_slideshow();
+        return TRUE;
+    }
     if (!dir_files || dir_files->len == 0) return FALSE;
     if (ev->keyval == GDK_KEY_Right) {
         int n = (dir_idx + 1) % (int)dir_files->len;
@@ -279,13 +370,14 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_window_set_title(GTK_WINDOW(win), "澜岫图片查看器");
     qy_window_setup(GTK_WINDOW(win), 700, 500, 480, 360, FALSE);
 
-    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_container_add(GTK_CONTAINER(win), vbox);
+    GtkWidget *overlay = gtk_overlay_new();
+    gtk_container_add(GTK_CONTAINER(win), overlay);
 
     /* 图片绘制区 */
     GtkWidget *da = gtk_drawing_area_new();
     qy_add_class(da, "qy-app-surface");
-    gtk_box_pack_start(GTK_BOX(vbox), da, TRUE, TRUE, 0);
+    g_da = da;
+    gtk_container_add(GTK_CONTAINER(overlay), da);
     g_signal_connect(da, "draw", G_CALLBACK(on_draw), NULL);
     g_signal_connect(da, "scroll-event", G_CALLBACK(on_scroll), NULL);
     g_signal_connect(da, "key-press-event", G_CALLBACK(on_key), da);
@@ -293,54 +385,85 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_widget_add_events(da, GDK_SCROLL_MASK | GDK_BUTTON_PRESS_MASK | GDK_KEY_PRESS_MASK);
     gtk_widget_set_can_focus(da, TRUE);
 
-    /* 底部导航栏: 上一张 / 页码 / 下一张 */
-    GtkWidget *nav = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-    qy_add_class(nav, "qy-view-nav");
-    gtk_widget_set_margin_top(nav, 4);
-    gtk_widget_set_margin_bottom(nav, 4);
-    GtkWidget *b_prev = qy_icon_button(QY_ICON_BACK, 18, TR("上一张"), NULL);
-    qy_add_class(b_prev, "qy-view-nav-btn");
-    page_label = gtk_label_new("1 / 1");
-    qy_add_class(page_label, "qy-view-nav-label");
-    GtkWidget *b_next = qy_icon_button(QY_ICON_FORWARD, 18, TR("下一张"), NULL);
-    qy_add_class(b_next, "qy-view-nav-btn");
-    GtkWidget *b_fit = qy_icon_button(QY_ICON_FIT, 18, TR("适应窗口"), NULL);
-    qy_add_class(b_fit, "qy-view-nav-btn");
-    GtkWidget *b_rot = qy_icon_button(QY_ICON_ROTATE, 18, TR("旋转"), NULL);
-    qy_add_class(b_rot, "qy-view-nav-btn");
-    GtkWidget *b_save = qy_icon_button(QY_ICON_SAVE, 18, TR("保存"), NULL);
-    qy_add_class(b_save, "qy-view-nav-btn");
-    save_status = gtk_label_new("");
-    qy_add_class(save_status, "qy-view-nav-label");
-    image_info = gtk_label_new("");
-    qy_add_class(image_info, "qy-view-nav-label");
+    /* 底部悬浮工具条 (GtkOverlay 子层) */
+    GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    qy_add_class(bar, "qy-view-bar");
+    gtk_widget_set_halign(bar, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(bar, GTK_ALIGN_END);
+    gtk_widget_set_margin_bottom(bar, 10);
+    gtk_widget_set_margin_top(bar, 6);
+
+    GtkWidget *b_prev = qy_icon_button(QY_ICON_PREV, 18, TR("上一张"), "qy-view-bar-btn");
+    play_btn = qy_icon_button(QY_ICON_PLAY, 18, TR("播放幻灯片 (空格)"), "qy-view-bar-btn");
+    GtkWidget *b_next = qy_icon_button(QY_ICON_NEXT, 18, TR("下一张"), "qy-view-bar-btn");
+    GtkWidget *sep1 = gtk_separator_new(GTK_ORIENTATION_VERTICAL);
+    GtkWidget *b_zoomout = gtk_button_new_with_label("−");
+    GtkWidget *b_zoomin = gtk_button_new_with_label("+");
+    qy_add_class(b_zoomout, "qy-view-bar-btn");
+    qy_add_class(b_zoomin, "qy-view-bar-btn");
+    GtkWidget *b_fit = qy_icon_button(QY_ICON_FIT, 18, TR("适应窗口"), "qy-view-bar-btn");
+    GtkWidget *b_rot = qy_icon_button(QY_ICON_ROTATE, 18, TR("旋转"), "qy-view-bar-btn");
+    GtkWidget *b_save = qy_icon_button(QY_ICON_SAVE, 18, TR("保存"), "qy-view-bar-btn");
+    GtkWidget *b_full = qy_icon_button(QY_ICON_MAX, 18, TR("全屏 (F11)"), "qy-view-bar-btn");
+
     zoom_label = gtk_label_new("");
-    qy_add_class(zoom_label, "qy-view-nav-label");
-    gtk_box_pack_start(GTK_BOX(nav), b_prev, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(nav), b_save, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(nav), save_status, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(nav), zoom_label, FALSE, FALSE, 0);
-    gtk_box_set_center_widget(GTK_BOX(nav), page_label);
-    gtk_box_pack_end(GTK_BOX(nav), image_info, FALSE, FALSE, 0);
-    gtk_box_pack_end(GTK_BOX(nav), b_next, FALSE, FALSE, 0);
-    gtk_box_pack_end(GTK_BOX(nav), b_fit, FALSE, FALSE, 0);
-    gtk_box_pack_end(GTK_BOX(nav), b_rot, FALSE, FALSE, 0);
+    qy_add_class(zoom_label, "qy-view-bar-label");
+    save_status = gtk_label_new("");
+    qy_add_class(save_status, "qy-view-bar-label");
+    image_info = gtk_label_new("");
+    qy_add_class(image_info, "qy-view-bar-label");
+
+    gtk_box_pack_start(GTK_BOX(bar), b_prev, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), play_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), b_next, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), sep1, FALSE, FALSE, 2);
+    gtk_box_pack_start(GTK_BOX(bar), b_zoomout, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), b_zoomin, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), b_fit, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), b_rot, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), b_save, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), b_full, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), zoom_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), save_status, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(bar), image_info, FALSE, FALSE, 0);
+
     g_signal_connect(b_prev, "clicked", G_CALLBACK(on_prev), da);
+    g_signal_connect(play_btn, "clicked", G_CALLBACK(on_play), NULL);
     g_signal_connect(b_next, "clicked", G_CALLBACK(on_next), da);
+    g_signal_connect(b_zoomout, "clicked", G_CALLBACK(on_zoomout), da);
+    g_signal_connect(b_zoomin, "clicked", G_CALLBACK(on_zoomin), da);
     g_signal_connect(b_fit, "clicked", G_CALLBACK(on_fit), da);
     g_signal_connect(b_rot, "clicked", G_CALLBACK(on_rotate), da);
     g_signal_connect(b_save, "clicked", G_CALLBACK(on_save), da);
-    gtk_box_pack_start(GTK_BOX(vbox), nav, FALSE, FALSE, 0);
+    g_signal_connect(b_full, "clicked", G_CALLBACK(on_fullscreen), NULL);
 
-    /* ---------- 图片查看器快捷键 ---------- */
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), bar);
+
+    /* 左下角文件名 + 右下角页码 (悬浮子层) */
+    file_label = gtk_label_new("");
+    qy_add_class(file_label, "qy-view-filename");
+    gtk_widget_set_halign(file_label, GTK_ALIGN_START);
+    gtk_widget_set_valign(file_label, GTK_ALIGN_END);
+    gtk_widget_set_margin_start(file_label, 14);
+    gtk_widget_set_margin_bottom(file_label, 14);
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), file_label);
+
+    page_label = gtk_label_new("1 / 1");
+    qy_add_class(page_label, "qy-view-page");
+    gtk_widget_set_halign(page_label, GTK_ALIGN_END);
+    gtk_widget_set_valign(page_label, GTK_ALIGN_END);
+    gtk_widget_set_margin_end(page_label, 14);
+    gtk_widget_set_margin_bottom(page_label, 14);
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), page_label);
+
+    /* ---------- 快捷键 ---------- */
     GtkAccelGroup *accel = gtk_accel_group_new();
     gtk_window_add_accel_group(GTK_WINDOW(win), accel);
-    gtk_widget_add_accelerator(b_next, "clicked", accel, GDK_KEY_space, 0, GTK_ACCEL_VISIBLE);      /* 空格 下一张 */
     gtk_widget_add_accelerator(b_prev, "clicked", accel, GDK_KEY_Page_Up, 0, GTK_ACCEL_VISIBLE);     /* PgUp 上一张 */
     gtk_widget_add_accelerator(b_next, "clicked", accel, GDK_KEY_Page_Down, 0, GTK_ACCEL_VISIBLE);   /* PgDn 下一张 */
     gtk_widget_add_accelerator(b_rot, "clicked", accel, GDK_KEY_r, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE); /* Ctrl+R 旋转 */
     gtk_widget_add_accelerator(b_save, "clicked", accel, GDK_KEY_s, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE); /* Ctrl+S 另存 */
-    g_printerr("QYVIEWDBG: accel 5 keys\n");
+    g_printerr("QYVIEWDBG: accel 4 keys\n");
 
     gtk_widget_show_all(win);
 
@@ -350,7 +473,7 @@ static void activate(GtkApplication *app, gpointer ud) {
             scan_dir(args[0]);
             g_free(cur_dir);
             cur_dir = g_path_get_dirname(args[0]);
-            load_by_index(da, dir_idx);   /* 刷新页码 */
+            load_by_index(da, dir_idx);   /* 刷新页码与标题 */
         }
     }
     /* 自动化验证: QYVIEW_ROTATE=1 启动后自动顺时针旋转一次 */

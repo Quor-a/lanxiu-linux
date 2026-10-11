@@ -271,6 +271,8 @@ static QyIconId task_icon_id(const char *title) {
     if (strstr(title, "时钟"))     return QY_ICON_CLOCK;
     if (strstr(title, "天气"))     return QY_ICON_WEATHER;
     if (strstr(title, "笔记"))     return QY_ICON_NOTE;
+    if (strstr(title, "音量"))     return QY_ICON_VOLUME;
+    if (strstr(title, "电源"))     return QY_ICON_POWER;
     return QY_ICON_FILE;
 }
 

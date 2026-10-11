@@ -653,5 +653,7 @@ QyIconId qy_icon_for_app(const char *app) {
     if (g_str_has_prefix(app, "qyconvert")) return QY_ICON_CALC;
     if (g_str_has_prefix(app, "qyhelp")) return QY_ICON_DOC;
     if (g_str_has_prefix(app, "qydisk")) return QY_ICON_DRIVE;
+    if (g_str_has_prefix(app, "qyaudio")) return QY_ICON_VOLUME;
+    if (g_str_has_prefix(app, "qypower")) return QY_ICON_POWER;
     return QY_ICON_GRID;
 }
