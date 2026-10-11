@@ -18,7 +18,7 @@ typedef struct {
 static const SearchApp apps[] = {
     { "文件管理",  "qyfiles",     QY_ICON_FILES     },
     { "文本编辑",  "qyedit",      QY_ICON_EDIT      },
-    { "终端",      "qyterm",      QY_ICON_TERM      },
+    { "终端",      "weston-terminal", QY_ICON_TERM  },
     { "设置中心",  "qysettings",  QY_ICON_SETTINGS  },
     { "系统监视",  "qymon",       QY_ICON_MONITOR   },
     { "网络管理",  "qynet",       QY_ICON_NETWORK   },

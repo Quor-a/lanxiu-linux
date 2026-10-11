@@ -62,6 +62,9 @@ static AppEntry apps[] = {
     { "软件中心", "c-store",    "qystore",          "qystore",      0, NULL },
     { "监视",   "c-mon",     "qymon",             "qymon",        0, NULL },
     { "回收站", "c-trash",   "qyfiles --trash",   "qyfiles",      0, NULL },
+    { "时钟",   "c-clock",   "qyclock",           "qyclock",      0, NULL },
+    { "天气",   "c-weather", "qyweather",         "qyweather",    0, NULL },
+    { "笔记",   "c-note",    "qynote",            "qynote",       0, NULL },
 };
 #define NAPPS ((int)(sizeof apps / sizeof apps[0]))
 
@@ -262,6 +265,9 @@ static QyIconId task_icon_id(const char *title) {
     if (strstr(title, "图片") || strstr(title, "图像") || strstr(title, "查看")) return QY_ICON_IMAGE;
     if (strstr(title, "压缩"))     return QY_ICON_ARCHIVE;
     if (strstr(title, "浏览器"))   return QY_ICON_BROWSER;
+    if (strstr(title, "时钟"))     return QY_ICON_CLOCK;
+    if (strstr(title, "天气"))     return QY_ICON_WEATHER;
+    if (strstr(title, "笔记"))     return QY_ICON_NOTE;
     return QY_ICON_FILE;
 }
 

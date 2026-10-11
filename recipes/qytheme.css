@@ -207,10 +207,12 @@ list row button:hover {
 }
 
 /* ---------- 图标颜色类（统一玻璃底，配色交给 cairo 线稿） ---------- */
-.c-files, .c-term, .c-settings, .c-store, .c-mon, .c-home, .c-trash, .c-grid {
+.c-files, .c-term, .c-settings, .c-store, .c-mon, .c-home, .c-trash, .c-grid,
+.c-clock, .c-weather, .c-note {
     background-color: rgba(255, 255, 255, 0.08);
 }
-.c-files:hover, .c-term:hover, .c-settings:hover, .c-store:hover, .c-mon:hover, .c-home:hover, .c-trash:hover, .c-grid:hover {
+.c-files:hover, .c-term:hover, .c-settings:hover, .c-store:hover, .c-mon:hover, .c-home:hover, .c-trash:hover, .c-grid:hover,
+.c-clock:hover, .c-weather:hover, .c-note:hover {
     background-color: rgba(255, 255, 255, 0.16);
 }
 
@@ -1219,4 +1221,142 @@ scrollbar slider {
 }
 scrollbar slider:hover {
     background: #FF5C1A;
+}
+
+/* ---------- 时钟/日历 (qyclock) ---------- */
+#qy-clock-win {
+    background-color: #111724;
+    border-radius: 14px;
+}
+#qyclock-time {
+    font-size: 56px;
+    font-weight: 200;
+    letter-spacing: 2px;
+    color: #ffffff;
+}
+#qyclock-date {
+    font-size: 14px;
+    letter-spacing: 1px;
+    color: #9aa3b2;
+}
+#qyclock-cal {
+    background-color: #141b24;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 10px;
+    color: #e6e9ef;
+}
+#qyclock-cal .header {
+    color: #e6e9ef;
+    font-weight: bold;
+}
+#qyclock-cal .button {
+    color: #e6e9ef;
+    background-image: none;
+    background-color: transparent;
+    border: none;
+    border-radius: 6px;
+}
+#qyclock-cal .button:hover {
+    background-color: rgba(255, 255, 255, 0.10);
+}
+#qyclock-cal .day-number {
+    color: #c9cdd4;
+}
+#qyclock-cal .day-number:selected {
+    background-color: #E95420;
+    color: #ffffff;
+    border-radius: 50%;
+}
+#qyclock-sw {
+    font-size: 22px;
+    font-family: monospace;
+    color: #E95420;
+}
+.qy-clock-btn {
+    min-height: 30px;
+    padding: 2px 14px;
+    font-size: 13px;
+}
+
+/* ---------- 天气 (qyweather) ---------- */
+#qy-weather-win {
+    background-color: #0B1020;
+}
+#qyweather-city {
+    font-size: 18px;
+    font-weight: bold;
+    color: #e6e9ef;
+}
+#qyweather-temp {
+    font-size: 48px;
+    font-weight: 200;
+    color: #E95420;
+}
+#qyweather-desc {
+    font-size: 14px;
+    color: #9aa3b2;
+}
+#qyweather-err {
+    font-size: 12px;
+    color: #f87171;
+}
+.qy-weather-fc-title {
+    font-size: 13px;
+    color: #9aa3b2;
+}
+.qy-weather-day-card {
+    background-color: #141b24;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 10px;
+    padding: 8px 4px;
+}
+.qy-weather-day {
+    font-size: 13px;
+    font-weight: bold;
+    color: #e6e9ef;
+}
+.qy-weather-hi {
+    font-size: 17px;
+    color: #E95420;
+}
+.qy-weather-lo {
+    font-size: 12px;
+    color: #9aa3b2;
+}
+.qy-weather-fdesc {
+    font-size: 11px;
+    color: #9aa3b2;
+}
+
+/* ---------- 笔记 (qynote) ---------- */
+#qy-note-win {
+    background-color: #0B1020;
+}
+#qy-note-list {
+    background-color: #141b24;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 10px;
+}
+#qy-note-list row {
+    padding: 8px 10px;
+}
+#qy-note-list row:selected {
+    background-color: rgba(233, 84, 32, 0.28);
+    color: #ffffff;
+}
+#qy-note-text {
+    background-color: #111724;
+    color: #e6e9ef;
+    font-size: 14px;
+    caret-color: #E95420;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 10px;
+}
+.qy-note-status {
+    font-size: 12px;
+    color: #9aa3b2;
+}
+.qy-note-placeholder {
+    font-size: 14px;
+    color: #6b7280;
 }

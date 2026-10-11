@@ -497,6 +497,49 @@ static void draw_keyboard(cairo_t *cr, double x, double y, double s) {
     cairo_stroke(cr);
 }
 
+static void draw_weather(cairo_t *cr, double x, double y, double s) {
+    SET_LINE(cr);
+    /* 太阳（左上） */
+    cairo_arc(cr, PX(8.5), PY(8.5), PX(2.4), 0, 2 * G_PI);
+    cairo_stroke(cr);
+    /* 六条光芒（固定角度，避免引入 math.h/-lm） */
+    static const struct { double ix, iy, ox, oy; } rays[6] = {
+        { 12.40, 8.50, 14.00, 8.50 },
+        { 10.45, 11.88, 11.25, 13.26 },
+        { 6.55, 11.88, 5.75, 13.26 },
+        { 4.60, 8.50, 3.00, 8.50 },
+        { 6.55, 5.12, 5.75, 4.24 },
+        { 10.45, 5.12, 11.25, 4.24 },
+    };
+    for (int i = 0; i < 6; i++) {
+        cairo_move_to(cr, PX(rays[i].ix), PY(rays[i].iy));
+        cairo_line_to(cr, PX(rays[i].ox), PY(rays[i].oy));
+    }
+    cairo_stroke(cr);
+    /* 云朵（右下） */
+    cairo_move_to(cr, PX(10.2), PY(17.2));
+    cairo_line_to(cr, PX(18.0), PY(17.2));
+    cairo_arc(cr, PX(16.0), PY(14.6), PX(2.9), G_PI * 0.5, G_PI * 1.5);
+    cairo_arc(cr, PX(13.2), PY(13.8), PX(3.1), G_PI * 0.3, G_PI * 1.2);
+    cairo_line_to(cr, PX(10.2), PY(17.2));
+    cairo_stroke(cr);
+}
+
+static void draw_note(cairo_t *cr, double x, double y, double s) {
+    SET_LINE(cr);
+    /* 页面 */
+    qy_rounded_rect(cr, PX(5.5), PY(4.5), PX(13), PY(15), PX(1.5));
+    cairo_stroke(cr);
+    /* 右上折角 */
+    cairo_move_to(cr, PX(15.0), PY(4.5)); cairo_line_to(cr, PX(15.0), PY(8.0));
+    cairo_line_to(cr, PX(18.5), PY(8.0));
+    cairo_stroke(cr);
+    /* 正文行 */
+    cairo_move_to(cr, PX(8.0), PY(11.0)); cairo_line_to(cr, PX(16.0), PY(11.0));
+    cairo_move_to(cr, PX(8.0), PY(14.5)); cairo_line_to(cr, PX(14.0), PY(14.5));
+    cairo_stroke(cr);
+}
+
 #undef SET_LINE
 
 /* ---------- 函数表 ---------- */
@@ -517,6 +560,7 @@ static void (* const drawers[QY_ICON_COUNT])(cairo_t *, double, double, double) 
     draw_list, draw_calc, draw_save,
     draw_rotate, draw_fit, draw_open,
     draw_clock, draw_keyboard,
+    draw_weather, draw_note,
 };
 
 /* ---------- 统一分发器 ---------- */
@@ -567,7 +611,11 @@ QyIconId qy_icon_for_app(const char *app) {
     if (!app) return QY_ICON_GRID;
     if (g_str_has_prefix(app, "qybrowser")) return QY_ICON_BROWSER;
     if (g_str_has_prefix(app, "qyfiles")) return QY_ICON_FILES;
-    if (g_str_has_prefix(app, "qyterm") || g_str_has_prefix(app, "qyterminal")) return QY_ICON_TERM;
+    if (g_str_has_prefix(app, "qyterm") || g_str_has_prefix(app, "qyterminal") ||
+        g_str_has_prefix(app, "weston-terminal")) return QY_ICON_TERM;
+    if (g_str_has_prefix(app, "qyclock")) return QY_ICON_CLOCK;
+    if (g_str_has_prefix(app, "qyweather")) return QY_ICON_WEATHER;
+    if (g_str_has_prefix(app, "qynote")) return QY_ICON_NOTE;
     if (g_str_has_prefix(app, "qysettings")) return QY_ICON_SETTINGS;
     if (g_str_has_prefix(app, "qysearch")) return QY_ICON_SEARCH;
     if (g_str_has_prefix(app, "qycalc")) return QY_ICON_CALC;

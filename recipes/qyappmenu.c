@@ -36,6 +36,9 @@ static AppEntry apps[] = {
     { "窗口切换器", "qyswitcher",     0, "系统" },
     { "驱动管理器", "qydriver",       0, "系统" },
     { "Git 工具", "qygit",           0, "工具" },
+    { "时钟", "qyclock",         0, "工具" },
+    { "天气", "qyweather",         0, "工具" },
+    { "笔记", "qynote",           0, "工具" },
     { "欢迎", "qywelcome",      0, "系统" },
 };
 #define NAPPS ((int)(sizeof apps / sizeof apps[0]))
@@ -145,6 +148,9 @@ static QyIconId app_icon_id(const AppEntry *a) {
     if (strstr(n, "用户")) return QY_ICON_USERS;
     if (strstr(n, "网络")) return QY_ICON_NETWORK;
     if (strstr(n, "压缩")) return QY_ICON_ARCHIVE;
+    if (strstr(n, "时钟")) return QY_ICON_CLOCK;
+    if (strstr(n, "天气")) return QY_ICON_WEATHER;
+    if (strstr(n, "笔记")) return QY_ICON_NOTE;
     return QY_ICON_FILES;
 }
 
