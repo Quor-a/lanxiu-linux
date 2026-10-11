@@ -26,6 +26,7 @@ network = False
 def build(ctx):
     # 只构建 target 库（libstdc++-v3 / libgomp / libgcc）
     ctx.run("mkdir -p build && cd build && ../configure --prefix=/usr "
+            "--host=aarch64-qiyuan-linux-gnu "
             "--disable-multilib --enable-languages=c,c++ "
             "--enable-shared --disable-bootstrap "
             "--with-sysroot={root} --with-gxx-include-dir=/usr/include/c++/15.2.0 "
