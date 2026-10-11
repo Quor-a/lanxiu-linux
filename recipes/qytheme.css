@@ -1773,3 +1773,110 @@ scrollbar slider:hover {
     font-size: 11px;
     color: #9aa3b2;
 }
+
+/* ---------- release 251: 备份/恢复 (qybackup) ---------- */
+#qy-backup-win {
+    background-color: #0A0E1A;
+}
+.qy-backup-btn {
+    background-image: none;
+    background-color: #E95420;
+    border: none;
+    border-radius: 8px;
+    color: #ffffff;
+    font-size: 15px;
+    font-weight: 600;
+    box-shadow: none;
+}
+.qy-backup-btn:hover {
+    background-color: #ff6b3d;
+    color: #ffffff;
+}
+.qy-backup-btn:active {
+    background-color: #c9441a;
+    color: #ffffff;
+}
+.qy-backup-btn:disabled {
+    background-color: #5a3a2c;
+    color: #9aa3b2;
+}
+#qy-backup-status {
+    font-size: 12px;
+    color: #e8ecf4;
+}
+#qy-backup-list {
+    background-color: #111724;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 10px;
+}
+#qy-backup-list row {
+    padding: 6px 10px;
+    color: #e6e9ef;
+}
+#qy-backup-list row:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+#qy-backup-list row:selected {
+    background-color: rgba(233, 84, 32, 0.28);
+    color: #ffffff;
+}
+
+/* ---------- release 251: 音乐播放器播放列表 (qymedia) ---------- */
+#qy-media-win {
+    background-color: #0B1020;
+}
+#qy-media-list {
+    background-color: #111724;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 10px;
+}
+#qy-media-list row {
+    padding: 7px 10px;
+    color: #d1d5db;
+    border-radius: 6px;
+}
+#qy-media-list row:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+#qy-media-list row:selected {
+    background-color: rgba(233, 84, 32, 0.22);
+    color: #ffffff;
+}
+#qy-media-now {
+    background-color: rgba(233, 84, 32, 0.30);
+    color: #ff9a76;
+    font-weight: 600;
+}
+#qy-media-now:hover {
+    background-color: rgba(233, 84, 32, 0.38);
+    color: #ffb08f;
+}
+
+/* ---------- release 251: 剪贴板管理器 (qyclip) ---------- */
+#qy-clip-win {
+    background-color: #0B1020;
+}
+#qy-clip-list {
+    background-color: #111724;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 10px;
+}
+#qy-clip-list row {
+    padding: 6px 10px;
+    color: #e6e9ef;
+}
+#qy-clip-list row:hover {
+    background-color: rgba(255, 255, 255, 0.06);
+}
+#qy-clip-list row:selected {
+    background-color: rgba(233, 84, 32, 0.28);
+    color: #ffffff;
+}
+#qy-clip-pinned {
+    background-color: rgba(233, 84, 32, 0.14);
+    color: #ffb08f;
+}
+#qy-clip-pinned:selected {
+    background-color: rgba(233, 84, 32, 0.35);
+    color: #ffffff;
+}
