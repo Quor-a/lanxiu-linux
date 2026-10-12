@@ -19,6 +19,7 @@ static GtkWidget *pct_label = NULL;     /* #qy-power-pct 中央大百分比 */
 static GtkWidget *status_label = NULL; /* #qy-power-status */
 static GtkWidget *time_label = NULL;   /* 剩余时间 */
 static GtkWidget *volt_label = NULL;  /* 电压 */
+static GtkWidget *health_label = NULL; /* #qy-power-health 电池健康度 */
 static GtkWidget *ring_da = NULL;      /* 环形电量绘制区 */
 static GtkWidget *saver_sw = NULL;    /* 省电模式开关 */
 static GtkWidget *bright_scale = NULL; /* 亮度滑杆 */
@@ -28,6 +29,8 @@ static int capacity = -1;
 static gboolean charging = FALSE;
 static long voltage_now = 0;
 static long energy_now = 0, power_now = 0;
+static char health_text[64] = "";    /* upower 健康度文本 */
+static gboolean health_visible = FALSE; /* 无 upower 时隐藏该行 */
 
 /* ---------- sysfs 读取 ---------- */
 static int read_int_file(const char *path, long *val) {
@@ -92,6 +95,60 @@ static void refresh_power(void) {
     }
 }
 
+/* ---------- upower 健康度 ---------- */
+/* 在 upower 输出中查找 "key:" 后的数值（Wh / 小时 / °C） */
+static gboolean upower_value(const char *out, const char *key, double *val) {
+    if (!out || !key || !val) return FALSE;
+    char pat[64];
+    g_snprintf(pat, sizeof pat, "%s:", key);
+    const char *p = strstr(out, pat);
+    if (!p) return FALSE;
+    p += strlen(pat);
+    while (*p == ' ' || *p == '\t') p++;
+    *val = g_ascii_strtod(p, NULL);
+    return TRUE;
+}
+
+/* 尝试用 upower 读取健康度: energy-full / energy-full-design * 100。
+ * 无 upower 或读不到时 health_visible=FALSE，调用方隐藏该行（不报错）。 */
+static void upower_health_init(void) {
+    health_text[0] = 0;
+    health_visible = FALSE;
+
+    /* 优先按审计指定的 BAT0；若探测到其它电池名（BAT1 等）则回退再试 */
+    char fallback[64] = "";
+    if (battery_path[0]) {
+        const char *base = strrchr(battery_path, '/');
+        if (base && base[1]) g_strlcpy(fallback, base + 1, sizeof fallback);
+    }
+    const char *bat_names[2] = { "BAT0", fallback[0] ? fallback : NULL };
+
+    for (int i = 0; i < 2; i++) {
+        const char *bn = bat_names[i];
+        if (!bn) continue;
+        gchar *obj = g_strdup_printf("/org/freedesktop/UPower/devices/battery_%s", bn);
+        gchar *cmd = g_strdup_printf("upower -i %s", obj);
+        gchar *out = NULL;
+        gboolean ok = g_spawn_command_line_sync(cmd, &out, NULL, NULL, NULL) && out != NULL;
+        if (ok) {
+            double full = 0, design = 0;
+            if (upower_value(out, "energy-full", &full) &&
+                upower_value(out, "energy-full-design", &design) && design > 0) {
+                int pct = (int)(full / design * 100.0 + 0.5);
+                if (pct < 0) pct = 0;
+                if (pct > 100) pct = 100;
+                g_snprintf(health_text, sizeof health_text, "%s %d%%", TR("电池健康度"), pct);
+                health_visible = TRUE;
+            }
+            g_free(out);
+        }
+        g_free(cmd); g_free(obj);
+        if (health_visible) return;
+        /* 第二个候选与第一个相同时无需重试 */
+        if (fallback[0] && g_strcmp0(bat_names[1], bat_names[0]) == 0) return;
+    }
+}
+
 /* ---------- UI 刷新 ---------- */
 static void update_ui(void) {
     if (capacity < 0) {
@@ -128,6 +185,13 @@ static void update_ui(void) {
             g_snprintf(buf, sizeof buf, "%s", TR("电压 --"));
         gtk_label_set_text(GTK_LABEL(volt_label), buf);
         gtk_widget_set_sensitive(saver_sw, TRUE);
+    }
+    /* upower 健康度行: 无 upower/电池数据时隐藏（不报错） */
+    if (health_visible) {
+        gtk_label_set_text(GTK_LABEL(health_label), health_text);
+        gtk_widget_show(health_label);
+    } else {
+        gtk_widget_hide(health_label);
     }
     gtk_widget_queue_draw(ring_da);
 }
@@ -312,9 +376,13 @@ int main(int argc, char **argv) {
     volt_label = gtk_label_new("--");
     gtk_widget_set_name(volt_label, "qy-power-voltage");
     gtk_widget_set_halign(volt_label, GTK_ALIGN_START);
+    health_label = gtk_label_new("--");
+    gtk_widget_set_name(health_label, "qy-power-health");
+    gtk_widget_set_halign(health_label, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(info), status_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(info), time_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(info), volt_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(info), health_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(main_h), info, TRUE, TRUE, 0);
 
     gtk_box_pack_start(GTK_BOX(vbox), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 2);
@@ -344,6 +412,7 @@ int main(int argc, char **argv) {
     find_battery();
     find_backlight();
     refresh_power();
+    upower_health_init();
     update_ui();
     brightness_init();
     power_conf_load();

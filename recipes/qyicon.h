@@ -88,4 +88,9 @@ GdkPixbuf *qy_icon_pixbuf(QyIconId id, int px, const GdkRGBA *bg);
 /* 应用名 → 统一图标映射（供启动器/任务栏/应用菜单复用） */
 QyIconId qy_icon_for_app(const char *app);
 
+/* 空状态插图：在 width×height 区域绘制空状态插图（深蓝底 + 圆角方框 + 内凹线 + 小图形）。
+ * kind 可选 "files"/"apps"/"search"/"note"，未知/空值按 "files" 绘制。
+ * 供 qyfiles 空目录、qystore 无搜索结果等空列表场景复用。 */
+void qy_draw_empty_state(cairo_t *cr, double width, double height, const char *kind);
+
 #endif /* QYICON_H */

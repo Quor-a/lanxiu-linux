@@ -658,3 +658,84 @@ QyIconId qy_icon_for_app(const char *app) {
     if (g_str_has_prefix(app, "qypower")) return QY_ICON_POWER;
     return QY_ICON_GRID;
 }
+
+/* ---------- 空状态插图 ---------- */
+void qy_draw_empty_state(cairo_t *cr, double width, double height, const char *kind) {
+    if (cr == NULL || width <= 0 || height <= 0) return;
+
+    /* 深蓝底（圆角铺满） */
+    double bg_r = (width < 40 || height < 40) ? 8.0 : 16.0;
+    cairo_set_source_rgb(cr, 0.07, 0.10, 0.16);      /* 深蓝底 #121A29 */
+    qy_rounded_rect(cr, 0, 0, width, height, bg_r);
+    cairo_fill(cr);
+
+    double cx = width / 2.0, cy = height / 2.0;
+    double box_w = width * 0.54, box_h = height * 0.50;
+    if (box_w < 40) box_w = 40;
+    if (box_h < 32) box_h = 32;
+    double bx = cx - box_w / 2.0;
+    double by = cy - box_h / 2.0 + height * 0.02;
+
+    cairo_set_line_width(cr, 1.8);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+
+    /* 圆角方框（较亮蓝描边） */
+    cairo_set_source_rgb(cr, 0.25, 0.33, 0.47);      /* 框线 #3F5478 */
+    qy_rounded_rect(cr, bx, by, box_w, box_h, 14);
+    cairo_stroke(cr);
+
+    /* 内凹线：框内底部一条内凹平台线（左侧小竖线 + 横线，形成托盘感） */
+    double tray_y = by + box_h * 0.80;
+    cairo_move_to(cr, bx + box_w * 0.16, tray_y);
+    cairo_line_to(cr, bx + box_w * 0.30, tray_y - box_h * 0.10);
+    cairo_line_to(cr, bx + box_w * 0.70, tray_y - box_h * 0.10);
+    cairo_line_to(cr, bx + box_w * 0.84, tray_y);
+    cairo_stroke(cr);
+
+    /* 中央小图形（橙色点缀） */
+    cairo_set_source_rgb(cr, 1.0, 0.36, 0.10);       /* 主橙 #FF5C1A */
+    double gs = box_w * 0.30;
+    if (gs < 20) gs = 20;
+    double gx = cx - gs / 2.0;
+    double gy = by + box_h * 0.32 - gs / 2.0;
+
+    if (kind && g_str_has_prefix(kind, "search")) {
+        /* 放大镜 */
+        cairo_arc(cr, gx + gs * 0.40, gy + gs * 0.40, gs * 0.26, 0, 2 * G_PI);
+        cairo_stroke(cr);
+        cairo_move_to(cr, gx + gs * 0.60, gy + gs * 0.60);
+        cairo_line_to(cr, gx + gs * 0.88, gy + gs * 0.88);
+        cairo_stroke(cr);
+    } else if (kind && g_str_has_prefix(kind, "note")) {
+        /* 笔记页 */
+        qy_rounded_rect(cr, gx + gs * 0.14, gy + gs * 0.05, gs * 0.72, gs * 0.90, 3);
+        cairo_stroke(cr);
+        cairo_move_to(cr, gx + gs * 0.28, gy + gs * 0.35);
+        cairo_line_to(cr, gx + gs * 0.72, gy + gs * 0.35);
+        cairo_move_to(cr, gx + gs * 0.28, gy + gs * 0.55);
+        cairo_line_to(cr, gx + gs * 0.58, gy + gs * 0.55);
+        cairo_stroke(cr);
+    } else if (kind && g_str_has_prefix(kind, "apps")) {
+        /* 应用网格 2×2 */
+        double cell = gs * 0.30;
+        double off = gs * 0.18;
+        for (int row = 0; row < 2; row++) {
+            for (int col = 0; col < 2; col++) {
+                qy_rounded_rect(cr, gx + off + col * cell, gy + off + row * cell,
+                                cell * 0.62, cell * 0.62, 2.5);
+                cairo_stroke(cr);
+            }
+        }
+    } else {
+        /* 默认 files：文件夹 */
+        double fx = gx, fy = gy + gs * 0.08;
+        qy_rounded_rect(cr, fx + gs * 0.04, fy + gs * 0.14, gs * 0.92, gs * 0.66, 3.5);
+        cairo_stroke(cr);
+        cairo_move_to(cr, fx + gs * 0.14, fy + gs * 0.22);
+        cairo_line_to(cr, fx + gs * 0.38, fy + gs * 0.10);
+        cairo_line_to(cr, fx + gs * 0.62, fy + gs * 0.10);
+        cairo_line_to(cr, fx + gs * 0.86, fy + gs * 0.22);
+        cairo_stroke(cr);
+    }
+}

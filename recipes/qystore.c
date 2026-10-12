@@ -10,6 +10,7 @@
 
 #include "qyl10n.h"
 #include "qytheme.h"
+#include "qyicon.h"
 
 #define REPO_INDEX "/usr/share/qyrepo/index.json"
 #define REPO_DIR   "/usr/share/qyrepo/pkgs"
@@ -26,6 +27,29 @@ static char g_filter[256] = "";      /* 当前搜索词 */
 static int g_status_filter = 0;       /* 0=全部 1=已安装 2=可安装 */
 static GtkWidget *b_all = NULL, *b_inst = NULL, *b_avail = NULL;
 static GtkWidget *spinner = NULL;    /* 搜索/安装加载动画（release 256） */
+static GtkWidget *list_stack = NULL; /* 列表 / 空状态 切换 */
+static GtkWidget *empty_label = NULL; /* 空状态文字（未找到匹配的应用） */
+
+/* 空状态插图（cairo，深蓝底 + 橙色放大镜） */
+static gboolean empty_draw_cb(GtkWidget *w, cairo_t *cr, gpointer ud) {
+    (void)ud;
+    GtkAllocation a;
+    gtk_widget_get_allocation(w, &a);
+    qy_draw_empty_state(cr, a.width, a.height, "search");
+    return FALSE;
+}
+
+/* 根据当前列表是否为空，在「列表 / 空状态」之间切换 */
+static void update_list_view(void) {
+    if (!list_stack) return;
+    int nrows = gtk_tree_model_iter_n_children(GTK_TREE_MODEL(store), NULL);
+    if (nrows == 0) {
+        if (empty_label) gtk_label_set_text(GTK_LABEL(empty_label), TR("未找到匹配的应用"));
+        gtk_stack_set_visible_child_name(GTK_STACK(list_stack), "empty");
+    } else {
+        gtk_stack_set_visible_child_name(GTK_STACK(list_stack), "list");
+    }
+}
 
 static int is_installed(const char *name) {
     char p[300];
@@ -242,6 +266,7 @@ static void load_repo(const char *filter, int status_filter) {
     }
     free(js);
     update_count_label();
+    update_list_view();
 }
 
 static void refresh_row_status(void) {
@@ -459,7 +484,25 @@ int main(int argc, char **argv) {
     gtk_tree_view_set_headers_visible(tv, TRUE);
     g_signal_connect(tv, "row-activated", G_CALLBACK(on_row_activated), NULL);
     gtk_container_add(GTK_CONTAINER(sw), GTK_WIDGET(tv));
-    gtk_box_pack_start(GTK_BOX(vbox), sw, TRUE, TRUE, 0);
+
+    /* 空状态页：搜索无结果时显示 cairo 空状态插图 + 文字 */
+    GtkWidget *empty_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    GtkWidget *empty_da = gtk_drawing_area_new();
+    gtk_widget_set_size_request(empty_da, 260, 180);
+    gtk_widget_set_halign(empty_da, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(empty_da, GTK_ALIGN_CENTER);
+    gtk_widget_set_vexpand(empty_da, TRUE);
+    g_signal_connect(empty_da, "draw", G_CALLBACK(empty_draw_cb), NULL);
+    empty_label = gtk_label_new(TR("未找到匹配的应用"));
+    gtk_widget_set_halign(empty_label, GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(empty_page), empty_da, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(empty_page), empty_label, FALSE, FALSE, 4);
+
+    list_stack = gtk_stack_new();
+    gtk_stack_add_named(GTK_STACK(list_stack), sw, "list");
+    gtk_stack_add_named(GTK_STACK(list_stack), empty_page, "empty");
+    gtk_stack_set_visible_child_name(GTK_STACK(list_stack), "list");
+    gtk_box_pack_start(GTK_BOX(vbox), list_stack, TRUE, TRUE, 0);
 
     count_label = gtk_label_new("");
     gtk_label_set_xalign(GTK_LABEL(count_label), 0.0);

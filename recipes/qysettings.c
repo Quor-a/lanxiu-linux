@@ -196,6 +196,133 @@ static gboolean auto_res_apply(gpointer p) {
     return G_SOURCE_REMOVE;
 }
 
+/* 友好提示对话框（失败/完成提示，不崩溃） */
+static void show_info_dialog(const char *msg) {
+    GtkWidget *dlg = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL,
+                                            GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
+                                            "%s", msg);
+    gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+}
+
+/* ---------- 主机名修改 ---------- */
+/* 应用主机名: 有 hostnamectl 则调用之（并同步 /etc/hostname）；
+ * 无 hostnamectl 则直接写 /etc/hostname 并提示重启后生效。失败给出友好提示。 */
+static void on_host_apply(GtkWidget *w, gpointer ud) {
+    (void)w;
+    GtkWidget *entry = GTK_WIDGET(ud);
+    const char *name = gtk_entry_get_text(GTK_ENTRY(entry));
+    if (!name || !name[0]) return;
+
+    /* 主机名合法性: 不允许空白/斜杠/换行 */
+    for (const char *p = name; *p; p++) {
+        if (*p == ' ' || *p == '/' || *p == '\\' || *p == '\n' || *p == '\t') {
+            show_info_dialog(TR("主机名不能包含空格或斜杠。"));
+            return;
+        }
+    }
+
+    char cur[256] = "";
+    if (gethostname(cur, sizeof cur) != 0) cur[0] = 0;
+    if (g_strcmp0(cur, name) == 0) {
+        if (!g_getenv("QY_SETTINGS_HOST"))
+            show_info_dialog(TR("主机名未变化。"));
+        return;
+    }
+
+    gboolean ok = FALSE;
+    if (g_find_program_in_path("hostnamectl")) {
+        gchar *quoted = g_shell_quote(name);
+        gchar *cmd = g_strdup_printf("hostnamectl set-hostname %s", quoted);
+        g_free(quoted);
+        ok = g_spawn_command_line_async(cmd, NULL);
+        g_free(cmd);
+        if (ok) {
+            /* 同步写入 /etc/hostname，保证无 systemd 环境也生效 */
+            g_file_set_contents("/etc/hostname", name, -1, NULL);
+            if (!g_getenv("QY_SETTINGS_HOST"))
+                show_info_dialog(TR("主机名已更新。"));
+        }
+    } else {
+        ok = g_file_set_contents("/etc/hostname", name, -1, NULL);
+        if (ok && !g_getenv("QY_SETTINGS_HOST"))
+            show_info_dialog(TR("主机名已写入 /etc/hostname，重启后生效。"));
+    }
+    if (!ok && !g_getenv("QY_SETTINGS_HOST"))
+        show_info_dialog(TR("设置主机名失败，请检查权限。"));
+}
+
+/* 自动化验证: QY_SETTINGS_HOST=<name> 启动后自动应用主机名 */
+static gboolean auto_host_apply(gpointer p) {
+    on_host_apply(NULL, p);
+    g_free(p);
+    return G_SOURCE_REMOVE;
+}
+
+/* ---------- NTP 时间同步开关 ---------- */
+static GtkWidget *ntp_sw = NULL;
+
+/* 读取当前 NTP 状态: 优先 timedatectl show -p NTP；
+ * 无 timedatectl 时回退 /etc/qysettings.conf 的 ntp= 与 /etc/systemd/timesyncd.conf */
+static gboolean ntp_read_state(void) {
+    if (g_find_program_in_path("timedatectl")) {
+        gchar *out = NULL;
+        if (g_spawn_command_line_sync("timedatectl show -p NTP", &out, NULL, NULL, NULL) && out) {
+            gboolean yes = strstr(out, "NTP=yes") != NULL;
+            g_free(out);
+            return yes;
+        }
+    }
+    gchar *content = NULL;
+    if (g_file_get_contents("/etc/qysettings.conf", &content, NULL, NULL)) {
+        gboolean yes = strstr(content, "ntp=1") != NULL;
+        g_free(content);
+        if (yes) return TRUE;
+    }
+    if (g_file_get_contents("/etc/systemd/timesyncd.conf", &content, NULL, NULL)) {
+        gboolean yes = strstr(content, "NTP=") != NULL;
+        g_free(content);
+        return yes;
+    }
+    return FALSE;
+}
+
+/* NTP 开关回调: 有 timedatectl 调用 set-ntp；否则写 /etc/qysettings.conf 并提示。
+ * 失败返回 TRUE 阻止开关状态改变，并弹出友好提示。 */
+static gboolean on_ntp_state_set(GtkSwitch *sw, gboolean state, gpointer ud) {
+    (void)sw; (void)ud;
+    gboolean auto_mode = g_getenv("QY_SETTINGS_NTP") != NULL;
+    gboolean ok = FALSE;
+
+    if (g_find_program_in_path("timedatectl")) {
+        gchar *cmd = g_strdup_printf("timedatectl set-ntp %s", state ? "true" : "false");
+        gchar *out = NULL, *err = NULL;
+        gint es = 0;
+        gboolean spawned = g_spawn_command_line_sync(cmd, &out, &err, &es, NULL);
+        g_free(out); g_free(err); g_free(cmd);
+        /* 命令成功执行且退出码为 0 视为成功（避免 GLib 新旧 API 差异） */
+        ok = spawned && es == 0;
+        if (!ok && !auto_mode)
+            show_info_dialog(TR("NTP 设置失败（timedatectl 不可用或权限不足）。"));
+    } else {
+        ok = g_file_set_contents("/etc/qysettings.conf",
+                                 state ? "ntp=1\n" : "ntp=0\n", -1, NULL);
+        if (ok && !auto_mode)
+            show_info_dialog(TR("NTP 设置已保存到 /etc/qysettings.conf，重启后生效。"));
+        else if (!ok && !auto_mode)
+            show_info_dialog(TR("NTP 设置失败，无法写入 /etc/qysettings.conf。"));
+    }
+    return !ok;
+}
+
+/* 自动化验证: QY_SETTINGS_NTP=1/0 启动后自动切换 NTP。
+ * 不屏蔽 state-set：让 on_ntp_state_set 真正执行 timedatectl set-ntp（auto_mode 下不弹窗）。 */
+static gboolean auto_ntp_set(gpointer p) {
+    gboolean want = GPOINTER_TO_INT(p) != 0;
+    gtk_switch_set_active(GTK_SWITCH(ntp_sw), want);
+    return G_SOURCE_REMOVE;
+}
+
 /* ---------- 电源: 熄屏时间 ---------- */
 static const int idle_secs[] = { 0, 60, 300, 600, 1800, 3600 };
 
@@ -1989,7 +2116,36 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(v1), row(TR("处理器架构"), u.machine), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(v1), row(TR("CPU 型号"), cpumodel), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(v1), row(TR("CPU 核心数"), cpucores), FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(v1), row(TR("主机名"), u.nodename), FALSE, FALSE, 0);
+    /* 主机名: 当前值显示 + 输入框 + 应用按钮（#qysettings-host-apply） */
+    {
+        char hostbuf[256] = "";
+        if (gethostname(hostbuf, sizeof hostbuf) != 0) g_strlcpy(hostbuf, u.nodename, sizeof hostbuf);
+        GtkWidget *host_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        GtkWidget *host_k = gtk_label_new(TR("主机名"));
+        gtk_widget_set_size_request(host_k, 150, -1);
+        gtk_widget_set_halign(host_k, GTK_ALIGN_START);
+        gtk_box_pack_start(GTK_BOX(host_row), host_k, FALSE, FALSE, 0);
+        GtkWidget *host_cur = gtk_label_new(hostbuf);
+        gtk_widget_set_halign(host_cur, GTK_ALIGN_START);
+        gtk_label_set_selectable(GTK_LABEL(host_cur), TRUE);
+        gtk_box_pack_start(GTK_BOX(host_row), host_cur, FALSE, FALSE, 0);
+        GtkWidget *host_entry = gtk_entry_new();
+        gtk_entry_set_text(GTK_ENTRY(host_entry), hostbuf);
+        gtk_widget_set_size_request(host_entry, 160, -1);
+        gtk_box_pack_start(GTK_BOX(host_row), host_entry, FALSE, FALSE, 0);
+        GtkWidget *b_host = gtk_button_new_with_label(TR("应用"));
+        gtk_widget_set_name(b_host, "qysettings-host-apply");
+        qy_add_class(b_host, "qy-btn");
+        g_signal_connect(b_host, "clicked", G_CALLBACK(on_host_apply), host_entry);
+        gtk_box_pack_start(GTK_BOX(host_row), b_host, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(v1), host_row, FALSE, FALSE, 0);
+        /* 自动化验证: QY_SETTINGS_HOST=<name> 启动后自动应用主机名 */
+        const char *env_host = g_getenv("QY_SETTINGS_HOST");
+        if (env_host && env_host[0]) {
+            gtk_entry_set_text(GTK_ENTRY(host_entry), env_host);
+            g_timeout_add(600, auto_host_apply, g_strdup(env_host));
+        }
+    }
     gtk_box_pack_start(GTK_BOX(v1), row(TR("内存总量"), mem), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(v1), row(TR("运行时间"), uptime), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(v1), row(TR("负载均值"), load), FALSE, FALSE, 0);
@@ -2199,20 +2355,30 @@ static void activate(GtkApplication *app, gpointer ud) {
         gtk_box_pack_start(GTK_BOX(vdt), l, FALSE, FALSE, 0);
         g_free(tzl);
     }
-    /* NTP 状态: 探测 chrony/ntpd/systemd-timesyncd 任一启用 */
+    /* NTP 时间同步开关: 有 timedatectl 用 set-ntp，否则写 /etc/qysettings.conf */
     {
-        gboolean ntp = FALSE;
-        const char *probes[] = { "/usr/sbin/chronyd", "/usr/sbin/ntpd",
-                                 "/usr/lib/systemd/systemd-timesyncd" };
-        for (unsigned i = 0; i < G_N_ELEMENTS(probes); i++) {
-            if (access(probes[i], X_OK) == 0) { ntp = TRUE; break; }
-        }
+        GtkWidget *ntp_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         GtkWidget *l = gtk_label_new(TR("NTP 时间同步"));
         gtk_widget_set_halign(l, GTK_ALIGN_START);
-        GtkWidget *s = gtk_label_new(ntp ? TR("可用（已安装服务）") : TR("未安装"));
-        gtk_widget_set_halign(s, GTK_ALIGN_START);
-        gtk_box_pack_start(GTK_BOX(vdt), l, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(vdt), s, FALSE, FALSE, 0);
+        ntp_sw = gtk_switch_new();
+        gtk_widget_set_halign(ntp_sw, GTK_ALIGN_START);
+        g_signal_connect(ntp_sw, "state-set", G_CALLBACK(on_ntp_state_set), NULL);
+        gtk_box_pack_start(GTK_BOX(ntp_row), l, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(ntp_row), ntp_sw, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(vdt), ntp_row, FALSE, FALSE, 0);
+
+        gboolean ntp_on = ntp_read_state();
+        g_signal_handlers_block_by_func(ntp_sw, on_ntp_state_set, NULL);
+        gtk_switch_set_active(GTK_SWITCH(ntp_sw), ntp_on);
+        g_signal_handlers_unblock_by_func(ntp_sw, on_ntp_state_set, NULL);
+
+        /* 自动化验证: QY_SETTINGS_NTP=1/0 启动后自动切换 NTP */
+        const char *env_ntp = g_getenv("QY_SETTINGS_NTP");
+        if (env_ntp && (g_strcmp0(env_ntp, "1") == 0 || g_strcmp0(env_ntp, "0") == 0)) {
+            gboolean want = g_strcmp0(env_ntp, "1") == 0;
+            if (want != ntp_on)
+                g_timeout_add(800, auto_ntp_set, GINT_TO_POINTER(want));
+        }
     }
     gtk_notebook_append_page(GTK_NOTEBOOK(nb), vdt, tab_with_icon(TR("日期时间"), QY_ICON_CLOCK));
 

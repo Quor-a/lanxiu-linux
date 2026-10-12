@@ -22,6 +22,13 @@ static void chdir_to(const char *path);
 static void chdir_trash(void);
 static GdkPixbuf *load_icon_for(const char *name, gboolean isdir);
 
+/* 图标视图/空状态（定义在下方，chdir_to/chdir_trash 提前引用） */
+static GtkWidget *icon_view = NULL;
+static GtkWidget *stack = NULL;
+static gboolean icon_mode = FALSE;  /* 当前视图: FALSE=列表 TRUE=图标 */
+static GtkWidget *empty_da = NULL; /* 空状态插图 */
+static GtkWidget *empty_lb = NULL; /* 空状态文字 */
+
 /* v2.0 主题 + 工具栏状态按钮 */
 static void load_theme(void) {
     GtkCssProvider *p = gtk_css_provider_new();
@@ -477,39 +484,77 @@ static void do_paste(GtkButton *b, gpointer ud) {
     }
 }
 
-/* ---------- 属性对话框: 名称 / 位置 / 大小 / 修改时间 / 权限 ---------- */
+/* ---------- 属性对话框: 名称 / 路径 / 类型 / 大小 / 修改时间 / 权限 ---------- */
+/* 权限位 → rwx 字符串（如 "rwxr-xr-x"） */
+static void perm_str(mode_t m, char *out, size_t n) {
+    static const char rwx[] = "rwxrwxrwx";
+    if (n < 10) { if (n) out[0] = 0; return; }
+    for (int i = 0; i < 9; i++)
+        out[i] = (m & (0400 >> i)) ? rwx[i] : '-';
+    out[9] = 0;
+}
+
 static void do_prop_name(const char *name) {
     if (!name || !name[0]) return;
     gchar *full = g_build_filename(cwd, name, NULL);
     struct stat st;
     if (stat(full, &st) != 0) { g_free(full); return; }
-    char size_buf[64], mtime_buf[64], perm_buf[16];
-    g_snprintf(size_buf, sizeof size_buf, "%lld %s",
-               (long long)st.st_size, TR("字节"));
+    char size_buf[64], mtime_buf[64], perm_buf[64], type_buf[64];
+    gboolean isdir = S_ISDIR(st.st_mode);
+
+    /* 类型: 目录 / 按扩展名 */
+    if (isdir) {
+        g_strlcpy(type_buf, TR("文件夹"), sizeof type_buf);
+    } else {
+        const char *dot = strrchr(name, '.');
+        if (dot && dot != name)
+            g_snprintf(type_buf, sizeof type_buf, "%s (%s)", TR("文件"), dot);
+        else
+            g_strlcpy(type_buf, TR("文件"), sizeof type_buf);
+    }
+
+    /* 大小 */
+    if (isdir)
+        g_snprintf(size_buf, sizeof size_buf, "%s", TR("—"));
+    else
+        g_snprintf(size_buf, sizeof size_buf, "%lld %s",
+                   (long long)st.st_size, TR("字节"));
+
+    /* 修改时间 (localtime) */
     struct tm *tm = localtime(&st.st_mtime);
     if (tm) strftime(mtime_buf, sizeof mtime_buf, "%Y-%m-%d %H:%M:%S", tm);
     else g_strlcpy(mtime_buf, "-", sizeof mtime_buf);
-    g_snprintf(perm_buf, sizeof perm_buf, "%o", st.st_mode & 07777);
+
+    /* 权限: 八进制 + rwx 字符串 */
+    char rwxs[16];
+    perm_str(st.st_mode & 07777, rwxs, sizeof rwxs);
+    g_snprintf(perm_buf, sizeof perm_buf, "%04o  %s", st.st_mode & 07777, rwxs);
+
     GtkWidget *dlg = gtk_dialog_new_with_buttons(TR("属性"),
         GTK_WINDOW(gtk_widget_get_toplevel(view)), GTK_DIALOG_MODAL,
         "_确定", GTK_RESPONSE_OK, NULL);
+    gtk_widget_set_name(dlg, "qy-files-prop");
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
     GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_container_set_border_width(GTK_CONTAINER(box), 12);
     GtkWidget *grid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
-    gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 14);
     const char *rows[][2] = {
         { TR("名称"), name },
-        { TR("位置"), cwd },
-        { TR("文件大小"), size_buf },
+        { TR("路径"), full },
+        { TR("类型"), type_buf },
+        { TR("大小"), size_buf },
         { TR("修改时间"), mtime_buf },
         { TR("权限"), perm_buf },
     };
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         GtkWidget *k = gtk_label_new(rows[i][0]);
         gtk_widget_set_halign(k, GTK_ALIGN_START);
         gtk_grid_attach(GTK_GRID(grid), k, 0, i, 1, 1);
         GtkWidget *v = gtk_label_new(rows[i][1]);
         gtk_widget_set_halign(v, GTK_ALIGN_START);
+        gtk_label_set_selectable(GTK_LABEL(v), TRUE);
         gtk_grid_attach(GTK_GRID(grid), v, 1, i, 1, 1);
     }
     gtk_box_pack_start(GTK_BOX(box), grid, FALSE, FALSE, 10);
@@ -966,6 +1011,13 @@ static void chdir_to(const char *path) {
     }
     gtk_label_set_text(GTK_LABEL(status), msg);
     g_free(msg);
+    /* 空目录 → 空状态插图页；否则恢复列表/图标视图 */
+    if (n == 0) {
+        if (empty_lb) gtk_label_set_text(GTK_LABEL(empty_lb), TR("此文件夹为空"));
+        gtk_stack_set_visible_child_name(GTK_STACK(stack), "empty");
+    } else {
+        gtk_stack_set_visible_child_name(GTK_STACK(stack), icon_mode ? "icon" : "list");
+    }
     g_strlcpy(cwd, path, sizeof cwd);
     if (path_entry) gtk_entry_set_text(GTK_ENTRY(path_entry), cwd);
 }
@@ -998,10 +1050,14 @@ static void chdir_trash(void) {
         }
         g_dir_close(dir);
     }
-    if (n == 0)
+    if (n == 0) {
         gtk_label_set_text(GTK_LABEL(status), TR("回收站为空"));
-    else
+        if (empty_lb) gtk_label_set_text(GTK_LABEL(empty_lb), TR("回收站为空"));
+        gtk_stack_set_visible_child_name(GTK_STACK(stack), "empty");
+    } else {
         gtk_label_set_text(GTK_LABEL(status), TR("位置: 回收站 (工具栏: 还原 / 彻底删除 / 清空)"));
+        gtk_stack_set_visible_child_name(GTK_STACK(stack), icon_mode ? "icon" : "list");
+    }
     g_strlcpy(cwd, files, sizeof cwd);
 }
 
@@ -1081,8 +1137,15 @@ static void on_activated(GtkTreeView *tv, GtkTreePath *path, GtkTreeViewColumn *
 }
 
 /* ---------- 图标视图 ---------- */
-static GtkWidget *icon_view = NULL;
-static GtkWidget *stack = NULL;
+
+/* 空状态插图（cairo，深蓝底 + 橙色文件夹） */
+static gboolean empty_draw_cb(GtkWidget *w, cairo_t *cr, gpointer ud) {
+    (void)ud;
+    GtkAllocation a;
+    gtk_widget_get_allocation(w, &a);
+    qy_draw_empty_state(cr, a.width, a.height, "files");
+    return FALSE;
+}
 
 /* 按文件类型加载图标（目录=文件夹；扩展名映射颜色） */
 static QyIconId icon_id_for(const char *name, gboolean isdir) {
@@ -1147,16 +1210,13 @@ static void set_view_btn(GtkWidget *b, gboolean icon_mode) {
 /* 切换列表/图标视图 */
 static void on_toggle_view(GtkButton *b, gpointer ud) {
     (void)ud;
-    const char *page = stack ? gtk_stack_get_visible_child_name(GTK_STACK(stack)) : "list";
-    if (g_strcmp0(page, "list") == 0 || !page) {
-        gtk_stack_set_visible_child_name(GTK_STACK(stack), "icon");
-        set_view_btn(GTK_WIDGET(b), TRUE);
-        g_printerr("QYFILESDBG: view=icon\n");
-    } else {
-        gtk_stack_set_visible_child_name(GTK_STACK(stack), "list");
-        set_view_btn(GTK_WIDGET(b), FALSE);
-        g_printerr("QYFILESDBG: view=list\n");
-    }
+    icon_mode = !icon_mode;
+    const char *cur = stack ? gtk_stack_get_visible_child_name(GTK_STACK(stack)) : NULL;
+    /* 空状态页不随视图切换，保持插图展示 */
+    if (g_strcmp0(cur, "empty") != 0)
+        gtk_stack_set_visible_child_name(GTK_STACK(stack), icon_mode ? "icon" : "list");
+    set_view_btn(GTK_WIDGET(b), icon_mode);
+    g_printerr("QYFILESDBG: view=%s\n", icon_mode ? "icon" : "list");
 }
 
 /* 自动化: QYFILES_VIEW=icon 启动后切换图标视图 */
@@ -1364,6 +1424,20 @@ static void activate(GtkApplication *app, gpointer ud) {
     stack = gtk_stack_new();
     gtk_stack_add_named(GTK_STACK(stack), scroll, "list");
     gtk_stack_add_named(GTK_STACK(stack), scroll_icon, "icon");
+    /* 空状态页：空目录时显示 cairo 空状态插图 + 文字 */
+    GtkWidget *empty_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    empty_da = gtk_drawing_area_new();
+    gtk_widget_set_size_request(empty_da, 240, 170);
+    gtk_widget_set_halign(empty_da, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(empty_da, GTK_ALIGN_CENTER);
+    gtk_widget_set_vexpand(empty_da, TRUE);
+    g_signal_connect(empty_da, "draw", G_CALLBACK(empty_draw_cb), NULL);
+    empty_lb = gtk_label_new(TR("此文件夹为空"));
+    gtk_widget_set_halign(empty_lb, GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(empty_page), empty_da, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(empty_page), empty_lb, FALSE, FALSE, 4);
+    gtk_stack_add_named(GTK_STACK(stack), empty_page, "empty");
+    gtk_stack_set_visible_child_name(GTK_STACK(stack), "list");
     gtk_box_pack_start(GTK_BOX(vbox), stack, TRUE, TRUE, 0);
 
     status = gtk_label_new(TR("位置: /"));
