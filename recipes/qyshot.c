@@ -609,9 +609,12 @@ static void activate(GtkApplication *app, gpointer ud) {
     gchar *fmt_path = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qyshot-fmt", NULL);
     gchar *fmt_old = NULL;
     if (g_file_get_contents(fmt_path, &fmt_old, NULL, NULL)) {
-        gchar *id = g_strstrip(fmt_old);
-        if (gtk_combo_box_has_id(GTK_COMBO_BOX(format_combo), id))
-            gtk_combo_box_set_active_id(GTK_COMBO_BOX(format_combo), id);
+        const char *want = g_strstrip(fmt_old);
+        for (int i = 0; i < 3; i++) {
+            gtk_combo_box_set_active(GTK_COMBO_BOX(format_combo), i);
+            const char *cur = gtk_combo_box_get_active_id(GTK_COMBO_BOX(format_combo));
+            if (cur && g_strcmp0(cur, want) == 0) break;
+        }
         g_free(fmt_old);
     }
     g_free(fmt_path);
