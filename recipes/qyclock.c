@@ -309,6 +309,10 @@ static void timer_reset_display(void) {
 
 /* 到点提醒：优先 qynotify，不可用则弹 GtkDialog（与闹钟一致） */
 static void timer_fire_finished(void) {
+    /* 提示音（release 267）：优先系统提示音，无则 beep */
+    GError *aerr = NULL;
+    g_spawn_command_line_async("paplay /usr/share/sounds/freedesktop/stereo/complete.oga 2>/dev/null || beep 2>/dev/null", &aerr);
+    g_clear_error(&aerr);
     gchar *cmd = g_strdup("qynotify 计时结束");
     GError *err = NULL;
     if (!g_spawn_command_line_async(cmd, &err)) {
