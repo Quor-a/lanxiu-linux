@@ -60,6 +60,7 @@ static int current_index = -1;          /* 当前曲目索引 */
 static gboolean loop_enabled = FALSE;   /* 循环开关 */
 
 static void on_next_clicked(GtkWidget *w, gpointer ud);   /* 前向声明 */
+static void playlist_save(void);                          /* 前向声明（add_to_playlist 自动保存用） */
 
 /* 检查 PATH 中是否存在程序（g_find_program_in_path 返回需 g_free） */
 static gboolean has_program(const char *name) {
@@ -402,6 +403,7 @@ static void add_to_playlist(const char *path) {
     gtk_container_add(GTK_CONTAINER(row), lbl);
     g_object_set_data_full(G_OBJECT(row), "track-path", g_strdup(path), g_free);
     gtk_list_box_insert(GTK_LIST_BOX(playlist), row, -1);
+    playlist_save();   /* 添加后自动保存 */
 }
 
 /* GtkFileChooserNative 多选添加音频 */
@@ -435,6 +437,58 @@ static void on_add_files(GtkWidget *w, gpointer ud) {
     g_object_unref(dlg);
 }
 
+/* ---------- 播放列表持久化（~/.config/lanxiu/qymedia-playlist.txt） ---------- */
+static gchar *playlist_path(void) {
+    return g_build_filename(g_get_home_dir(), ".config/lanxiu/qymedia-playlist.txt", NULL);
+}
+
+/* 每行一个文件路径，保存当前播放列表 */
+static void playlist_save(void) {
+    if (!track_list) return;
+    gchar *path = playlist_path();
+    gchar *dir = g_path_get_dirname(path);
+    g_mkdir_with_parents(dir, 0700);
+    g_free(dir);
+    GString *s = g_string_new(NULL);
+    for (guint i = 0; i < track_list->len; i++)
+        g_string_append_printf(s, "%s\n", (const char *)g_ptr_array_index(track_list, i));
+    GError *err = NULL;
+    if (!g_file_set_contents(path, s->str, (gssize)s->len, &err)) {
+        g_printerr("QYMEDIADBG: playlist save failed: %s\n", err ? err->message : "?");
+        g_clear_error(&err);
+    } else {
+        g_printerr("QYMEDIADBG: playlist saved (%u tracks)\n", track_list->len);
+    }
+    g_string_free(s, TRUE);
+    g_free(path);
+}
+
+/* 启动时加载上次保存的播放列表 */
+static void playlist_load(void) {
+    if (!track_list || !playlist) return;
+    gchar *path = playlist_path();
+    gchar *content = NULL;
+    if (g_file_get_contents(path, &content, NULL, NULL) && content && content[0]) {
+        char **lines = g_strsplit(content, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            gchar *line = g_strstrip(lines[i]);
+            if (line[0])
+                add_to_playlist(line);
+        }
+        g_strfreev(lines);
+        g_printerr("QYMEDIADBG: playlist loaded from %s\n", path);
+    }
+    g_free(content);
+    g_free(path);
+}
+
+/* 工具栏「保存列表」 */
+static void on_save_playlist(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    playlist_save();
+    gtk_label_set_text(GTK_LABEL(status_label), TR("播放列表已保存"));
+}
+
 static void on_clear_playlist(GtkWidget *w, gpointer ud) {
     (void)w; (void)ud;
     stop_player();
@@ -449,6 +503,7 @@ static void on_clear_playlist(GtkWidget *w, gpointer ud) {
     cover_update(NULL);
     gtk_label_set_text(GTK_LABEL(file_label), TR("未选择音频"));
     gtk_label_set_text(GTK_LABEL(status_label), TR("播放列表已清空"));
+    playlist_save();   /* 清空后持久化（空列表） */
 }
 
 /* 双击播放 */
@@ -665,11 +720,15 @@ static void build_ui(void) {
     GtkWidget *pl_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     GtkWidget *b_add = gtk_button_new_with_label(TR("添加文件"));
     qy_add_class(b_add, "qy-btn");
-    GtkWidget *b_clear = gtk_button_new_with_label(TR("清空"));
+    GtkWidget *b_save = gtk_button_new_with_label(TR("保存列表"));
+    qy_add_class(b_save, "qy-btn");
+    GtkWidget *b_clear = gtk_button_new_with_label(TR("清空列表"));
     qy_add_class(b_clear, "qy-btn qy-btn-danger");
     g_signal_connect(b_add, "clicked", G_CALLBACK(on_add_files), NULL);
+    g_signal_connect(b_save, "clicked", G_CALLBACK(on_save_playlist), NULL);
     g_signal_connect(b_clear, "clicked", G_CALLBACK(on_clear_playlist), NULL);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_add, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(pl_bar), b_save, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_clear, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(left_vbox), pl_bar, FALSE, FALSE, 0);
 
@@ -775,6 +834,9 @@ static void build_ui(void) {
     g_signal_connect(vol_scale, "value-changed", G_CALLBACK(on_volume_changed), NULL);
     gtk_box_pack_start(GTK_BOX(bar2), vol_scale, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(right_vbox), bar2, FALSE, FALSE, 0);
+
+    /* 启动时加载上次保存的播放列表 */
+    playlist_load();
 
     gtk_widget_show_all(win);
     cover_update(NULL);

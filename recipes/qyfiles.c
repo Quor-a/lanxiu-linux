@@ -168,23 +168,32 @@ static gboolean trash_file(const char *path, GError **err) {
     return TRUE;
 }
 
-/* 读取 .trashinfo 的 Path= 行 */
-static gboolean read_trashinfo(const char *tinfo, char *out, size_t ol) {
+/* 读取 .trashinfo 的 Path= 与 DeletionDate= 行（path/date 可空） */
+static gboolean read_trashinfo2(const char *tinfo, char *path, size_t pl,
+                                char *date, size_t dl) {
     FILE *f = fopen(tinfo, "r");
     if (!f) return FALSE;
     char line[4096];
     gboolean ok = FALSE;
+    if (path && pl) path[0] = 0;
+    if (date && dl) date[0] = 0;
     while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
         if (!strncmp(line, "Path=", 5)) {
-            line[strcspn(line, "\r\n")] = 0;
             /* 规范: Path 为 URL 编码, 这里按字面处理(%20 之外的常见场景) */
-            g_strlcpy(out, line + 5, ol);
+            if (path && pl) g_strlcpy(path, line + 5, pl);
             ok = TRUE;
-            break;
+        } else if (!strncmp(line, "DeletionDate=", 13)) {
+            if (date && dl) g_strlcpy(date, line + 13, dl);
         }
     }
     fclose(f);
     return ok;
+}
+
+/* 读取 .trashinfo 的 Path= 行 */
+static gboolean read_trashinfo(const char *tinfo, char *out, size_t ol) {
+    return read_trashinfo2(tinfo, out, ol, NULL, 0);
 }
 
 /* ---------- 操作实现 ---------- */
@@ -272,17 +281,14 @@ static void do_restore(void) {
         gtk_label_set_text(GTK_LABEL(status), TR("还原失败: 无元数据"));
         g_free(name); g_free(ti); return;
     }
-    g_free(ti);
     if (g_file_test(orig, G_FILE_TEST_EXISTS)) {
         gchar *alt = g_strdup_printf("%s.restored", orig);
         g_strlcpy(orig, alt, sizeof orig);
         g_free(alt);
     }
     gchar *src = g_build_filename(g_get_home_dir(), ".local/share/Trash/files", name, NULL);
-    gchar *cmd = g_strdup_printf("mv -b -- %s %s", src, orig);
-    int rc = system(cmd);
-    g_free(cmd); g_free(src);
-    if (rc == 0) {
+    /* 用 g_rename 直接移回原路径（同文件系统原子操作） */
+    if (g_rename(src, orig) == 0) {
         g_unlink(ti);
         gchar *msg = g_strdup_printf(TR("已还原到 %s"), orig);
         gtk_label_set_text(GTK_LABEL(status), msg);
@@ -290,6 +296,8 @@ static void do_restore(void) {
     } else {
         gtk_label_set_text(GTK_LABEL(status), TR("还原失败"));
     }
+    g_free(ti);
+    g_free(src);
     g_free(name);
     chdir_trash();
 }
@@ -304,7 +312,7 @@ static void do_empty_trash(void) {
         trash_dir(files, sizeof files, info, sizeof info);
         gchar *c1 = g_strdup_printf("rm -rf -- %s/* %s/*", files, info);
         system(c1); g_free(c1);
-        gtk_label_set_text(GTK_LABEL(status), "回收站已清空");
+        gtk_label_set_text(GTK_LABEL(status), TR("回收站已清空"));
     }
     gtk_widget_destroy(dlg);
     if (in_trash) chdir_trash();
@@ -1040,7 +1048,7 @@ static void chdir_to(const char *path) {
         GtkTreeIter it;
         GdkPixbuf *pb = load_icon_for(name, isdir);
         gtk_list_store_append(store, &it);
-        gtk_list_store_set(store, &it, 0, isdir ? TR("[目录]") : TR("[文件]"), 1, name, 2, sizestr, 3, pb, -1);
+        gtk_list_store_set(store, &it, 0, isdir ? TR("[目录]") : TR("[文件]"), 1, name, 2, sizestr, 3, pb, 4, NULL, -1);
         if (pb) g_object_unref(pb);
         n++;
         if (isdir) ndir++; else nfile++;
@@ -1096,14 +1104,17 @@ static void chdir_trash(void) {
         const gchar *name;
         while ((name = g_dir_read_name(dir))) {
             gchar *ti = g_strdup_printf("%s/%s.trashinfo", info, name);
-            char orig[4096];
+            char orig[4096], del[64];
             GtkTreeIter it;
             GdkPixbuf *pb = qy_icon_pixbuf(QY_ICON_TRASH, 48, NULL);
             gtk_list_store_append(store, &it);
-            if (read_trashinfo(ti, orig, sizeof orig)) {
-                gtk_list_store_set(store, &it, 0, orig, 1, name, 2, TR("—"), 3, pb, -1);
+            if (read_trashinfo2(ti, orig, sizeof orig, del, sizeof del)) {
+                /* 列 0=原位置 1=名称 2=大小 3=图标 4=删除时间 */
+                gtk_list_store_set(store, &it, 0, orig, 1, name, 2, TR("—"), 3, pb,
+                                   4, del[0] ? del : TR("—"), -1);
             } else {
-                gtk_list_store_set(store, &it, 0, TR("(无元数据)"), 1, name, 2, TR("—"), 3, pb, -1);
+                gtk_list_store_set(store, &it, 0, TR("(无元数据)"), 1, name, 2, TR("—"), 3, pb,
+                                   4, TR("—"), -1);
             }
             if (pb) g_object_unref(pb);
             g_free(ti);
@@ -1765,8 +1776,8 @@ static void on_mount_clicked(GtkButton *b, gpointer ud) {
 /* 新建一个目录标签页：每个标签拥有独立的列表模型/树视图/图标视图/空状态 */
 static QyFilesTab *create_tab(const char *path) {
     QyFilesTab *t = g_new0(QyFilesTab, 1);
-    GtkListStore *store = gtk_list_store_new(4, G_TYPE_STRING, G_TYPE_STRING,
-                                             G_TYPE_STRING, GDK_TYPE_PIXBUF);
+    GtkListStore *store = gtk_list_store_new(5, G_TYPE_STRING, G_TYPE_STRING,
+                                             G_TYPE_STRING, GDK_TYPE_PIXBUF, G_TYPE_STRING);
 
     GtkWidget *tv = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
     GtkCellRenderer *r1 = gtk_cell_renderer_text_new();
@@ -1775,9 +1786,12 @@ static QyFilesTab *create_tab(const char *path) {
     gtk_tree_view_insert_column_with_attributes(GTK_TREE_VIEW(tv), -1, TR("名称"), r2, "text", 1, NULL);
     GtkCellRenderer *r3 = gtk_cell_renderer_text_new();
     gtk_tree_view_insert_column_with_attributes(GTK_TREE_VIEW(tv), -1, TR("大小"), r3, "text", 2, NULL);
+    GtkCellRenderer *r4 = gtk_cell_renderer_text_new();
+    gtk_tree_view_insert_column_with_attributes(GTK_TREE_VIEW(tv), -1, TR("删除时间"), r4, "text", 4, NULL);
     GtkTreeViewColumn *c0 = gtk_tree_view_get_column(GTK_TREE_VIEW(tv), 0);
     GtkTreeViewColumn *c1 = gtk_tree_view_get_column(GTK_TREE_VIEW(tv), 1);
     GtkTreeViewColumn *c2 = gtk_tree_view_get_column(GTK_TREE_VIEW(tv), 2);
+    GtkTreeViewColumn *c3 = gtk_tree_view_get_column(GTK_TREE_VIEW(tv), 3);
     gtk_tree_view_column_set_clickable(c0, TRUE);
     gtk_tree_view_column_set_sort_indicator(c0, TRUE);
     gtk_tree_view_column_set_sort_column_id(c0, 0);
@@ -1787,6 +1801,9 @@ static QyFilesTab *create_tab(const char *path) {
     gtk_tree_view_column_set_clickable(c2, TRUE);
     gtk_tree_view_column_set_sort_indicator(c2, TRUE);
     gtk_tree_view_column_set_sort_column_id(c2, 2);
+    gtk_tree_view_column_set_clickable(c3, TRUE);
+    gtk_tree_view_column_set_sort_indicator(c3, TRUE);
+    gtk_tree_view_column_set_sort_column_id(c3, 4);
     gtk_tree_sortable_set_sort_column_id(GTK_TREE_SORTABLE(store), 1, GTK_SORT_ASCENDING);
     gtk_tree_selection_set_mode(gtk_tree_view_get_selection(GTK_TREE_VIEW(tv)), GTK_SELECTION_MULTIPLE);
 

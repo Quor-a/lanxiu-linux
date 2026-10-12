@@ -46,6 +46,8 @@
 #define BAR_H     40
 #define DOCK_W    66
 
+static void add_class(GtkWidget *w, const char *cls);   /* 主题助手（定义见下） */
+
 /* ---------- 应用注册表 ---------- */
 /* Dock/桌面图标统一走 qyicon（task_icon_id 按应用名映射），glyph 字段已废弃删除 */
 typedef struct {
@@ -128,6 +130,110 @@ static void ws_goto(int n) {
 
 static void ws_prev_clicked(GtkWidget *w, gpointer ud) { (void)w; (void)ud; ws_goto(g_workspace - 1); }
 static void ws_next_clicked(GtkWidget *w, gpointer ud) { (void)w; (void)ud; ws_goto(g_workspace + 1); }
+
+/* ---------- 工作区预览（悬停指示器弹出 GtkPopover） ---------- */
+/* 从 /etc/qyworkspaces.conf 读取 count=N（默认 4） */
+static int ws_count_from_conf(void) {
+    int n = WORKSPACE_MAX;
+    gchar *content = NULL;
+    if (g_file_get_contents(QY_WS_CONF, &content, NULL, NULL) && content) {
+        char *line = content;
+        while (line && *line) {
+            if (strncmp(line, "count=", 6) == 0) {
+                int c = atoi(line + 6);
+                if (c >= 1 && c <= WORKSPACE_MAX) n = c;
+                break;
+            }
+            char *nl = strchr(line, '\n');
+            line = nl ? nl + 1 : NULL;
+        }
+        g_free(content);
+    }
+    return n;
+}
+
+/* 统计任务栏中的窗口数量（占位：所有工作区共用同一数值） */
+static int count_open_windows(void) {
+    FILE *f = fopen(QY_WINDOWS, "r");
+    if (!f) return 0;
+    char line[256];
+    int n = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *tab = strchr(line, '\t');
+        if (!tab) continue;
+        char *rest = tab + 1;
+        char *at = strchr(rest, '@');
+        if (at) *at = 0;
+        char *nl = strchr(rest, '\n');
+        if (nl) *nl = 0;
+        if (!rest[0]) continue;
+        if (strncmp(rest, "qydesktop", 9) == 0) continue;
+        if (strcmp(rest, "qyappmenu") == 0) continue;
+        n++;
+    }
+    fclose(f);
+    return n;
+}
+
+static GtkWidget *ws_pop = NULL;
+
+static void on_ws_pop_destroy(GtkWidget *w, gpointer ud) {
+    (void)ud;
+    if (ws_pop == w) ws_pop = NULL;
+}
+
+/* 点击预览中的工作区按钮：复用现有切换逻辑 */
+static void ws_pop_clicked(GtkButton *b, gpointer ud) {
+    (void)b;
+    int n = GPOINTER_TO_INT(ud);
+    ws_goto(n);
+    if (ws_pop) gtk_widget_destroy(ws_pop);
+}
+
+/* 悬停工作区指示器：弹出 4 个工作区按钮（当前工作区橙色高亮） */
+static gboolean on_ws_enter(GtkWidget *w, GdkEventCrossing *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->mode != GDK_CROSSING_NORMAL) return FALSE;
+    if (ws_pop) return FALSE;   /* 已在显示，避免在指示器子部件间移动时反复重建 */
+    ws_pop = gtk_popover_new(w);
+    gtk_popover_set_position(GTK_POPOVER(ws_pop), GTK_POS_BOTTOM);
+    gtk_popover_set_modal(GTK_POPOVER(ws_pop), FALSE);
+    g_signal_connect(ws_pop, "destroy", G_CALLBACK(on_ws_pop_destroy), NULL);
+
+    GtkWidget *v = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_set_margin_start(v, 10);
+    gtk_widget_set_margin_end(v, 10);
+    gtk_widget_set_margin_top(v, 8);
+    gtk_widget_set_margin_bottom(v, 8);
+    gtk_container_add(GTK_CONTAINER(ws_pop), v);
+
+    int nws = ws_count_from_conf();
+    int nwin = count_open_windows();
+    for (int i = 1; i <= nws; i++) {
+        gboolean cur = (i == g_workspace);
+        GtkWidget *btn = gtk_button_new();
+        gtk_button_set_relief(GTK_BUTTON(btn), GTK_RELIEF_NONE);
+        add_class(btn, "qy-ws-pop-item");
+        if (cur) add_class(btn, "qy-ws-pop-current");
+        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+        gtk_container_add(GTK_CONTAINER(btn), row);
+        gchar *name = g_strdup_printf(TR("工作区 %d"), i);
+        GtkWidget *lb = gtk_label_new(name);
+        g_free(name);
+        gtk_box_pack_start(GTK_BOX(row), lb, FALSE, FALSE, 0);
+        gchar *cnt = g_strdup_printf(TR("%d 个窗口"), nwin);
+        GtkWidget *clb = gtk_label_new(cnt);
+        g_free(cnt);
+        add_class(clb, "qy-ws-pop-count");
+        gtk_box_pack_end(GTK_BOX(row), clb, FALSE, FALSE, 0);
+        g_signal_connect(btn, "clicked", G_CALLBACK(ws_pop_clicked), GINT_TO_POINTER(i));
+        gtk_box_pack_start(GTK_BOX(v), btn, FALSE, FALSE, 0);
+    }
+
+    gtk_widget_show_all(ws_pop);
+    gtk_popover_popup(GTK_POPOVER(ws_pop));
+    return FALSE;
+}
 
 /* 启动时读取 /etc/qyworkspaces.conf 的 current=N */
 static void ws_load(void) {
@@ -813,6 +919,126 @@ static void rotate_wallpaper(void) {
     if (desktop_fixed) gtk_widget_queue_draw(desktop_fixed);
 }
 
+/* ---------- 壁纸配置加载（用户 ~/.config/lanxiu/wallpaper.conf 优先，兼容 /etc/qywallpaper.conf） ---------- */
+static gboolean wall_manual = FALSE;   /* 用户手动设置了壁纸（停止自动轮换） */
+
+/* 按命名渐变绘制壁纸（内置 4 款：深蓝 / 暗橙 / 山脊 / 纯黑），预览与全尺寸共用 */
+static void wallpaper_draw_gradient(cairo_t *cr, double w, double h, const char *key) {
+    if (!key) key = "darkblue";
+    cairo_pattern_t *pat = cairo_pattern_create_linear(0, 0, 0, h);
+    if (strcmp(key, "darkorange") == 0) {
+        cairo_pattern_add_color_stop_rgb(pat, 0, 0.17, 0.07, 0.02);
+        cairo_pattern_add_color_stop_rgb(pat, 1, 0.72, 0.31, 0.07);
+    } else if (strcmp(key, "ridge") == 0) {
+        cairo_pattern_add_color_stop_rgb(pat, 0, 0.03, 0.05, 0.13);
+        cairo_pattern_add_color_stop_rgb(pat, 1, 0.22, 0.13, 0.06);
+    } else if (strcmp(key, "black") == 0) {
+        cairo_pattern_add_color_stop_rgb(pat, 0, 0.03, 0.03, 0.03);
+        cairo_pattern_add_color_stop_rgb(pat, 1, 0.0, 0.0, 0.0);
+    } else {  /* darkblue: #0B1020 -> #1B2A4A */
+        cairo_pattern_add_color_stop_rgb(pat, 0, 0.043, 0.063, 0.125);
+        cairo_pattern_add_color_stop_rgb(pat, 1, 0.106, 0.165, 0.290);
+    }
+    cairo_set_source(cr, pat);
+    cairo_paint(cr);
+    cairo_pattern_destroy(pat);
+
+    if (strcmp(key, "ridge") == 0) {
+        /* 山脊：两层深色三角形山脊剪影 */
+        cairo_set_source_rgba(cr, 0.02, 0.03, 0.08, 0.85);
+        cairo_move_to(cr, 0, h);
+        cairo_line_to(cr, w * 0.22, h * 0.42);
+        cairo_line_to(cr, w * 0.45, h * 0.78);
+        cairo_line_to(cr, w * 0.70, h * 0.38);
+        cairo_line_to(cr, w, h * 0.62);
+        cairo_line_to(cr, w, h);
+        cairo_close_path(cr);
+        cairo_fill(cr);
+        cairo_set_source_rgba(cr, 0.01, 0.02, 0.05, 0.95);
+        cairo_move_to(cr, 0, h);
+        cairo_line_to(cr, w * 0.12, h * 0.66);
+        cairo_line_to(cr, w * 0.34, h * 0.90);
+        cairo_line_to(cr, w * 0.58, h * 0.58);
+        cairo_line_to(cr, w * 0.85, h * 0.82);
+        cairo_line_to(cr, w, h * 0.72);
+        cairo_line_to(cr, w, h);
+        cairo_close_path(cr);
+        cairo_fill(cr);
+    }
+}
+
+/* 生成指定命名的渐变壁纸（1600x900） */
+static GdkPixbuf *gen_gradient_wallpaper(const char *key) {
+    int w = 1600, h = 900;
+    cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+    cairo_t *cr = cairo_create(surf);
+    wallpaper_draw_gradient(cr, w, h, key);
+    cairo_destroy(cr);
+    GdkPixbuf *pb = gdk_pixbuf_get_from_surface(surf, 0, 0, w, h);
+    cairo_surface_destroy(surf);
+    return pb;
+}
+
+/* 读取壁纸配置（用户 conf 优先，其次 /etc/qywallpaper.conf）。
+ * 成功按配置设置 wallpaper 时返回 TRUE（并标记手动壁纸，停止自动轮换）。 */
+static gboolean wallpaper_load_config(void) {
+    const char *home = g_get_home_dir();
+    gchar *user = g_build_filename(home && home[0] ? home : "/root",
+                                   ".config/lanxiu/wallpaper.conf", NULL);
+    const char *paths[] = { user, "/etc/qywallpaper.conf" };
+    gboolean loaded = FALSE;
+
+    for (guint pi = 0; pi < G_N_ELEMENTS(paths) && !loaded; pi++) {
+        gchar *conf = NULL;
+        if (!g_file_get_contents(paths[pi], &conf, NULL, NULL) || !conf) {
+            g_free(conf);
+            continue;
+        }
+        char *line = conf;
+        while (line && *line) {
+            char *nl = strchr(line, '\n');
+            if (nl) *nl = 0;
+            /* path=（新配置）与 wallpaper=（旧 /etc 配置）均为图片路径 */
+            if ((strncmp(line, "path=", 5) == 0 && line[5]) ||
+                (strncmp(line, "wallpaper=", 10) == 0 && line[10])) {
+                const char *p = line[5] && strncmp(line, "path=", 5) == 0 ? line + 5 : line + 10;
+                GdkPixbuf *pb = gdk_pixbuf_new_from_file(p, NULL);
+                if (pb) {
+                    if (wallpaper) g_object_unref(wallpaper);
+                    wallpaper = pb;
+                    loaded = TRUE;
+                    wall_manual = TRUE;
+                }
+            } else if (strncmp(line, "gradient=", 9) == 0 && line[9]) {
+                GdkPixbuf *pb = gen_gradient_wallpaper(line + 9);
+                if (pb) {
+                    if (wallpaper) g_object_unref(wallpaper);
+                    wallpaper = pb;
+                    loaded = TRUE;
+                    wall_manual = TRUE;
+                }
+            }
+            line = nl ? nl + 1 : NULL;
+        }
+        g_free(conf);
+    }
+    g_free(user);
+    return loaded;
+}
+
+/* 重新加载壁纸并立即刷新桌面（设置对话框应用后调用） */
+static void wallpaper_reload(void) {
+    gboolean loaded = wallpaper_load_config();
+    if (!loaded) {
+        /* 无配置：回退默认壁纸（文件存在则用，否则程序化生成） */
+        if (wallpaper) g_object_unref(wallpaper);
+        wallpaper = gdk_pixbuf_new_from_file(QY_WALL, NULL);
+        if (!wallpaper) wallpaper = gen_wallpaper(0);
+    }
+    if (desktop_fixed) gtk_widget_queue_draw(desktop_fixed);
+    g_printerr("QYDESKTOPDBG: wallpaper reloaded (loaded=%d)\n", loaded);
+}
+
 /* ---------- 桌面右键菜单 ---------- */
 static void menu_new_folder(GtkMenuItem *mi, gpointer ud) {
     const char *home = g_get_home_dir();
@@ -837,8 +1063,265 @@ static void menu_refresh_wallpaper(GtkMenuItem *mi, gpointer ud) {
     rotate_wallpaper();
 }
 
+/* ---------- 壁纸设置对话框（#qy-wallpaper-win） ---------- */
+typedef struct {
+    const char *key;
+    const char *label;
+} WallPreset;
+
+static const WallPreset wall_presets[] = {
+    { "darkblue",   "深蓝渐变" },
+    { "darkorange", "暗橙渐变" },
+    { "ridge",      "山脊风格" },
+    { "black",      "纯黑" },
+};
+#define NWALL_PRESETS ((int)(sizeof wall_presets / sizeof wall_presets[0]))
+
+static const char *wall_dlg_preset = "darkblue";  /* 当前选中的内置壁纸 key */
+static gchar *wall_dlg_custom = NULL;             /* 自定义图片路径（NULL=未选） */
+static GtkWidget *wall_dlg_custom_lbl = NULL;
+static GtkWidget *wall_dlg_preset_box = NULL;     /* 内置壁纸按钮容器 */
+
+/* 绘制内置壁纸预览缩略图（GtkDrawingArea + cairo 渐变） */
+static gboolean wall_preset_draw_cb(GtkWidget *w, cairo_t *cr, gpointer ud) {
+    const char *key = (const char *)ud;
+    GtkAllocation al;
+    gtk_widget_get_allocation(w, &al);
+    double ww = al.width, hh = al.height;
+    double r = 8;
+    cairo_new_path(cr);
+    cairo_arc(cr, r, r, r, G_PI, 3 * G_PI / 2);
+    cairo_arc(cr, ww - r, r, r, 3 * G_PI / 2, 2 * G_PI);
+    cairo_arc(cr, ww - r, hh - r, r, 0, G_PI / 2);
+    cairo_arc(cr, r, hh - r, r, G_PI / 2, G_PI);
+    cairo_close_path(cr);
+    cairo_clip(cr);
+    wallpaper_draw_gradient(cr, ww, hh, key);
+    cairo_restore(cr);
+    /* 边框 */
+    cairo_set_line_width(cr, 1.0);
+    cairo_set_source_rgba(cr, 0.85, 0.85, 0.85, 0.3);
+    cairo_new_path(cr);
+    cairo_arc(cr, r, r, r, G_PI, 3 * G_PI / 2);
+    cairo_arc(cr, ww - r, r, r, 3 * G_PI / 2, 2 * G_PI);
+    cairo_arc(cr, ww - r, hh - r, r, 0, G_PI / 2);
+    cairo_arc(cr, r, hh - r, r, G_PI / 2, G_PI);
+    cairo_close_path(cr);
+    cairo_stroke(cr);
+    return FALSE;
+}
+
+/* 高亮当前选中的内置壁纸按钮（仅保留一个 .qy-wall-selected） */
+static void wall_preset_highlight(const char *key) {
+    if (!wall_dlg_preset_box) return;
+    GList *ch = gtk_container_get_children(GTK_CONTAINER(wall_dlg_preset_box));
+    for (GList *it = ch; it; it = it->next) {
+        const char *k = g_object_get_data(G_OBJECT(it->data), "wall-key");
+        if (k && key && strcmp(k, key) == 0)
+            add_class(GTK_WIDGET(it->data), "qy-wall-selected");
+        else
+            gtk_style_context_remove_class(gtk_widget_get_style_context(GTK_WIDGET(it->data)),
+                                           "qy-wall-selected");
+    }
+    g_list_free(ch);
+}
+
+static void on_wall_preset_clicked(GtkButton *b, gpointer ud) {
+    (void)ud;
+    const char *key = g_object_get_data(G_OBJECT(b), "wall-key");
+    if (!key) return;
+    wall_dlg_preset = key;
+    g_free(wall_dlg_custom);
+    wall_dlg_custom = NULL;
+    if (wall_dlg_custom_lbl)
+        gtk_label_set_text(GTK_LABEL(wall_dlg_custom_lbl), TR("未选择自定义图片"));
+    wall_preset_highlight(key);
+}
+
+static GtkWidget *wall_preset_button(const WallPreset *p) {
+    GtkWidget *btn = gtk_button_new();
+    gtk_button_set_relief(GTK_BUTTON(btn), GTK_RELIEF_NONE);
+    add_class(btn, "qy-wall-preset");
+    GtkWidget *v = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_container_add(GTK_CONTAINER(btn), v);
+    GtkWidget *da = gtk_drawing_area_new();
+    gtk_widget_set_size_request(da, 120, 68);
+    g_signal_connect(da, "draw", G_CALLBACK(wall_preset_draw_cb), (gpointer)p->key);
+    gtk_box_pack_start(GTK_BOX(v), da, FALSE, FALSE, 0);
+    GtkWidget *lb = gtk_label_new(p->label);
+    add_class(lb, "qy-wall-preset-label");
+    gtk_box_pack_start(GTK_BOX(v), lb, FALSE, FALSE, 0);
+    g_object_set_data(G_OBJECT(btn), "wall-key", (gpointer)p->key);
+    g_signal_connect(btn, "clicked", G_CALLBACK(on_wall_preset_clicked), NULL);
+    return btn;
+}
+
+/* 选择自定义图片（png/jpg，GtkFileChooserNative） */
+static void on_wall_custom_clicked(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    GtkWidget *dlg = gtk_widget_get_toplevel(GTK_WIDGET(b));
+    GtkFileChooserNative *fc = gtk_file_chooser_native_new(
+        TR("选择壁纸图片"), GTK_WINDOW(dlg), GTK_FILE_CHOOSER_ACTION_OPEN,
+        TR("选择"), TR("取消"));
+    GtkFileFilter *f_img = gtk_file_filter_new();
+    gtk_file_filter_set_name(f_img, TR("图片文件"));
+    gtk_file_filter_add_pattern(f_img, "*.png");
+    gtk_file_filter_add_pattern(f_img, "*.jpg");
+    gtk_file_filter_add_pattern(f_img, "*.jpeg");
+    gtk_file_filter_add_pattern(f_img, "*.webp");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(fc), f_img);
+    GtkFileFilter *f_all = gtk_file_filter_new();
+    gtk_file_filter_set_name(f_all, TR("所有文件"));
+    gtk_file_filter_add_pattern(f_all, "*");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(fc), f_all);
+
+    if (gtk_native_dialog_run(GTK_NATIVE_DIALOG(fc)) == GTK_RESPONSE_ACCEPT) {
+        gchar *path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(fc));
+        if (path) {
+            g_free(wall_dlg_custom);
+            wall_dlg_custom = path;
+            if (wall_dlg_custom_lbl)
+                gtk_label_set_text(GTK_LABEL(wall_dlg_custom_lbl), path);
+        }
+    }
+    g_object_unref(fc);
+}
+
+/* 写入 ~/.config/lanxiu/wallpaper.conf 并立即刷新桌面壁纸 */
+static void wallpaper_apply(void) {
+    const char *home = g_get_home_dir();
+    gchar *dir = g_build_filename(home && home[0] ? home : "/root", ".config/lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0700);
+    gchar *conf = g_build_filename(dir, "wallpaper.conf", NULL);
+    if (wall_dlg_custom && wall_dlg_custom[0]) {
+        gchar *content = g_strdup_printf("path=%s\n", wall_dlg_custom);
+        g_file_set_contents(conf, content, -1, NULL);
+        g_free(content);
+    } else {
+        gchar *content = g_strdup_printf("gradient=%s\n",
+                                         wall_dlg_preset ? wall_dlg_preset : "darkblue");
+        g_file_set_contents(conf, content, -1, NULL);
+        g_free(content);
+    }
+    g_free(conf);
+    g_free(dir);
+    wallpaper_reload();
+}
+
+/* 打开对话框时回显当前配置（用户 conf 优先） */
+static void wall_dialog_load_current(void) {
+    const char *home = g_get_home_dir();
+    gchar *user = g_build_filename(home && home[0] ? home : "/root",
+                                   ".config/lanxiu/wallpaper.conf", NULL);
+    const char *paths[] = { user, "/etc/qywallpaper.conf" };
+    gchar *path_val = NULL;
+    gchar *grad_val = NULL;
+    for (guint pi = 0; pi < G_N_ELEMENTS(paths); pi++) {
+        gchar *conf = NULL;
+        if (!g_file_get_contents(paths[pi], &conf, NULL, NULL) || !conf) {
+            g_free(conf);
+            continue;
+        }
+        char *line = conf;
+        while (line && *line) {
+            char *nl = strchr(line, '\n');
+            if (nl) *nl = 0;
+            if (strncmp(line, "path=", 5) == 0 && line[5] && !path_val)
+                path_val = g_strdup(line + 5);
+            else if (strncmp(line, "wallpaper=", 10) == 0 && line[10] && !path_val)
+                path_val = g_strdup(line + 10);
+            else if (strncmp(line, "gradient=", 9) == 0 && line[9] && !grad_val)
+                grad_val = g_strdup(line + 9);
+            line = nl ? nl + 1 : NULL;
+        }
+        g_free(conf);
+        if (path_val || grad_val) break;   /* 用户配置优先，读到即停 */
+    }
+    g_free(user);
+    g_free(wall_dlg_custom);
+    wall_dlg_custom = NULL;
+    if (path_val && g_file_test(path_val, G_FILE_TEST_EXISTS)) {
+        wall_dlg_custom = g_strdup(path_val);
+        if (wall_dlg_custom_lbl)
+            gtk_label_set_text(GTK_LABEL(wall_dlg_custom_lbl), path_val);
+        wall_preset_highlight(NULL);   /* 自定义图片时不高亮任何内置壁纸 */
+    } else {
+        const char *known = "darkblue";
+        if (grad_val) {
+            for (int i = 0; i < NWALL_PRESETS; i++) {
+                if (strcmp(grad_val, wall_presets[i].key) == 0) { known = wall_presets[i].key; break; }
+            }
+        }
+        wall_dlg_preset = known;
+        if (wall_dlg_custom_lbl)
+            gtk_label_set_text(GTK_LABEL(wall_dlg_custom_lbl), TR("未选择自定义图片"));
+        wall_preset_highlight(wall_dlg_preset);
+    }
+    g_free(path_val);
+    g_free(grad_val);
+}
+
+static void on_wall_dialog_response(GtkDialog *dlg, gint response, gpointer ud) {
+    (void)ud;
+    if (response == GTK_RESPONSE_ACCEPT) {
+        wallpaper_apply();
+        gtk_widget_destroy(GTK_WIDGET(dlg));
+    } else if (response == GTK_RESPONSE_CANCEL || response == GTK_RESPONSE_DELETE_EVENT) {
+        gtk_widget_destroy(GTK_WIDGET(dlg));
+    }
+}
+
+/* 弹出壁纸设置对话框 */
+static void wallpaper_dialog_show(void) {
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(
+        TR("更换壁纸"), NULL, GTK_DIALOG_MODAL,
+        TR("关闭"), GTK_RESPONSE_CANCEL,
+        TR("应用"), GTK_RESPONSE_ACCEPT, NULL);
+    gtk_widget_set_name(dlg, "qy-wallpaper-win");
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_ACCEPT);
+    g_signal_connect(dlg, "response", G_CALLBACK(on_wall_dialog_response), NULL);
+
+    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_container_set_border_width(GTK_CONTAINER(box), 12);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_container_add(GTK_CONTAINER(box), vbox);
+
+    GtkWidget *lbl = gtk_label_new(TR("内置壁纸"));
+    add_class(lbl, "qy-wall-dlg-title");
+    gtk_label_set_xalign(GTK_LABEL(lbl), 0.0);
+    gtk_box_pack_start(GTK_BOX(vbox), lbl, FALSE, FALSE, 0);
+
+    wall_dlg_preset_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_pack_start(GTK_BOX(vbox), wall_dlg_preset_box, FALSE, FALSE, 0);
+    for (int i = 0; i < NWALL_PRESETS; i++)
+        gtk_box_pack_start(GTK_BOX(wall_dlg_preset_box),
+                           wall_preset_button(&wall_presets[i]), FALSE, FALSE, 0);
+
+    GtkWidget *hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *b_custom = gtk_button_new_with_label(TR("自定义图片…"));
+    add_class(b_custom, "qy-btn");
+    g_signal_connect(b_custom, "clicked", G_CALLBACK(on_wall_custom_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(hb), b_custom, FALSE, FALSE, 0);
+    wall_dlg_custom_lbl = gtk_label_new(TR("未选择自定义图片"));
+    add_class(wall_dlg_custom_lbl, "qy-wall-custom-lbl");
+    gtk_label_set_ellipsize(GTK_LABEL(wall_dlg_custom_lbl), PANGO_ELLIPSIZE_END);
+    gtk_box_pack_start(GTK_BOX(hb), wall_dlg_custom_lbl, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), hb, FALSE, FALSE, 0);
+
+    gtk_widget_show_all(dlg);
+    wall_dialog_load_current();
+}
+
+/* 桌面右键菜单「更换壁纸」入口 */
+static void menu_wallpaper_dialog(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    wallpaper_dialog_show();
+}
+
 /* 自动轮换壁纸 (默认 600s, 可用 QY_WALL_INTERVAL 秒覆盖) */
 static gboolean auto_wall_tick(gpointer ud) {
+    /* 用户已手动设置壁纸（对话框 / 配置文件）时停止自动轮换 */
+    if (wall_manual) return G_SOURCE_CONTINUE;
     rotate_wallpaper();
     return G_SOURCE_CONTINUE;
 }
@@ -940,6 +1423,10 @@ static gboolean desk_button_press(GtkWidget *w, GdkEventButton *ev, gpointer ud)
         mi = gtk_menu_item_new_with_label(TR("刷新壁纸"));
         add_class(mi, "qy-menu-item");
         g_signal_connect(mi, "activate", G_CALLBACK(menu_refresh_wallpaper), NULL);
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+        mi = gtk_menu_item_new_with_label(TR("更换壁纸"));
+        add_class(mi, "qy-menu-item");
+        g_signal_connect(mi, "activate", G_CALLBACK(menu_wallpaper_dialog), NULL);
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
         mi = gtk_menu_item_new_with_label(TR("关于澜岫"));
         add_class(mi, "qy-menu-item");
@@ -1756,7 +2243,11 @@ static void build_bar(void) {
     gtk_box_pack_start(GTK_BOX(ws_box), ws_prev, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(ws_box), ws_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(ws_box), ws_next, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(st), ws_box, FALSE, FALSE, 2);
+    /* 工作区指示器整体包进事件盒，悬停弹出 4 工作区预览 */
+    GtkWidget *ws_eb = gtk_event_box_new();
+    gtk_container_add(GTK_CONTAINER(ws_eb), ws_box);
+    g_signal_connect(ws_eb, "enter-notify-event", G_CALLBACK(on_ws_enter), NULL);
+    gtk_box_pack_start(GTK_BOX(st), ws_eb, FALSE, FALSE, 2);
     ws_update_label();
 
     clock_btn = gtk_button_new();
@@ -1887,33 +2378,14 @@ static void build_dock(void) {
 /* ---------- 桌面窗口 ---------- */
 static void build_desktop(void) {
     const char *seed_env = getenv("QY_WALL_SEED");   /* 演示/测试: 指定生成种子 */
-    /* 优先读取 /etc/qywallpaper.conf 的 wallpaper= 路径（设置中心壁纸页写入） */
-    gchar *wall_path = NULL;
-    gchar *conf = NULL;
-    if (g_file_get_contents("/etc/qywallpaper.conf", &conf, NULL, NULL)) {
-        char *line = conf;
-        while (line && *line) {
-            if (strncmp(line, "wallpaper=", 10) == 0) {
-                char *nl = strchr(line, '\n');
-                if (nl) *nl = 0;
-                if (line[10]) wall_path = g_strdup(line + 10);
-                break;
-            }
-            char *nl = strchr(line, '\n');
-            line = nl ? nl + 1 : NULL;
+    /* 优先读取壁纸配置（用户 ~/.config/lanxiu/wallpaper.conf，兼容 /etc/qywallpaper.conf） */
+    if (!wallpaper_load_config()) {
+        if (seed_env && seed_env[0]) {
+            wallpaper = gen_wallpaper((guint)strtoul(seed_env, NULL, 10));
+        } else {
+            wallpaper = gdk_pixbuf_new_from_file(QY_WALL, NULL);
+            if (!wallpaper) wallpaper = gen_wallpaper(0);   /* 文件缺失回退到程序化生成 */
         }
-        g_free(conf);
-    }
-    if (wall_path) {
-        wallpaper = gdk_pixbuf_new_from_file(wall_path, NULL);
-        g_free(wall_path);
-    }
-    if (!wallpaper && seed_env && seed_env[0]) {
-        wallpaper = gen_wallpaper((guint)strtoul(seed_env, NULL, 10));
-    }
-    if (!wallpaper) {
-        wallpaper = gdk_pixbuf_new_from_file(QY_WALL, NULL);
-        if (!wallpaper) wallpaper = gen_wallpaper(0);   /* 文件缺失回退到程序化生成 */
     }
     const char *iv_env = getenv("QY_WALL_INTERVAL");   /* 自动轮换秒数(默认600) */
     int wall_interval = (iv_env && atoi(iv_env) > 0) ? atoi(iv_env) : 600;
