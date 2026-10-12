@@ -18,6 +18,7 @@ static int in_trash = 0;   /* 当前是否处于回收站页 */
 static int g_argc = 0;     /* main 传下: --trash 检测用 */
 static char **g_argv = NULL;
 static char g_search[128] = "";  /* 当前搜索关键字（空=全部） */
+static char g_ftype[16] = "";   /* 类型过滤（release 264：空/all=全部；image/doc/audio/video/archive） */
 static GSList *cut_sources = NULL; /* 剪切源列表（多选） */
 static void chdir_to(const char *path);
 static void chdir_trash(void);
@@ -1016,6 +1017,41 @@ static void on_path_activate(GtkEntry *e, gpointer ud) {
         gtk_label_set_text(GTK_LABEL(status), TR("目录不存在"));
 }
 
+/* ---------- 类型过滤（release 264） ---------- */
+static void on_refresh(GtkButton *b, gpointer ud);   /* 前向声明（定义在下方） */
+static gboolean file_match_type(const char *name, const char *type) {
+    if (!type || !type[0] || strcmp(type, "all") == 0) return TRUE;
+    const char *ext = strrchr(name, '.');
+    if (!ext) return FALSE;
+    ext++;
+    if (strcmp(type, "image") == 0)
+        return g_ascii_strcasecmp(ext, "png") == 0 || g_ascii_strcasecmp(ext, "jpg") == 0 ||
+               g_ascii_strcasecmp(ext, "jpeg") == 0 || g_ascii_strcasecmp(ext, "bmp") == 0 ||
+               g_ascii_strcasecmp(ext, "webp") == 0;
+    if (strcmp(type, "doc") == 0)
+        return g_ascii_strcasecmp(ext, "txt") == 0 || g_ascii_strcasecmp(ext, "md") == 0 ||
+               g_ascii_strcasecmp(ext, "pdf") == 0 || g_ascii_strcasecmp(ext, "doc") == 0 ||
+               g_ascii_strcasecmp(ext, "docx") == 0;
+    if (strcmp(type, "audio") == 0)
+        return g_ascii_strcasecmp(ext, "mp3") == 0 || g_ascii_strcasecmp(ext, "wav") == 0 ||
+               g_ascii_strcasecmp(ext, "ogg") == 0 || g_ascii_strcasecmp(ext, "flac") == 0;
+    if (strcmp(type, "video") == 0)
+        return g_ascii_strcasecmp(ext, "mp4") == 0 || g_ascii_strcasecmp(ext, "mkv") == 0 ||
+               g_ascii_strcasecmp(ext, "webm") == 0 || g_ascii_strcasecmp(ext, "avi") == 0;
+    if (strcmp(type, "archive") == 0)
+        return g_ascii_strcasecmp(ext, "zip") == 0 || g_ascii_strcasecmp(ext, "tar") == 0 ||
+               g_ascii_strcasecmp(ext, "gz") == 0 || g_ascii_strcasecmp(ext, "7z") == 0 ||
+               g_ascii_strcasecmp(ext, "rar") == 0;
+    return TRUE;
+}
+
+static void on_filter_type_changed(GtkComboBox *combo, gpointer ud) {
+    (void)ud;
+    const char *id = gtk_combo_box_get_active_id(GTK_COMBO_BOX(combo));
+    g_strlcpy(g_ftype, id ? id : "all", sizeof g_ftype);
+    on_refresh(NULL, NULL);
+}
+
 /* ---------- 导航 ---------- */
 static void chdir_to(const char *path) {
     in_trash = 0;
@@ -1032,6 +1068,9 @@ static void chdir_to(const char *path) {
             continue;
         gchar *full = g_build_filename(path, name, NULL);
         gboolean isdir = g_file_test(full, G_FILE_TEST_IS_DIR);
+        /* 类型过滤（release 264） */
+        if (g_ftype[0] && !isdir && !file_match_type(name, g_ftype))
+            continue;
         char sizestr[32] = "—";
         if (!isdir) {
             struct stat st;
@@ -2093,6 +2132,17 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_widget_set_size_request(search_entry, 220, -1);
     gtk_entry_set_placeholder_text(GTK_ENTRY(search_entry), TR("搜索当前目录"));
     g_signal_connect(search_entry, "search-changed", G_CALLBACK(on_search_changed), NULL);
+    /* 类型过滤下拉（release 264） */
+    GtkWidget *ftype_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(ftype_combo), "all", TR("全部"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(ftype_combo), "image", TR("图片"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(ftype_combo), "doc", TR("文档"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(ftype_combo), "audio", TR("音频"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(ftype_combo), "video", TR("视频"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(ftype_combo), "archive", TR("压缩包"));
+    gtk_combo_box_set_active(GTK_COMBO_BOX(ftype_combo), 0);
+    g_signal_connect(ftype_combo, "changed", G_CALLBACK(on_filter_type_changed), NULL);
+    gtk_box_pack_end(GTK_BOX(hbox), ftype_combo, FALSE, FALSE, 0);
     gtk_box_pack_end(GTK_BOX(hbox), search_entry, FALSE, FALSE, 0);
     gtk_box_pack_end(GTK_BOX(hbox), b_open, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_res, FALSE, FALSE, 0);
