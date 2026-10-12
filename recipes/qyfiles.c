@@ -44,6 +44,8 @@ static GtkWidget *b_term = NULL; /* 在终端打开按钮 */
 static GtkWidget *b_open = NULL;
 static GtkWidget *b_cp = NULL, *b_prop = NULL;
 static GtkWidget *b_res = NULL, *b_pur = NULL, *b_emp = NULL;
+static GtkWidget *b_bm = NULL;   /* 添加书签按钮（release 256） */
+static GtkWidget *book_list = NULL; /* 侧边栏书签 GtkListBox */
 
 static void set_mode_buttons(void) {
     if (!b_mk) return;
@@ -59,6 +61,7 @@ static void set_mode_buttons(void) {
     gtk_widget_set_visible(b_res, trash);
     gtk_widget_set_visible(b_pur, trash);
     gtk_widget_set_visible(b_emp, trash);
+    gtk_widget_set_visible(b_bm, !trash);
 }
 
 /* ---------- freedesktop Trash 规范: ~/.local/share/Trash/files + info ---------- */
@@ -548,6 +551,244 @@ static GtkWidget *side_button(const char *label, const char *target, GtkWidget *
     return b;
 }
 
+/* ---------- 侧边栏书签（release 256） ---------- */
+static gboolean bookmark_exists(const char *path) {
+    if (!book_list || !path) return FALSE;
+    GList *rows = gtk_container_get_children(GTK_CONTAINER(book_list));
+    for (GList *l = rows; l; l = l->next) {
+        const char *p = g_object_get_data(G_OBJECT(l->data), "path");
+        if (p && !strcmp(p, path)) { g_list_free(rows); return TRUE; }
+    }
+    g_list_free(rows);
+    return FALSE;
+}
+
+static GtkListBoxRow *add_bookmark_row(const char *path, const char *label) {
+    if (!path || !path[0] || !book_list) return NULL;
+    if (bookmark_exists(path)) return NULL;
+    GtkWidget *row = gtk_list_box_row_new();
+    GtkWidget *lbl = gtk_label_new(label && label[0] ? label : path);
+    gtk_label_set_xalign(GTK_LABEL(lbl), 0.0);
+    gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
+    gtk_widget_set_margin_start(lbl, 6);
+    gtk_widget_set_margin_end(lbl, 6);
+    gtk_widget_set_margin_top(lbl, 3);
+    gtk_widget_set_margin_bottom(lbl, 3);
+    gtk_container_add(GTK_CONTAINER(row), lbl);
+    g_object_set_data_full(G_OBJECT(row), "path", g_strdup(path), g_free);
+    gtk_list_box_insert(GTK_LIST_BOX(book_list), row, -1);
+    return GTK_LIST_BOX_ROW(row);
+}
+
+static void remove_book_row(const char *path) {
+    if (!book_list || !path) return;
+    GList *rows = gtk_container_get_children(GTK_CONTAINER(book_list));
+    for (GList *l = rows; l; l = l->next) {
+        const char *p = g_object_get_data(G_OBJECT(l->data), "path");
+        if (p && !strcmp(p, path)) {
+            gtk_widget_destroy(GTK_WIDGET(l->data));
+            break;
+        }
+    }
+    g_list_free(rows);
+}
+
+/* 追加当前路径到书签文件并加入侧边栏 */
+static void add_bookmark_path(const char *path) {
+    if (!path || !path[0]) return;
+    if (bookmark_exists(path)) {
+        gtk_label_set_text(GTK_LABEL(status), TR("该书签已存在"));
+        return;
+    }
+    gchar *dir = g_build_filename(g_get_home_dir(), ".config/lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0700);
+    gchar *file = g_build_filename(dir, "bookmarks.txt", NULL);
+    GString *out = g_string_new(NULL);
+    gchar *content = NULL;
+    if (g_file_get_contents(file, &content, NULL, NULL) && content)
+        g_string_append(out, content);
+    g_string_append_printf(out, "%s\n", path);
+    g_file_set_contents(file, out->str, out->len, NULL);
+    g_string_free(out, TRUE);
+    g_free(content);
+    g_free(file);
+    g_free(dir);
+    add_bookmark_row(path, path);
+    gtk_label_set_text(GTK_LABEL(status), TR("已添加书签"));
+}
+
+static void do_add_bookmark(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    if (in_trash) {
+        gtk_label_set_text(GTK_LABEL(status), TR("回收站不能添加书签"));
+        return;
+    }
+    add_bookmark_path(cwd);
+}
+
+/* 左键进入书签目录 */
+static void on_book_activated(GtkListBox *box, GtkListBoxRow *row, gpointer ud) {
+    (void)box; (void)ud;
+    const char *path = row ? g_object_get_data(G_OBJECT(row), "path") : NULL;
+    if (path && path[0]) chdir_to(path);
+}
+
+/* 移除书签：从文件与列表同时删除 */
+static void on_book_remove(GtkMenuItem *mi, gpointer ud) {
+    (void)mi;
+    const char *path = (const char *)ud;
+    if (!path || !path[0]) { g_free(ud); return; }
+    gchar *file = g_build_filename(g_get_home_dir(), ".config/lanxiu/bookmarks.txt", NULL);
+    gchar *content = NULL;
+    if (g_file_get_contents(file, &content, NULL, NULL) && content) {
+        GString *out = g_string_new(NULL);
+        gchar **lines = g_strsplit(content, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            gchar *line = g_strstrip(lines[i]);
+            if (line[0] && strcmp(line, path) != 0)
+                g_string_append_printf(out, "%s\n", line);
+        }
+        g_strfreev(lines);
+        g_file_set_contents(file, out->str, out->len, NULL);
+        g_string_free(out, TRUE);
+    }
+    g_free(content);
+    g_free(file);
+    remove_book_row(path);
+    gtk_label_set_text(GTK_LABEL(status), TR("已移除书签"));
+    g_free(ud);
+}
+
+/* 书签行右键：移除书签 */
+static gboolean on_book_popup(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->type != GDK_BUTTON_PRESS || ev->button != 3) return FALSE;
+    GtkListBoxRow *row = gtk_list_box_get_row_at_y(GTK_LIST_BOX(book_list), (gint)ev->y);
+    if (!row) return TRUE;
+    gtk_list_box_select_row(GTK_LIST_BOX(book_list), row);
+    const char *path = g_object_get_data(G_OBJECT(row), "path");
+    GtkWidget *menu = gtk_menu_new();
+    GtkWidget *mi = gtk_menu_item_new_with_label(TR("移除书签"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_book_remove), g_strdup(path ? path : ""));
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    gtk_widget_show_all(menu);
+    gtk_menu_attach_to_widget(GTK_MENU(menu), w, NULL);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (const GdkEvent *)ev);
+    return TRUE;
+}
+
+/* 加载默认书签（XDG 用户目录或 ~ 常见目录）+ 用户书签文件 */
+static void load_bookmarks(void) {
+    const char *home = g_get_home_dir();
+    const char *docs = g_get_user_special_dir(G_USER_DIRECTORY_DOCUMENTS);
+    const char *dl   = g_get_user_special_dir(G_USER_DIRECTORY_DOWNLOAD);
+    const char *pics = g_get_user_special_dir(G_USER_DIRECTORY_PICTURES);
+    const char *mus  = g_get_user_special_dir(G_USER_DIRECTORY_MUSIC);
+    const char *vids = g_get_user_special_dir(G_USER_DIRECTORY_VIDEOS);
+    gchar *fb[5] = { NULL, NULL, NULL, NULL, NULL };
+    if (!docs) { fb[0] = g_build_filename(home, "文档", NULL); docs = fb[0]; }
+    if (!dl)   { fb[1] = g_build_filename(home, "下载", NULL); dl = fb[1]; }
+    if (!pics) { fb[2] = g_build_filename(home, "图片", NULL); pics = fb[2]; }
+    if (!mus)  { fb[3] = g_build_filename(home, "音乐", NULL); mus = fb[3]; }
+    if (!vids) { fb[4] = g_build_filename(home, "视频", NULL); vids = fb[4]; }
+    const char *defaults[][2] = {
+        { TR("主目录"), home },
+        { TR("文档"), docs },
+        { TR("下载"), dl },
+        { TR("图片"), pics },
+        { TR("音乐"), mus },
+        { TR("视频"), vids },
+    };
+    for (unsigned i = 0; i < G_N_ELEMENTS(defaults); i++) {
+        if (defaults[i][1] && defaults[i][1][0])
+            add_bookmark_row(defaults[i][1], defaults[i][0]);
+    }
+    for (int i = 0; i < 5; i++) g_free(fb[i]);
+
+    gchar *file = g_build_filename(home, ".config/lanxiu/bookmarks.txt", NULL);
+    gchar *content = NULL;
+    if (g_file_get_contents(file, &content, NULL, NULL) && content) {
+        gchar **lines = g_strsplit(content, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            gchar *line = g_strstrip(lines[i]);
+            if (line[0]) add_bookmark_row(line, line);
+        }
+        g_strfreev(lines);
+    }
+    g_free(content);
+    g_free(file);
+}
+
+/* ---------- 打开方式子菜单（release 256） ---------- */
+static void do_open_with(GtkMenuItem *mi, gpointer ud) {
+    (void)mi;
+    char **pair = (char **)ud;
+    gchar *cmd = g_strdup_printf("%s '%s' &", pair[0], pair[1]);
+    g_spawn_command_line_async(cmd, NULL);
+    g_free(cmd);
+    g_free(pair[0]);
+    g_free(pair[1]);
+    g_free(pair);
+}
+
+/* 按扩展名匹配候选应用 qyview/qyedit/qymedia/qybrowser/qyarc */
+static void add_open_with_menu(GtkWidget *menu) {
+    gchar *name = NULL;
+    selected_name(&name);
+    if (!name) return;
+    gchar *full = g_build_filename(cwd, name, NULL);
+    const char *ext = strrchr(name, '.');
+    const char *apps[8];
+    int n = 0;
+    if (ext) {
+        if (!g_ascii_strcasecmp(ext, ".png") || !g_ascii_strcasecmp(ext, ".jpg") ||
+            !g_ascii_strcasecmp(ext, ".jpeg") || !g_ascii_strcasecmp(ext, ".bmp") ||
+            !g_ascii_strcasecmp(ext, ".gif") || !g_ascii_strcasecmp(ext, ".webp") ||
+            !g_ascii_strcasecmp(ext, ".svg") || !g_ascii_strcasecmp(ext, ".ico"))
+            apps[n++] = "qyview";
+        if (!g_ascii_strcasecmp(ext, ".txt") || !g_ascii_strcasecmp(ext, ".md") ||
+            !g_ascii_strcasecmp(ext, ".c") || !g_ascii_strcasecmp(ext, ".h") ||
+            !g_ascii_strcasecmp(ext, ".py") || !g_ascii_strcasecmp(ext, ".sh") ||
+            !g_ascii_strcasecmp(ext, ".js") || !g_ascii_strcasecmp(ext, ".ini") ||
+            !g_ascii_strcasecmp(ext, ".conf") || !g_ascii_strcasecmp(ext, ".desktop") ||
+            !g_ascii_strcasecmp(ext, ".log") || !g_ascii_strcasecmp(ext, ".xml"))
+            apps[n++] = "qyedit";
+        if (!g_ascii_strcasecmp(ext, ".mp3") || !g_ascii_strcasecmp(ext, ".wav") ||
+            !g_ascii_strcasecmp(ext, ".flac") || !g_ascii_strcasecmp(ext, ".ogg") ||
+            !g_ascii_strcasecmp(ext, ".mp4") || !g_ascii_strcasecmp(ext, ".mkv") ||
+            !g_ascii_strcasecmp(ext, ".avi") || !g_ascii_strcasecmp(ext, ".webm"))
+            apps[n++] = "qymedia";
+        if (!g_ascii_strcasecmp(ext, ".html") || !g_ascii_strcasecmp(ext, ".htm") ||
+            !g_ascii_strcasecmp(ext, ".xhtml"))
+            apps[n++] = "qybrowser";
+        if (!g_ascii_strcasecmp(ext, ".zip") || !g_ascii_strcasecmp(ext, ".tar") ||
+            !g_ascii_strcasecmp(ext, ".gz") || !g_ascii_strcasecmp(ext, ".bz2") ||
+            !g_ascii_strcasecmp(ext, ".xz") || !g_ascii_strcasecmp(ext, ".7z") ||
+            !g_ascii_strcasecmp(ext, ".rar"))
+            apps[n++] = "qyarc";
+    }
+    GtkWidget *sub = gtk_menu_new();
+    if (n == 0) {
+        GtkWidget *mi = gtk_menu_item_new_with_label(TR("无匹配应用"));
+        gtk_widget_set_sensitive(mi, FALSE);
+        gtk_menu_shell_append(GTK_MENU_SHELL(sub), mi);
+    } else {
+        for (int i = 0; i < n; i++) {
+            GtkWidget *mi = gtk_menu_item_new_with_label(apps[i]);
+            char **pair = g_new(char *, 2);
+            pair[0] = g_strdup(apps[i]);
+            pair[1] = g_strdup(full);
+            g_signal_connect(mi, "activate", G_CALLBACK(do_open_with), pair);
+            gtk_menu_shell_append(GTK_MENU_SHELL(sub), mi);
+        }
+    }
+    GtkWidget *top = gtk_menu_item_new_with_label(TR("打开方式"));
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(top), sub);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), top);
+    g_free(full);
+    g_free(name);
+}
+
 /* ---------- 右键菜单（真实 GtkMenu） ---------- */
 static void do_open_sel(GtkButton *b, gpointer ud);
 
@@ -567,6 +808,7 @@ static void show_context_menu(GdkEvent *trigger) {
         add_menuitem(menu, TR("清空回收站"), G_CALLBACK(do_empty_trash));
     } else {
         add_menuitem(menu, TR("打开"), G_CALLBACK(do_open_sel));
+        add_open_with_menu(menu);
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
         add_menuitem(menu, TR("剪切"), G_CALLBACK(do_cut));
         add_menuitem(menu, TR("复制"), G_CALLBACK(do_copy));
@@ -950,7 +1192,7 @@ static void activate(GtkApplication *app, gpointer ud) {
 
     /* 侧边栏 */
     GtkWidget *side = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
-    gtk_widget_set_size_request(side, 148, -1);
+    gtk_widget_set_size_request(side, 168, -1);
     gtk_container_set_border_width(GTK_CONTAINER(side), 4);
     const char *home = g_get_home_dir();
     static char p_home[512], p_docs[512], p_dl[512], p_pics[512];
@@ -964,6 +1206,23 @@ static void activate(GtkApplication *app, gpointer ud) {
     side_button(TR("下载"), p_dl, side);
     side_button(TR("根目录 /"), "/", side);
     side_button(TR("回收站"), "TRASH", side);
+    /* 书签分组（release 256） */
+    gtk_box_pack_start(GTK_BOX(side), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 4);
+    GtkWidget *bm_hdr = gtk_label_new(TR("书签"));
+    gtk_widget_set_halign(bm_hdr, GTK_ALIGN_START);
+    add_class(bm_hdr, "qy-files-bm-header");
+    gtk_box_pack_start(GTK_BOX(side), bm_hdr, FALSE, FALSE, 0);
+    book_list = gtk_list_box_new();
+    qy_add_class(book_list, "qy-files-book");
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(book_list), GTK_SELECTION_SINGLE);
+    gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(book_list), TRUE);
+    g_signal_connect(book_list, "row-activated", G_CALLBACK(on_book_activated), NULL);
+    g_signal_connect(book_list, "button-press-event", G_CALLBACK(on_book_popup), NULL);
+    GtkWidget *bm_sw = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(bm_sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_container_add(GTK_CONTAINER(bm_sw), book_list);
+    gtk_box_pack_start(GTK_BOX(side), bm_sw, TRUE, TRUE, 0);
+    load_bookmarks();
     gtk_box_pack_start(GTK_BOX(hpane), side, FALSE, FALSE, 0);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -1014,6 +1273,9 @@ static void activate(GtkApplication *app, gpointer ud) {
     b_open = gtk_button_new_with_label(TR("打开"));
     add_class(b_open, "qy-btn");
     g_signal_connect(b_open, "clicked", G_CALLBACK(do_open_sel), NULL);
+    b_bm = gtk_button_new_with_label(TR("添加书签"));
+    add_class(b_bm, "qy-btn");
+    g_signal_connect(b_bm, "clicked", G_CALLBACK(do_add_bookmark), NULL);
     GtkWidget *b_view = qy_icon_button(QY_ICON_GRID, 18, TR("图标视图"), NULL);
     add_class(b_view, "qy-btn");
     g_signal_connect(b_view, "clicked", G_CALLBACK(on_toggle_view), NULL);
@@ -1039,6 +1301,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(hbox), b_ren, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_cp, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_prop, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(hbox), b_bm, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_view, FALSE, FALSE, 0);
     GtkWidget *search_entry = gtk_search_entry_new();
     gtk_widget_set_size_request(search_entry, 220, -1);

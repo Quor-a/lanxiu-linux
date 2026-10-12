@@ -16,6 +16,7 @@ static GtkWidget *view      = NULL;
 static GtkWidget *status_label = NULL;
 static GtkTextBuffer *buffer = NULL;
 static GtkWidget *back_btn = NULL, *fwd_btn = NULL;   /* 前进/后退 */
+static GtkWidget *dl_spinner = NULL;   /* 下载中加载动画（release 256） */
 
 /* 浏览历史栈 */
 static GPtrArray *hist = NULL;
@@ -243,6 +244,7 @@ static gboolean finish_fetch(gpointer ud) {
     else
         g_snprintf(st, sizeof st, "%s: %s", TR("下载失败"), r->err);
     gtk_label_set_text(GTK_LABEL(status_label), st);
+    if (dl_spinner) gtk_spinner_stop(GTK_SPINNER(dl_spinner));
 
     /* 填充右侧链接面板 */
     if (link_list) {
@@ -316,6 +318,7 @@ static void open_url(const char *url) {
     gtk_text_buffer_insert(buffer, &end, head, -1);
     g_free(head);
     gtk_label_set_text(GTK_LABEL(status_label), TR("正在下载..."));
+    if (dl_spinner) gtk_spinner_start(GTK_SPINNER(dl_spinner));
     if (back_btn) gtk_widget_set_sensitive(back_btn, hist_pos > 0);
     if (fwd_btn) gtk_widget_set_sensitive(fwd_btn, hist_pos < (int)hist->len - 1);
     FetchResult *r = g_new0(FetchResult, 1);
@@ -460,6 +463,39 @@ static void on_clear(GtkWidget *w, gpointer ud) {
     gtk_text_buffer_set_text(buffer, "", -1);
 }
 
+/* ---------- 正文右键菜单（release 256: 复制/全选） ---------- */
+static void on_view_copy(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    gtk_text_buffer_copy_clipboard(buffer, gtk_clipboard_get(GDK_SELECTION_CLIPBOARD));
+}
+
+static void on_view_select_all(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    GtkTextIter start, end;
+    gtk_text_buffer_get_start_iter(buffer, &start);
+    gtk_text_buffer_get_end_iter(buffer, &end);
+    gtk_text_buffer_select_range(buffer, &start, &end);
+}
+
+static gboolean on_view_button_press(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->type != GDK_BUTTON_PRESS || ev->button != 3) return FALSE;
+    GtkWidget *menu = gtk_menu_new();
+    GtkTextIter start, end;
+    gboolean has_sel = gtk_text_buffer_get_selection_bounds(buffer, &start, &end);
+    GtkWidget *mi_copy = gtk_menu_item_new_with_label(TR("复制"));
+    gtk_widget_set_sensitive(mi_copy, has_sel);
+    g_signal_connect(mi_copy, "activate", G_CALLBACK(on_view_copy), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_copy);
+    GtkWidget *mi_all = gtk_menu_item_new_with_label(TR("全选"));
+    g_signal_connect(mi_all, "activate", G_CALLBACK(on_view_select_all), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_all);
+    gtk_widget_show_all(menu);
+    gtk_menu_attach_to_widget(GTK_MENU(menu), view, NULL);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (const GdkEvent *)ev);
+    return TRUE;
+}
+
 /* ---------- 主窗口 ---------- */
 static void activate(GtkApplication *app, gpointer ud) {
     (void)ud;
@@ -515,6 +551,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(view));
     gtk_text_view_set_editable(GTK_TEXT_VIEW(view), FALSE);
     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(view), GTK_WRAP_WORD);
+    g_signal_connect(view, "button-press-event", G_CALLBACK(on_view_button_press), NULL);
     gtk_container_add(GTK_CONTAINER(sw), view);
     gtk_paned_add1(GTK_PANED(paned), sw);
 
@@ -533,12 +570,17 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_paned_set_position(GTK_PANED(paned), 440);
     gtk_box_pack_start(GTK_BOX(vbox), paned, TRUE, TRUE, 0);
 
-    /* 状态栏 */
+    /* 状态栏（含加载动画） */
+    GtkWidget *status_hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    dl_spinner = gtk_spinner_new();
+    gtk_widget_set_size_request(dl_spinner, 16, 16);
+    gtk_box_pack_start(GTK_BOX(status_hb), dl_spinner, FALSE, FALSE, 0);
     status_label = gtk_label_new(TR("就绪"));
     qy_add_class(status_label, "qy-mon-info");
     qy_add_class(status_label, "qy-browser-status");
     gtk_widget_set_halign(status_label, GTK_ALIGN_START);
-    gtk_box_pack_start(GTK_BOX(vbox), status_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(status_hb), status_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), status_hb, FALSE, FALSE, 0);
 
     /* 自动化: QYBROWSER_URL 启动后自动打开 */
     const char *auto_url = g_getenv("QYBROWSER_URL");

@@ -1989,3 +1989,58 @@ scrollbar slider:hover {
     font-family: monospace;
     color: #E95420;
 }
+
+/* ---------- release 256: 焦点环 + 加载动画 ---------- */
+/* 全局按钮键盘焦点环（深色底可见） */
+button:focus {
+    outline: 2px solid rgba(255, 92, 26, 0.7);
+    outline-offset: 1px;
+}
+/* GtkSpinner 品牌色 */
+spinner {
+    color: #FF5C1A;
+}
+/* 字体设置页「应用」按钮（品牌橙） */
+#qysettings-font-apply {
+    background-image: none;
+    background-color: #FF5C1A;
+    border: none;
+    border-radius: 8px;
+    color: #ffffff;
+    padding: 6px 16px;
+    min-height: 28px;
+}
+#qysettings-font-apply:hover {
+    background-color: #ff7a3d;
+}
+#qysettings-font-apply:active {
+    background-color: #d94a0f;
+}
+/* 字体预览卡片 */
+.qy-font-preview {
+    background-color: #1b2430;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 14px 18px;
+    color: #e6e9ef;
+}
+/* qyfiles 侧边栏书签 */
+.qy-files-bm-header {
+    font-size: 12px;
+    font-weight: 600;
+    color: #9aa3b2;
+    padding: 4px 6px 2px 6px;
+}
+.qy-files-book row {
+    border-radius: 8px;
+    padding: 1px 4px;
+    margin: 0 1px;
+    color: #e6e9ef;
+}
+.qy-files-book row:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+.qy-files-book row:selected {
+    background-color: rgba(233, 84, 32, 0.25);
+    color: #ffffff;
+}

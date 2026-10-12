@@ -1762,6 +1762,165 @@ static const char *tab_label_text(GtkWidget *w) {
     return NULL;
 }
 
+/* ---------- 字体页（release 256: 交互化） ---------- */
+static GtkWidget *font_combo = NULL;
+static GtkWidget *font_size_spin = NULL;
+static GtkWidget *font_preview = NULL;
+
+/* 无 fc-list 时回退的内置常见字体列表 */
+static const char *font_builtin_list[] = {
+    "Sans", "Sans Serif", "Monospace", "Noto Sans CJK SC",
+    "Noto Serif CJK SC", "Noto Sans", "Noto Serif",
+    "DejaVu Sans", "DejaVu Serif", "DejaVu Sans Mono",
+    "WenQuanYi Micro Hei", "Droid Sans Fallback",
+    "Liberation Sans", "Liberation Serif", "Liberation Mono",
+    "FreeSans", "FreeSerif", "FreeMono",
+    "Nimbus Sans", "Noto Color Emoji",
+    NULL
+};
+
+static void font_add_unique(GPtrArray *arr, const char *name) {
+    if (!name || !name[0]) return;
+    for (guint i = 0; i < arr->len; i++) {
+        if (g_strcmp0((const char *)g_ptr_array_index(arr, i), name) == 0) return;
+    }
+    g_ptr_array_add(arr, g_strdup(name));
+}
+
+/* 用 fc-list 填充字体下拉（前 20 个常见字体）；无 fc-list 时回退内置列表 */
+static void font_fill_combo(void) {
+    gtk_combo_box_text_remove_all(GTK_COMBO_BOX_TEXT(font_combo));
+    GPtrArray *fonts = g_ptr_array_new_with_free_func(g_free);
+    /* 首选通用/常见字体，保证 Sans/Sans Serif/Monospace/Noto CJK 一定在列表 */
+    const char *essential[] = {"Sans", "Sans Serif", "Monospace", "Noto Sans CJK SC", NULL};
+    for (int i = 0; essential[i]; i++)
+        font_add_unique(fonts, essential[i]);
+
+    gchar *out = NULL;
+    GError *err = NULL;
+    if (g_spawn_command_line_sync("fc-list : family", &out, NULL, NULL, &err) && out) {
+        gchar **lines = g_strsplit(out, "\n", -1);
+        for (int i = 0; lines[i] && (int)fonts->len < 20; i++) {
+            gchar *line = g_strstrip(lines[i]);
+            if (!line[0]) continue;
+            /* 一行可能含多个族名（逗号分隔） */
+            gchar **parts = g_strsplit(line, ",", -1);
+            for (int j = 0; parts[j] && (int)fonts->len < 20; j++) {
+                gchar *part = g_strstrip(parts[j]);
+                if (part[0]) font_add_unique(fonts, part);
+            }
+            g_strfreev(parts);
+        }
+        g_strfreev(lines);
+    }
+    g_free(out);
+    g_clear_error(&err);
+
+    /* 不足 20 个时用内置常见字体补足（fc-list 缺失时即回退整份内置列表） */
+    for (int i = 0; font_builtin_list[i] && (int)fonts->len < 20; i++)
+        font_add_unique(fonts, font_builtin_list[i]);
+
+    for (guint i = 0; i < fonts->len; i++)
+        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(font_combo),
+                                       (const char *)g_ptr_array_index(fonts, i));
+    g_ptr_array_free(fonts, TRUE);
+}
+
+/* 更新预览标签：所选字体族 + 字号 */
+static void font_update_preview(void) {
+    if (!font_preview) return;
+    const char *family = "Sans";
+    gchar *t = font_combo ? gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(font_combo)) : NULL;
+    if (t && t[0]) family = t;
+    int size = 11;
+    if (font_size_spin) size = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(font_size_spin));
+    gchar *esc = g_markup_escape_text(family, -1);
+    gchar *markup = g_strdup_printf(
+        "<span font_family='%s' size='%d'>%s</span>", esc, size * 1024, TR("澜岫 LANXIU 预览"));
+    gtk_label_set_markup(GTK_LABEL(font_preview), markup);
+    g_free(markup);
+    g_free(esc);
+    g_free(t);
+}
+
+static void on_font_combo_changed(GtkComboBox *cb, gpointer ud) {
+    (void)cb; (void)ud;
+    font_update_preview();
+}
+
+static void on_font_size_changed(GtkSpinButton *sb, gpointer ud) {
+    (void)sb; (void)ud;
+    font_update_preview();
+}
+
+/* 读取已有 ~/.config/lanxiu/font.conf 作为默认值 */
+static void font_load_current(void) {
+    gchar *path = g_build_filename(g_get_home_dir(), ".config/lanxiu/font.conf", NULL);
+    gchar *content = NULL;
+    if (g_file_get_contents(path, &content, NULL, NULL) && content) {
+        gchar **lines = g_strsplit(content, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            gchar *line = g_strstrip(lines[i]);
+            if (g_str_has_prefix(line, "font=")) {
+                const char *f = line + 5;
+                GtkTreeModel *m = gtk_combo_box_get_model(GTK_COMBO_BOX(font_combo));
+                GtkTreeIter it;
+                if (gtk_tree_model_get_iter_first(m, &it)) {
+                    do {
+                        gchar *name = NULL;
+                        gtk_tree_model_get(m, &it, 0, &name, -1);
+                        if (name && !strcmp(name, f)) {
+                            gtk_combo_box_set_active_iter(GTK_COMBO_BOX(font_combo), &it);
+                            g_free(name);
+                            break;
+                        }
+                        g_free(name);
+                    } while (gtk_tree_model_iter_next(m, &it));
+                }
+            } else if (g_str_has_prefix(line, "size=")) {
+                int sz = atoi(line + 5);
+                if (sz >= 9 && sz <= 18)
+                    gtk_spin_button_set_value(GTK_SPIN_BUTTON(font_size_spin), sz);
+            }
+        }
+        g_strfreev(lines);
+    }
+    g_free(content);
+    g_free(path);
+    if (gtk_combo_box_get_active(GTK_COMBO_BOX(font_combo)) < 0)
+        gtk_combo_box_set_active(GTK_COMBO_BOX(font_combo), 0);
+}
+
+/* 应用字体设置：写 ~/.config/lanxiu/font.conf */
+static void on_font_apply(GtkButton *b, gpointer ud) {
+    (void)ud;
+    const char *family = "Sans";
+    gchar *t = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(font_combo));
+    if (t && t[0]) family = t;
+    int size = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(font_size_spin));
+    gchar *dir = g_build_filename(g_get_home_dir(), ".config/lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0700);
+    gchar *path = g_build_filename(dir, "font.conf", NULL);
+    gchar *content = g_strdup_printf("font=%s\nsize=%d\n", family, size);
+    g_file_set_contents(path, content, -1, NULL);
+    g_free(content);
+    g_free(path);
+    g_free(dir);
+    g_free(t);
+
+    /* 自动化验证: QY_SETTINGS_FONT=1 不弹对话框 */
+    if (g_getenv("QY_SETTINGS_FONT")) return;
+
+    GtkWidget *parent = gtk_widget_get_toplevel(GTK_WIDGET(b));
+    if (!GTK_IS_WINDOW(parent)) parent = NULL;
+    GtkWidget *dlg = gtk_message_dialog_new(
+        parent ? GTK_WINDOW(parent) : NULL, GTK_DIALOG_MODAL,
+        GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
+        "%s", TR("字体设置已保存，重启桌面后生效。"));
+    gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+}
+
 /* 设置页搜索：输入关键词，切换标签名包含关键词的第一个页面 */
 static void on_settings_search(GtkSearchEntry *se, gpointer ud) {
     const char *needle = gtk_entry_get_text(GTK_ENTRY(se));
@@ -1913,13 +2072,46 @@ static void activate(GtkApplication *app, gpointer ud) {
     }
     gtk_notebook_append_page(GTK_NOTEBOOK(nb), v2, tab_with_icon(TR("显示"), QY_ICON_MONITOR));
 
-    /* 字体 */
+    /* 字体（release 256: 交互化） */
     GtkWidget *v3 = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_set_border_width(GTK_CONTAINER(v3), 14);
     settings_group(GTK_BOX(v3), TR("字体设置"));
-    gtk_box_pack_start(GTK_BOX(v3), row(TR("西文字体"), "DejaVu Sans 2.37"), FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(v3), row(TR("中文字体"), "Noto Sans CJK"), FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(v3), row(TR("字体回退"), "fontconfig"), FALSE, FALSE, 0);
+    /* 字体族下拉 */
+    GtkWidget *font_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *fl = gtk_label_new(TR("字体族"));
+    gtk_widget_set_size_request(fl, 150, -1);
+    gtk_widget_set_halign(fl, GTK_ALIGN_START);
+    font_combo = gtk_combo_box_text_new();
+    gtk_widget_set_size_request(font_combo, 240, -1);
+    g_signal_connect(font_combo, "changed", G_CALLBACK(on_font_combo_changed), NULL);
+    gtk_box_pack_start(GTK_BOX(font_row), fl, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(font_row), font_combo, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(v3), font_row, FALSE, FALSE, 0);
+    /* 字号 */
+    GtkWidget *size_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *sl = gtk_label_new(TR("字号"));
+    gtk_widget_set_size_request(sl, 150, -1);
+    gtk_widget_set_halign(sl, GTK_ALIGN_START);
+    font_size_spin = gtk_spin_button_new_with_range(9, 18, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(font_size_spin), 11);
+    g_signal_connect(font_size_spin, "value-changed", G_CALLBACK(on_font_size_changed), NULL);
+    gtk_box_pack_start(GTK_BOX(size_row), sl, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(size_row), font_size_spin, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(v3), size_row, FALSE, FALSE, 0);
+    /* 预览标签（用所选字体实时渲染） */
+    font_preview = gtk_label_new(NULL);
+    gtk_widget_set_halign(font_preview, GTK_ALIGN_START);
+    qy_add_class(font_preview, "qy-font-preview");
+    gtk_box_pack_start(GTK_BOX(v3), font_preview, FALSE, FALSE, 8);
+    /* 应用按钮（品牌橙 #qysettings-font-apply） */
+    GtkWidget *b_font_apply = gtk_button_new_with_label(TR("应用"));
+    gtk_widget_set_name(b_font_apply, "qysettings-font-apply");
+    g_signal_connect(b_font_apply, "clicked", G_CALLBACK(on_font_apply), NULL);
+    gtk_box_pack_start(GTK_BOX(v3), b_font_apply, FALSE, FALSE, 8);
+
+    font_fill_combo();
+    font_load_current();
+    font_update_preview();
     gtk_notebook_append_page(GTK_NOTEBOOK(nb), v3, tab_with_icon(TR("字体"), QY_ICON_SETTINGS));
 
     /* 服务 */

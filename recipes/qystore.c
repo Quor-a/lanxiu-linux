@@ -25,6 +25,7 @@ static char g_file[512] = "", g_name[128] = "", g_status[32] = "";
 static char g_filter[256] = "";      /* 当前搜索词 */
 static int g_status_filter = 0;       /* 0=全部 1=已安装 2=可安装 */
 static GtkWidget *b_all = NULL, *b_inst = NULL, *b_avail = NULL;
+static GtkWidget *spinner = NULL;    /* 搜索/安装加载动画（release 256） */
 
 static int is_installed(const char *name) {
     char p[300];
@@ -350,8 +351,12 @@ static void on_act(GtkWidget *w, gpointer ud) {
         build_install_cmd(g_file, cmd, sizeof cmd);
     }
     append_log(TR("执行中…"));
-    while (gtk_events_pending()) gtk_main_iteration();
+    if (spinner) {
+        gtk_spinner_start(GTK_SPINNER(spinner));
+        while (gtk_events_pending()) gtk_main_iteration();
+    }
     rc = system(cmd);
+    if (spinner) gtk_spinner_stop(GTK_SPINNER(spinner));
     char msg[128];
     snprintf(msg, sizeof msg, rc == 0 ? TR("完成 OK") : TR("失败 (rc=%d)"), rc);
     append_log(msg);
@@ -363,7 +368,12 @@ static void on_act(GtkWidget *w, gpointer ud) {
 static void on_search(GtkSearchEntry *e, gpointer ud) {
     (void)ud;
     g_strlcpy(g_filter, gtk_entry_get_text(GTK_ENTRY(e)), sizeof g_filter);
+    if (spinner) {
+        gtk_spinner_start(GTK_SPINNER(spinner));
+        while (gtk_events_pending()) gtk_main_iteration();
+    }
     load_repo(g_filter, g_status_filter);
+    if (spinner) gtk_spinner_stop(GTK_SPINNER(spinner));
 }
 
 /* 状态筛选按钮：0 全部 / 1 已安装 / 2 可安装 */
@@ -402,10 +412,13 @@ int main(int argc, char **argv) {
     GtkWidget *search = gtk_search_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(search), TR("搜索软件包…"));
     g_signal_connect(search, "search-changed", G_CALLBACK(on_search), NULL);
+    spinner = gtk_spinner_new();
+    gtk_widget_set_size_request(spinner, 16, 16);
     GtkWidget *b_refresh = gtk_button_new_with_label(TR("刷新"));
     qy_add_class(b_refresh, "qy-btn");
     g_signal_connect(b_refresh, "clicked", G_CALLBACK(on_refresh), NULL);
     gtk_box_pack_start(GTK_BOX(search_row), search, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(search_row), spinner, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(search_row), b_refresh, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), search_row, FALSE, FALSE, 0);
 
