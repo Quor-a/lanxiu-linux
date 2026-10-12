@@ -491,6 +491,11 @@ static gboolean tick(gpointer ud) {
         disk = 1.0 - (double)sv.f_bavail / (double)sv.f_blocks;
         if (disk < 0) disk = 0; if (disk > 1) disk = 1;
         if (hist_n > 0) disk_hist[hist_n - 1] = disk;
+        /* 内存+磁盘 合并大数字标签（release 267） */
+        char diskbig[96];
+        g_snprintf(diskbig, sizeof diskbig, TR("内存 %d%% · 磁盘 %d%%"),
+                   (int)(last_mem * 100 + 0.5), (int)(disk * 100 + 0.5));
+        if (mem_label) gtk_label_set_text(GTK_LABEL(mem_label), diskbig);
     }
     g_snprintf(big, sizeof big, TR("磁盘 %d%%"), (int)(disk * 100 + 0.5));
     if (disk_label) gtk_label_set_text(GTK_LABEL(disk_label), big);
