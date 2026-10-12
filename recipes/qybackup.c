@@ -32,6 +32,22 @@ static void set_status(const char *text) {
         gtk_label_set_text(GTK_LABEL(status_label), text);
 }
 
+/* 执行日志（release 265）：~/.local/share/lanxiu/backup.log */
+static void backup_log(const char *op, const char *label, const char *path) {
+    GDateTime *dt = g_date_time_new_now_local();
+    gchar *ts = g_date_time_format(dt, "%Y-%m-%d %H:%M:%S");
+    gchar *dir = g_build_filename(g_get_user_data_dir(), "lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    gchar *fp = g_build_filename(dir, "backup.log", NULL);
+    gchar *line = g_strdup_printf("%s|%s|%s|%s\n", ts, op, label ? label : "", path ? path : "");
+    gchar *old = NULL; gsize len = 0;
+    if (!g_file_get_contents(fp, &old, &len, NULL)) old = g_strdup("");
+    gchar *nl = g_strdup_printf("%s%s", old ? old : "", line);
+    g_file_set_contents(fp, nl, -1, NULL);
+    g_free(nl); g_free(old); g_free(line); g_free(fp); g_free(dir); g_free(ts);
+    g_date_time_unref(dt);
+}
+
 /* 检查 PATH 中是否存在程序（g_find_program_in_path 返回需 g_free） */
 static gboolean has_program(const char *name) {
     gchar *p = g_find_program_in_path(name);
@@ -106,9 +122,11 @@ static void on_job_exited(GPid pid, gint status, gpointer ud) {
     char st[512];
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
         g_snprintf(st, sizeof st, "%s「%s」", TR("完成"), job->label);
+        backup_log("备份", job->label, NULL);
     } else {
         g_snprintf(st, sizeof st, "%s「%s」（%s %d）", TR("失败"), job->label,
                     TR("退出码"), WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        backup_log("失败", job->label, NULL);
     }
     set_status(st);
     refresh_backup_list();
@@ -455,11 +473,35 @@ static void on_sched_enable(GtkWidget *w, gpointer ud) {
     g_string_free(newtab, TRUE);
 
     set_status(TR("已启用计划备份"));
+    backup_log("计划启用", cmd, NULL);
     if (sched_status_label) {
         gchar *s = g_strdup_printf(TR("计划: %s %s"), TR("已启用"), time_text);
         gtk_label_set_text(GTK_LABEL(sched_status_label), s);
         g_free(s);
     }
+}
+
+/* 查看备份日志（release 265） */
+static void on_show_log(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(TR("备份日志"), NULL, GTK_DIALOG_MODAL,
+        TR("关闭"), GTK_RESPONSE_CLOSE, NULL);
+    qy_window_setup(GTK_WINDOW(dlg), 520, 360, 420, 280, FALSE);
+    GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
+    GtkWidget *tv = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(tv), FALSE);
+    gchar *fp = g_build_filename(g_get_user_data_dir(), "lanxiu", "backup.log", NULL);
+    gchar *content = NULL;
+    if (g_file_get_contents(fp, &content, NULL, NULL) && content) {
+        gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(tv)), content, -1);
+    } else {
+        gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(tv)), TR("暂无日志"), -1);
+    }
+    g_free(content); g_free(fp);
+    gtk_container_add(GTK_CONTAINER(sw), tv);
+    gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dlg))), sw, TRUE, TRUE, 0);
+    gtk_widget_show_all(dlg);
+    g_signal_connect(dlg, "response", G_CALLBACK(gtk_widget_destroy), NULL);
 }
 
 /* 停用计划备份：从 crontab 中移除计划行 */
@@ -628,6 +670,11 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(op_bar), b_delete, FALSE, FALSE, 0);
     gtk_box_pack_end(GTK_BOX(op_bar), NULL, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), op_bar, FALSE, FALSE, 0);
+
+    GtkWidget *b_log = gtk_button_new_with_label(TR("查看日志"));
+    qy_add_class(b_log, "qy-btn");
+    g_signal_connect(b_log, "clicked", G_CALLBACK(on_show_log), NULL);
+    gtk_box_pack_start(GTK_BOX(vbox), b_log, FALSE, FALSE, 0);
 
     gtk_widget_show_all(win);
     refresh_backup_list();
