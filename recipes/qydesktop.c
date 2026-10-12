@@ -298,6 +298,148 @@ static void on_task_close_clicked(GtkButton *btn, gpointer ud) {
     if (f) { fprintf(f, "%u close\n", id); fclose(f); }
 }
 
+/* ---------- 任务栏窗口预览（hover Popover） ---------- */
+typedef struct {
+    gchar title[96];
+    GtkWidget *pop;      /* 该任务 pill 关联的预览 popover */
+} TaskPreviewData;
+
+static void task_preview_data_free(TaskPreviewData *d) {
+    if (d && d->pop) gtk_widget_destroy(d->pop);
+    g_slice_free(TaskPreviewData, d);
+}
+
+/* 统计任务栏中同名窗口数量（taskbar_parse 去重前的原始计数） */
+static int count_windows_for_title(const char *title) {
+    FILE *f = fopen(QY_WINDOWS, "r");
+    if (!f) return 0;
+    char line[256];
+    int n = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *tab = strchr(line, '\t');
+        if (!tab) continue;
+        char *rest = tab + 1;
+        char *at = strchr(rest, '@');
+        if (at) *at = 0;
+        char *nl = strchr(rest, '\n');
+        if (nl) *nl = 0;
+        if (!rest[0]) continue;
+        if (strncmp(rest, "qydesktop", 9) == 0) continue;
+        if (strcmp(rest, "qyappmenu") == 0) continue;
+        if (strcmp(rest, title) == 0) n++;
+    }
+    fclose(f);
+    return n;
+}
+
+/* 按窗口标题推断可启动的命令行（用于「打开新窗口」） */
+static const char *app_cmdline_for_title(const char *title) {
+    for (int i = 0; i < NAPPS; i++)
+        if (apps[i].name && strstr(title, apps[i].name))
+            return apps[i].cmdline;
+    if (strstr(title, "图片") || strstr(title, "图像") || strstr(title, "查看")) return "qyview";
+    if (strstr(title, "文本") || strstr(title, "编辑器")) return "qyedit";
+    if (strstr(title, "浏览器")) return "qybrowser";
+    if (strstr(title, "压缩")) return "qyarc";
+    if (strstr(title, "剪贴板")) return "qyclip";
+    if (strstr(title, "截图")) return "qyshot";
+    if (strstr(title, "网络")) return "qynet";
+    if (strstr(title, "驱动")) return "qydriver";
+    if (strstr(title, "锁屏")) return "qylock";
+    if (strstr(title, "欢迎")) return "qywelcome";
+    if (strstr(title, "用户")) return "qyusers";
+    return NULL;
+}
+
+/* 「切换窗口」：wmctrl 有则用，无则提示 */
+static void preview_switch_clicked(GtkButton *b, gpointer ud) {
+    (void)b;
+    GtkWidget *pop = GTK_WIDGET(ud);
+    const char *title = g_object_get_data(G_OBJECT(pop), "qy-preview-title");
+    GtkWidget *hint = g_object_get_data(G_OBJECT(pop), "qy-preview-hint");
+    if (g_find_program_in_path("wmctrl")) {
+        gchar *q = g_shell_quote(title ? title : "");
+        gchar *cmd = g_strdup_printf("wmctrl -a %s 2>/dev/null", q);
+        g_free(q);
+        g_spawn_command_line_async(cmd, NULL);
+        g_free(cmd);
+        if (hint) gtk_label_set_text(GTK_LABEL(hint), TR("已请求切换窗口"));
+    } else if (hint) {
+        gtk_label_set_text(GTK_LABEL(hint), TR("未安装 wmctrl，无法切换窗口"));
+    }
+}
+
+/* 「打开新窗口」：识别应用则启动，否则提示 */
+static void preview_new_clicked(GtkButton *b, gpointer ud) {
+    (void)b;
+    GtkWidget *pop = GTK_WIDGET(ud);
+    const char *title = g_object_get_data(G_OBJECT(pop), "qy-preview-title");
+    GtkWidget *hint = g_object_get_data(G_OBJECT(pop), "qy-preview-hint");
+    const char *cmdline = app_cmdline_for_title(title ? title : "");
+    if (cmdline) {
+        launch_cmd(cmdline);
+        if (hint) gtk_label_set_text(GTK_LABEL(hint), TR("已打开新窗口"));
+    } else if (hint) {
+        gtk_label_set_text(GTK_LABEL(hint), TR("无法识别应用，不能打开新窗口"));
+    }
+}
+
+static GtkWidget *build_task_preview_popover(GtkWidget *anchor, const char *title) {
+    GtkWidget *pop = gtk_popover_new(anchor);
+    gtk_popover_set_position(GTK_POPOVER(pop), GTK_POS_BOTTOM);
+    gtk_popover_set_modal(GTK_POPOVER(pop), FALSE);
+
+    GtkWidget *v = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_widget_set_margin_start(v, 12);
+    gtk_widget_set_margin_end(v, 12);
+    gtk_widget_set_margin_top(v, 10);
+    gtk_widget_set_margin_bottom(v, 10);
+    gtk_container_add(GTK_CONTAINER(pop), v);
+
+    GtkWidget *name = gtk_label_new(title);
+    add_class(name, "qy-preview-title");
+    gtk_label_set_xalign(GTK_LABEL(name), 0.0);
+    gtk_box_pack_start(GTK_BOX(v), name, FALSE, FALSE, 0);
+
+    gchar *cnt = g_strdup_printf(TR("打开窗口数: %d"), count_windows_for_title(title));
+    GtkWidget *count = gtk_label_new(cnt);
+    g_free(cnt);
+    add_class(count, "qy-preview-count");
+    gtk_label_set_xalign(GTK_LABEL(count), 0.0);
+    gtk_box_pack_start(GTK_BOX(v), count, FALSE, FALSE, 0);
+
+    GtkWidget *hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *b_sw = gtk_button_new_with_label(TR("切换窗口"));
+    add_class(b_sw, "qy-btn");
+    GtkWidget *b_new = gtk_button_new_with_label(TR("打开新窗口"));
+    add_class(b_new, "qy-btn");
+    gtk_box_pack_start(GTK_BOX(hb), b_sw, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(hb), b_new, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(v), hb, FALSE, FALSE, 0);
+
+    GtkWidget *hint = gtk_label_new("");
+    add_class(hint, "qy-preview-hint");
+    gtk_label_set_xalign(GTK_LABEL(hint), 0.0);
+    gtk_box_pack_start(GTK_BOX(v), hint, FALSE, FALSE, 0);
+
+    g_object_set_data_full(G_OBJECT(pop), "qy-preview-title", g_strdup(title), g_free);
+    g_object_set_data(G_OBJECT(pop), "qy-preview-hint", hint);
+    g_signal_connect(b_sw, "clicked", G_CALLBACK(preview_switch_clicked), pop);
+    g_signal_connect(b_new, "clicked", G_CALLBACK(preview_new_clicked), pop);
+    return pop;
+}
+
+/* 悬停任务 pill：弹出窗口预览 Popover */
+static gboolean on_task_enter(GtkWidget *w, GdkEventCrossing *ev, gpointer ud) {
+    (void)ev; (void)ud;
+    TaskPreviewData *d = g_object_get_data(G_OBJECT(w), "qy-task-preview");
+    if (!d) return FALSE;
+    if (!d->pop)
+        d->pop = build_task_preview_popover(w, d->title);
+    gtk_popover_popup(GTK_POPOVER(d->pop));
+    return FALSE;
+}
+
 /* 按窗口标题映射统一图标 id（任务 pill 图标） */
 static QyIconId task_icon_id(const char *title) {
     /* qy_icon_for_app 统一映射兜底（未识别时回退到本地标题匹配） */
@@ -411,6 +553,13 @@ static void refresh_taskbar(void) {
             add_class(b, "qy-task-pill-active");
         g_signal_connect(b, "clicked", G_CALLBACK(on_task_clicked),
                          GUINT_TO_POINTER(wins[i].id));
+        /* hover 窗口预览：应用名 + 窗口数 + 切换/打开新窗口 */
+        TaskPreviewData *tp = g_slice_new0(TaskPreviewData);
+        g_strlcpy(tp->title, wins[i].title, sizeof tp->title);
+        tp->pop = NULL;
+        g_object_set_data_full(G_OBJECT(b), "qy-task-preview", tp,
+                               (GDestroyNotify)task_preview_data_free);
+        g_signal_connect(b, "enter-notify-event", G_CALLBACK(on_task_enter), NULL);
         gtk_box_pack_start(GTK_BOX(taskbar_box), b, FALSE, FALSE, 6);
         gtk_widget_show_all(b);
     }
@@ -871,27 +1020,264 @@ static gboolean auto_res_apply(gpointer p) {
     return G_SOURCE_REMOVE;
 }
 
-/* 点击通知图标：弹出通知历史 */
+/* ---------- 通知中心快捷开关面板 ---------- */
+enum { QUICK_WIFI, QUICK_BT, QUICK_DND, QUICK_POWER };
+
+/* 读取键值 conf 的 on/off 状态（如 wifi=on） */
+static gboolean conf_read_onoff(const char *path, const char *key) {
+    gchar *c = NULL;
+    gboolean on = FALSE;
+    if (g_file_get_contents(path, &c, NULL, NULL) && c) {
+        char *line = c;
+        size_t keylen = strlen(key);
+        while (line && *line) {
+            if (strncmp(line, key, keylen) == 0 && line[keylen] == '=') {
+                on = (g_ascii_strncasecmp(line + keylen + 1, "on", 2) == 0);
+                break;
+            }
+            char *nl = strchr(line, '\n');
+            line = nl ? nl + 1 : NULL;
+        }
+        g_free(c);
+    }
+    return on;
+}
+
+/* 读取键值 conf 的数字状态（如 dnd=1 / power_saver=1） */
+static gboolean conf_read_num(const char *path, const char *key) {
+    gchar *c = NULL;
+    gboolean on = FALSE;
+    if (g_file_get_contents(path, &c, NULL, NULL) && c) {
+        char *line = c;
+        size_t keylen = strlen(key);
+        while (line && *line) {
+            if (strncmp(line, key, keylen) == 0 && line[keylen] == '=') {
+                on = (line[keylen + 1] == '1');
+                break;
+            }
+            char *nl = strchr(line, '\n');
+            line = nl ? nl + 1 : NULL;
+        }
+        g_free(c);
+    }
+    return on;
+}
+
+/* 写键值 conf（on/off 格式，保留其它行） */
+static void conf_write_onoff(const char *path, const char *key, int on) {
+    gchar *content = NULL;
+    gsize len = 0;
+    g_file_get_contents(path, &content, &len, NULL);
+    GString *out = g_string_new(NULL);
+    char *line = content;
+    size_t keylen = strlen(key);
+    int replaced = 0;
+    while (line && *line) {
+        char *nl = strchr(line, '\n');
+        size_t llen = nl ? (size_t)(nl - line) : strlen(line);
+        if (strncmp(line, key, keylen) == 0 && line[keylen] == '=') {
+            g_string_append_printf(out, "%s=%s", key, on ? "on" : "off");
+            replaced = 1;
+        } else {
+            g_string_append_len(out, line, llen);
+        }
+        if (nl) g_string_append_c(out, '\n');
+        line = nl ? nl + 1 : NULL;
+    }
+    g_free(content);
+    if (!replaced)
+        g_string_append_printf(out, "%s=%s\n", key, on ? "on" : "off");
+    g_file_set_contents(path, out->str, out->len, NULL);
+    g_string_free(out, TRUE);
+}
+
+/* 写键值 conf（数字 1/0 格式，保留其它行） */
+static void conf_write_num(const char *path, const char *key, int on) {
+    gchar *content = NULL;
+    gsize len = 0;
+    g_file_get_contents(path, &content, &len, NULL);
+    GString *out = g_string_new(NULL);
+    char *line = content;
+    size_t keylen = strlen(key);
+    int replaced = 0;
+    while (line && *line) {
+        char *nl = strchr(line, '\n');
+        size_t llen = nl ? (size_t)(nl - line) : strlen(line);
+        if (strncmp(line, key, keylen) == 0 && line[keylen] == '=') {
+            g_string_append_printf(out, "%s=%d", key, on ? 1 : 0);
+            replaced = 1;
+        } else {
+            g_string_append_len(out, line, llen);
+        }
+        if (nl) g_string_append_c(out, '\n');
+        line = nl ? nl + 1 : NULL;
+    }
+    g_free(content);
+    if (!replaced)
+        g_string_append_printf(out, "%s=%d\n", key, on ? 1 : 0);
+    g_file_set_contents(path, out->str, out->len, NULL);
+    g_string_free(out, TRUE);
+}
+
+/* 切换快捷开关背景色（CSS .qy-quick-toggle-on） */
+static void quick_toggle_apply_style(GtkWidget *btn, gboolean on) {
+    GtkStyleContext *ctx = gtk_widget_get_style_context(btn);
+    if (on)
+        gtk_style_context_add_class(ctx, "qy-quick-toggle-on");
+    else
+        gtk_style_context_remove_class(ctx, "qy-quick-toggle-on");
+}
+
+/* 快捷开关点击：写对应 conf + 切换外观 + 反馈提示 */
+static void on_quick_toggle(GtkToggleButton *btn, gpointer ud) {
+    int which = GPOINTER_TO_INT(ud);
+    gboolean on = gtk_toggle_button_get_active(btn);
+    const char *path = NULL, *key = NULL;
+    gboolean numeric = FALSE;
+    const char *msg = NULL;
+    GtkWidget *hint = g_object_get_data(G_OBJECT(btn), "hint-label");
+
+    switch (which) {
+    case QUICK_WIFI:
+        path = "/etc/qywifi.conf"; key = "wifi";
+        msg = on ? TR("WiFi 已开启") : TR("WiFi 已关闭");
+        break;
+    case QUICK_BT:
+        path = "/etc/qybt.conf"; key = "bluetooth";
+        msg = on ? TR("蓝牙已开启") : TR("蓝牙已关闭");
+        break;
+    case QUICK_DND:
+        path = "/etc/qynotifd.conf"; key = "dnd"; numeric = TRUE;
+        msg = on ? TR("免打扰已开启") : TR("免打扰已关闭");
+        break;
+    case QUICK_POWER:
+        path = "/etc/qypower.conf"; key = "power_saver"; numeric = TRUE;
+        msg = on ? TR("省电模式已开启") : TR("省电模式已关闭");
+        break;
+    default:
+        return;
+    }
+
+    if (numeric) conf_write_num(path, key, on);
+    else         conf_write_onoff(path, key, on);
+
+    quick_toggle_apply_style(GTK_WIDGET(btn), on);
+    if (hint) gtk_label_set_text(GTK_LABEL(hint), msg);
+
+    if (which == QUICK_DND) {
+        /* 通知 qynotifd 重启以应用免打扰（写 conf 已触发其 /etc 监视，重启兜底） */
+        g_spawn_command_line_async(
+            "sh -c 'pkill -x qynotifd 2>/dev/null; sleep 0.1; qynotifd 2>/dev/null &'", NULL);
+    } else if (which == QUICK_WIFI && !proc_running("qynotifd") && hint) {
+        /* 无后端（qynotifd 未运行）时提示仅保存配置 */
+        gtk_label_set_text(GTK_LABEL(hint), TR("WiFi 后端未运行（qynotifd），仅保存配置"));
+    }
+}
+
+/* 构造一个快捷开关：图标 + 文字，带状态背景色 */
+static GtkWidget *quick_toggle_new(const char *label, QyIconId icon, int which,
+                                   gboolean active, GtkWidget *hint) {
+    GtkWidget *btn = gtk_toggle_button_new();
+    add_class(btn, "qy-quick-toggle");
+    if (active) add_class(btn, "qy-quick-toggle-on");
+    gtk_widget_set_size_request(btn, -1, 54);
+    GtkWidget *v = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
+    gtk_container_add(GTK_CONTAINER(btn), v);
+    GdkPixbuf *pb = qy_icon_pixbuf(icon, 20, NULL);
+    GtkWidget *img = gtk_image_new_from_pixbuf(pb);
+    if (pb) g_object_unref(pb);
+    gtk_box_pack_start(GTK_BOX(v), img, FALSE, FALSE, 0);
+    GtkWidget *lb = gtk_label_new(label);
+    add_class(lb, "qy-quick-toggle-label");
+    gtk_box_pack_start(GTK_BOX(v), lb, FALSE, FALSE, 0);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), active);
+    g_object_set_data(G_OBJECT(btn), "hint-label", hint);
+    g_signal_connect(btn, "toggled", G_CALLBACK(on_quick_toggle), GINT_TO_POINTER(which));
+    return btn;
+}
+
+static GtkWidget *notif_pop = NULL;   /* 当前打开的通知中心 popover */
+
+static void on_notif_pop_destroy(GtkWidget *w, gpointer ud) {
+    (void)ud;
+    if (notif_pop == w) notif_pop = NULL;
+}
+
+/* 点击通知图标：弹出通知中心（快捷开关行 + 历史列表） */
 static gboolean on_notif_clicked(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
     (void)w; (void)ev; (void)ud;
+    if (notif_pop) gtk_widget_destroy(notif_pop);
+
+    GtkWidget *pop = gtk_popover_new(w);
+    gtk_popover_set_position(GTK_POPOVER(pop), GTK_POS_BOTTOM);
+    gtk_popover_set_modal(GTK_POPOVER(pop), FALSE);
+    g_signal_connect(pop, "destroy", G_CALLBACK(on_notif_pop_destroy), NULL);
+    notif_pop = pop;
+
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_widget_set_margin_start(vbox, 12);
+    gtk_widget_set_margin_end(vbox, 12);
+    gtk_widget_set_margin_top(vbox, 10);
+    gtk_widget_set_margin_bottom(vbox, 8);
+    gtk_container_add(GTK_CONTAINER(pop), vbox);
+
+    GtkWidget *title = gtk_label_new(TR("通知中心"));
+    add_class(title, "qy-notif-panel-title");
+    gtk_label_set_xalign(GTK_LABEL(title), 0.0);
+    gtk_box_pack_start(GTK_BOX(vbox), title, FALSE, FALSE, 0);
+
+    /* 快捷开关行（GtkGrid 4 列） */
+    GtkWidget *grid = gtk_grid_new();
+    gtk_grid_set_column_homogeneous(GTK_GRID(grid), TRUE);
+    gtk_grid_set_row_homogeneous(GTK_GRID(grid), TRUE);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 6);
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 4);
+    gtk_box_pack_start(GTK_BOX(vbox), grid, FALSE, FALSE, 0);
+
+    gboolean wifi_on = conf_read_onoff("/etc/qywifi.conf", "wifi");
+    gboolean bt_on   = conf_read_onoff("/etc/qybt.conf", "bluetooth");
+    gboolean dnd_on  = conf_read_num("/etc/qynotifd.conf", "dnd");
+    gboolean pwr_on  = conf_read_num("/etc/qypower.conf", "power_saver");
+
+    /* 提示标签（开关反馈），创建于 grid 之后，快捷开关引用它 */
+    GtkWidget *hint = gtk_label_new("");
+    add_class(hint, "qy-preview-hint");
+    gtk_label_set_xalign(GTK_LABEL(hint), 0.0);
+    gtk_box_pack_start(GTK_BOX(vbox), hint, FALSE, FALSE, 0);
+
+    gtk_grid_attach(GTK_GRID(grid),
+        quick_toggle_new(TR("WiFi"), QY_ICON_NETWORK, QUICK_WIFI, wifi_on, hint), 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid),
+        quick_toggle_new(TR("蓝牙"), QY_ICON_DRIVER, QUICK_BT, bt_on, hint), 1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid),
+        quick_toggle_new(TR("勿扰"), QY_ICON_LOCK, QUICK_DND, dnd_on, hint), 2, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid),
+        quick_toggle_new(TR("省电"), QY_ICON_POWER, QUICK_POWER, pwr_on, hint), 3, 0, 1, 1);
+
+    gtk_box_pack_start(GTK_BOX(vbox), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 4);
+
+    GtkWidget *hist_hdr = gtk_label_new(TR("通知历史"));
+    add_class(hist_hdr, "qy-notif-panel-title");
+    gtk_label_set_xalign(GTK_LABEL(hist_hdr), 0.0);
+    gtk_box_pack_start(GTK_BOX(vbox), hist_hdr, FALSE, FALSE, 0);
+
     gchar *hist = NULL;
     if (!g_file_get_contents("/tmp/qynotif/history.log", &hist, NULL, NULL) || !hist)
         hist = g_strdup(TR("暂无通知"));
-    GtkWidget *dlg = gtk_dialog_new_with_buttons(TR("通知历史"), NULL, GTK_DIALOG_MODAL,
-        TR("关闭"), GTK_RESPONSE_CLOSE, NULL);
+    GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(sw, 320, 180);
     GtkWidget *tv = gtk_text_view_new();
     gtk_text_view_set_editable(GTK_TEXT_VIEW(tv), FALSE);
     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(tv), GTK_WRAP_WORD_CHAR);
+    gtk_widget_set_name(tv, "qy-notif-history");
     gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(tv)), hist, -1);
-    GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     gtk_container_add(GTK_CONTAINER(sw), tv);
-    gtk_widget_set_size_request(sw, 460, 260);
-    gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dlg))), sw, TRUE, TRUE, 4);
-    gtk_widget_show_all(dlg);
-    gtk_dialog_run(GTK_DIALOG(dlg));
-    gtk_widget_destroy(dlg);
+    gtk_box_pack_start(GTK_BOX(vbox), sw, TRUE, TRUE, 0);
     g_free(hist);
+
+    gtk_widget_show_all(pop);
+    gtk_popover_popup(GTK_POPOVER(pop));
     notif_badge_hide();   /* 已读：点击查看后隐藏未读徽标 */
     return TRUE;
 }

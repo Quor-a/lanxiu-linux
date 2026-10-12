@@ -54,6 +54,11 @@ static GtkWidget *b_res = NULL, *b_pur = NULL, *b_emp = NULL;
 static GtkWidget *b_bm = NULL;   /* 添加书签按钮（release 256） */
 static GtkWidget *book_list = NULL; /* 侧边栏书签 GtkListBox */
 
+/* 预览面板（release 258） */
+static GtkWidget *preview_revealer = NULL;  /* 右侧 GtkRevealer */
+static GtkWidget *preview_box = NULL;        /* 预览内容容器 */
+static GtkWidget *b_preview = NULL;          /* 工具栏「预览」开关 */
+
 static void set_mode_buttons(void) {
     if (!b_mk) return;
     gboolean trash = in_trash;
@@ -1184,6 +1189,175 @@ static GdkPixbuf *load_icon_for(const char *name, gboolean isdir) {
     return qy_icon_pixbuf(icon_id_for(name, isdir), 48, NULL);
 }
 
+/* ---------- 右侧预览面板 ---------- */
+static gboolean preview_is_image(const char *ext) {
+    return ext && (!g_ascii_strcasecmp(ext, ".png") || !g_ascii_strcasecmp(ext, ".jpg") ||
+                   !g_ascii_strcasecmp(ext, ".jpeg") || !g_ascii_strcasecmp(ext, ".bmp") ||
+                   !g_ascii_strcasecmp(ext, ".webp"));
+}
+
+static gboolean preview_is_text(const char *ext) {
+    return ext && (!g_ascii_strcasecmp(ext, ".txt") || !g_ascii_strcasecmp(ext, ".c") ||
+                   !g_ascii_strcasecmp(ext, ".h") || !g_ascii_strcasecmp(ext, ".md") ||
+                   !g_ascii_strcasecmp(ext, ".sh") || !g_ascii_strcasecmp(ext, ".py") ||
+                   !g_ascii_strcasecmp(ext, ".ini") || !g_ascii_strcasecmp(ext, ".conf") ||
+                   !g_ascii_strcasecmp(ext, ".desktop") || !g_ascii_strcasecmp(ext, ".log"));
+}
+
+/* 从当前活动视图（列表/图标）取选中文件名 */
+static gboolean preview_selected_name(gchar **name) {
+    *name = NULL;
+    if (icon_mode && GTK_IS_ICON_VIEW(icon_view)) {
+        GList *items = gtk_icon_view_get_selected_items(GTK_ICON_VIEW(icon_view));
+        if (items) {
+            GtkTreeModel *m = gtk_icon_view_get_model(GTK_ICON_VIEW(icon_view));
+            GtkTreeIter it;
+            if (gtk_tree_model_get_iter(m, &it, items->data))
+                gtk_tree_model_get(m, &it, 1, name, -1);
+            g_list_free_full(items, (GDestroyNotify)gtk_tree_path_free);
+        }
+    }
+    if (!*name)
+        selected_name(name);
+    return *name != NULL;
+}
+
+static void preview_size_str(goffset size, char *buf, size_t n) {
+    if (size >= 1024 * 1024)
+        g_snprintf(buf, n, "%.1f MB", size / 1024.0 / 1024.0);
+    else if (size >= 1024)
+        g_snprintf(buf, n, "%.1f KB", size / 1024.0);
+    else
+        g_snprintf(buf, n, "%lld B", (long long)size);
+}
+
+/* 刷新预览内容（选中文件时显示缩略图 / 文本前 500 字节 / 图标+信息） */
+static void update_preview(void) {
+    if (!preview_revealer || !preview_box) return;
+
+    GList *ch = gtk_container_get_children(GTK_CONTAINER(preview_box));
+    for (GList *l = ch; l; l = l->next)
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(ch);
+
+    gchar *name = NULL;
+    if (!preview_selected_name(&name) || !name) {
+        GtkWidget *lb = gtk_label_new(TR("未选择文件"));
+        add_class(lb, "qy-files-preview-empty");
+        gtk_box_pack_start(GTK_BOX(preview_box), lb, TRUE, TRUE, 0);
+        g_free(name);
+        return;
+    }
+
+    gchar *full = g_build_filename(cwd, name, NULL);
+    struct stat st;
+    gboolean has_stat = (stat(full, &st) == 0);
+    gboolean isdir = g_file_test(full, G_FILE_TEST_IS_DIR);
+    const char *ext = strrchr(name, '.');
+
+    /* 图片：缩略图 128x128 */
+    if (!isdir && preview_is_image(ext)) {
+        GdkPixbuf *pb = gdk_pixbuf_new_from_file_at_scale(full, 128, 128, TRUE, NULL);
+        if (pb) {
+            GtkWidget *img = gtk_image_new_from_pixbuf(pb);
+            g_object_unref(pb);
+            gtk_widget_set_halign(img, GTK_ALIGN_CENTER);
+            gtk_widget_set_valign(img, GTK_ALIGN_CENTER);
+            gtk_box_pack_start(GTK_BOX(preview_box), img, TRUE, TRUE, 8);
+            GtkWidget *lb = gtk_label_new(name);
+            add_class(lb, "qy-files-preview-name");
+            gtk_label_set_line_wrap(GTK_LABEL(lb), TRUE);
+            gtk_label_set_xalign(GTK_LABEL(lb), 0.0);
+            gtk_box_pack_start(GTK_BOX(preview_box), lb, FALSE, FALSE, 4);
+            if (has_stat) {
+                char sb[32];
+                preview_size_str(st.st_size, sb, sizeof sb);
+                GtkWidget *sz = gtk_label_new(sb);
+                add_class(sz, "qy-files-preview-dim");
+                gtk_label_set_xalign(GTK_LABEL(sz), 0.0);
+                gtk_box_pack_start(GTK_BOX(preview_box), sz, FALSE, FALSE, 2);
+            }
+            g_free(full); g_free(name);
+            return;
+        }
+        /* 解码失败落到通用信息 */
+    }
+
+    /* 文本：只读显示前 500 字节 */
+    if (!isdir && preview_is_text(ext)) {
+        gchar *content = NULL;
+        gsize len = 0;
+        if (g_file_get_contents(full, &content, &len, NULL)) {
+            if (len > 500) len = 500;
+            GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
+            gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+            GtkWidget *tv = gtk_text_view_new();
+            gtk_widget_set_name(tv, "qyfiles-preview-text");
+            gtk_text_view_set_editable(GTK_TEXT_VIEW(tv), FALSE);
+            gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(tv), GTK_WRAP_WORD_CHAR);
+            gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(tv), FALSE);
+            gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(tv)), content, len);
+            gtk_container_add(GTK_CONTAINER(sw), tv);
+            gtk_box_pack_start(GTK_BOX(preview_box), sw, TRUE, TRUE, 0);
+            g_free(content);
+            g_free(full); g_free(name);
+            return;
+        }
+    }
+
+    /* 目录 / 其它：图标 + 名称 + 大小 + 类型 */
+    GdkPixbuf *ipb = qy_icon_pixbuf(icon_id_for(name, isdir), 48, NULL);
+    GtkWidget *ic = gtk_image_new_from_pixbuf(ipb);
+    if (ipb) g_object_unref(ipb);
+    gtk_widget_set_halign(ic, GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(preview_box), ic, FALSE, FALSE, 8);
+
+    GtkWidget *lb = gtk_label_new(name);
+    add_class(lb, "qy-files-preview-name");
+    gtk_label_set_line_wrap(GTK_LABEL(lb), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(lb), 0.0);
+    gtk_box_pack_start(GTK_BOX(preview_box), lb, FALSE, FALSE, 4);
+
+    char size_buf[64] = "—";
+    if (has_stat && !isdir)
+        preview_size_str(st.st_size, size_buf, sizeof size_buf);
+    GtkWidget *sz = gtk_label_new(size_buf);
+    add_class(sz, "qy-files-preview-dim");
+    gtk_label_set_xalign(GTK_LABEL(sz), 0.0);
+    gtk_box_pack_start(GTK_BOX(preview_box), sz, FALSE, FALSE, 2);
+
+    char type_buf[96];
+    if (isdir)
+        g_strlcpy(type_buf, TR("文件夹"), sizeof type_buf);
+    else if (ext)
+        g_snprintf(type_buf, sizeof type_buf, "%s (%s)", TR("文件"), ext);
+    else
+        g_strlcpy(type_buf, TR("文件"), sizeof type_buf);
+    GtkWidget *ty = gtk_label_new(type_buf);
+    add_class(ty, "qy-files-preview-dim");
+    gtk_label_set_xalign(GTK_LABEL(ty), 0.0);
+    gtk_box_pack_start(GTK_BOX(preview_box), ty, FALSE, FALSE, 2);
+
+    g_free(full);
+    g_free(name);
+}
+
+/* 工具栏「预览」开关 */
+static void on_preview_toggled(GtkToggleButton *btn, gpointer ud) {
+    (void)ud;
+    gboolean active = gtk_toggle_button_get_active(btn);
+    if (preview_revealer)
+        gtk_revealer_set_reveal_child(GTK_REVEALER(preview_revealer), active);
+    if (active) update_preview();
+}
+
+/* 选中变化时刷新预览 */
+static void on_view_cursor_changed(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (preview_revealer && gtk_revealer_get_reveal_child(GTK_REVEALER(preview_revealer)))
+        update_preview();
+}
+
 /* 图标视图双击/回车打开 */
 static void on_icon_activated(GtkIconView *iv, GtkTreePath *path, gpointer ud) {
     (void)iv; (void)ud;
@@ -1288,6 +1462,27 @@ static void activate(GtkApplication *app, gpointer ud) {
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_box_pack_start(GTK_BOX(hpane), vbox, TRUE, TRUE, 0);
 
+    /* 右侧预览面板（GtkRevealer，宽 260） */
+    preview_revealer = gtk_revealer_new();
+    gtk_revealer_set_transition_type(GTK_REVEALER(preview_revealer),
+                                     GTK_REVEALER_TRANSITION_TYPE_SLIDE_LEFT);
+    gtk_revealer_set_reveal_child(GTK_REVEALER(preview_revealer), FALSE);
+    gtk_widget_set_name(preview_revealer, "qyfiles-preview");
+    GtkWidget *preview_v = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_widget_set_size_request(preview_v, 260, -1);
+    gtk_widget_set_margin_start(preview_v, 8);
+    gtk_widget_set_margin_end(preview_v, 8);
+    gtk_widget_set_margin_top(preview_v, 8);
+    gtk_widget_set_margin_bottom(preview_v, 8);
+    gtk_container_add(GTK_CONTAINER(preview_revealer), preview_v);
+    GtkWidget *ph = gtk_label_new(TR("预览"));
+    add_class(ph, "qy-files-preview-title");
+    gtk_label_set_xalign(GTK_LABEL(ph), 0.0);
+    gtk_box_pack_start(GTK_BOX(preview_v), ph, FALSE, FALSE, 0);
+    preview_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_box_pack_start(GTK_BOX(preview_v), preview_box, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(hpane), preview_revealer, FALSE, FALSE, 0);
+
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     GtkWidget *toolbar = gtk_event_box_new();
     gtk_container_add(GTK_CONTAINER(toolbar), hbox);
@@ -1339,6 +1534,9 @@ static void activate(GtkApplication *app, gpointer ud) {
     GtkWidget *b_view = qy_icon_button(QY_ICON_GRID, 18, TR("图标视图"), NULL);
     add_class(b_view, "qy-btn");
     g_signal_connect(b_view, "clicked", G_CALLBACK(on_toggle_view), NULL);
+    b_preview = gtk_toggle_button_new_with_label(TR("预览"));
+    add_class(b_preview, "qy-btn");
+    g_signal_connect(b_preview, "toggled", G_CALLBACK(on_preview_toggled), NULL);
     b_res = gtk_button_new_with_label(TR("还原"));
     add_class(b_res, "qy-btn");
     add_class(b_res, "qy-btn-danger");
@@ -1363,6 +1561,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(hbox), b_prop, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_bm, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_view, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(hbox), b_preview, FALSE, FALSE, 0);
     GtkWidget *search_entry = gtk_search_entry_new();
     gtk_widget_set_size_request(search_entry, 220, -1);
     gtk_entry_set_placeholder_text(GTK_ENTRY(search_entry), TR("搜索当前目录"));
@@ -1407,6 +1606,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_container_add(GTK_CONTAINER(scroll), view);
     g_signal_connect(view, "row-activated", G_CALLBACK(on_activated), NULL);
     g_signal_connect(view, "button-press-event", G_CALLBACK(on_popup), NULL);
+    g_signal_connect(view, "cursor-changed", G_CALLBACK(on_view_cursor_changed), NULL);
     /* 图标视图（与列表共享同一模型，第 3 列 pixbuf） */
     icon_view = gtk_icon_view_new_with_model(GTK_TREE_MODEL(store));
     gtk_icon_view_set_text_column(GTK_ICON_VIEW(icon_view), 1);
@@ -1419,6 +1619,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_icon_view_set_column_spacing(GTK_ICON_VIEW(icon_view), 8);
     gtk_icon_view_set_row_spacing(GTK_ICON_VIEW(icon_view), 8);
     g_signal_connect(icon_view, "item-activated", G_CALLBACK(on_icon_activated), NULL);
+    g_signal_connect(icon_view, "selection-changed", G_CALLBACK(on_view_cursor_changed), NULL);
     GtkWidget *scroll_icon = gtk_scrolled_window_new(NULL, NULL);
     gtk_container_add(GTK_CONTAINER(scroll_icon), icon_view);
     stack = gtk_stack_new();

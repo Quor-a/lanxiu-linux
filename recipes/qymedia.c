@@ -7,6 +7,7 @@
 #include <gtk/gtk.h>
 #include <string.h>
 #include <signal.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <glib/gstdio.h>
 #include "qytheme.h"
@@ -19,6 +20,22 @@ static GtkWidget *btn_pause = NULL;
 static GtkWidget *btn_stop = NULL;
 static GtkWidget *playlist = NULL;      /* GtkListBox 播放列表 */
 static GtkWidget *win = NULL;
+
+/* ---------- 本地歌词（LRC） ---------- */
+typedef struct {
+    double time;       /* 秒 */
+    gchar *text;
+} LyricLine;
+
+static GPtrArray *lyrics = NULL;        /* LyricLine*，按时间排序 */
+static GtkWidget *lyric_view = NULL;    /* #qy-media-lyric */
+static GtkTextBuffer *lyric_buf = NULL;
+static GtkTextTag *lyric_hl_tag = NULL; /* 当前行高亮 tag（橙底白字） */
+static GPtrArray *lyric_offsets = NULL;  /* 每行在 buffer 中的起始偏移 */
+static gint64 lyric_seg_start = 0;       /* 当前播放段起始 monotonic us */
+static double lyric_elapsed = 0.0;       /* 已累计播放秒数（暂停时冻结） */
+
+static void lyric_update_highlight(double t);   /* 前向声明 */
 
 static GPid player_pid = -1;
 static gchar *current_file = NULL;
@@ -40,6 +57,159 @@ static gboolean has_program(const char *name) {
     return ok;
 }
 
+/* 清空已加载歌词 */
+static void lyric_clear(void) {
+    if (lyrics) {
+        for (guint i = 0; i < lyrics->len; i++) {
+            LyricLine *ll = g_ptr_array_index(lyrics, i);
+            g_free(ll->text);
+            g_slice_free(LyricLine, ll);
+        }
+        g_ptr_array_set_size(lyrics, 0);
+    }
+    if (lyric_offsets) g_ptr_array_set_size(lyric_offsets, 0);
+    if (lyric_buf) gtk_text_buffer_set_text(lyric_buf, "", -1);
+}
+
+static int lyric_cmp(const void *a, const void *b) {
+    const LyricLine *la = *(const LyricLine * const *)a;
+    const LyricLine *lb = *(const LyricLine * const *)b;
+    return la->time < lb->time ? -1 : (la->time > lb->time ? 1 : 0);
+}
+
+/* 高亮当前时间对应的歌词行（橙底白字 tag） */
+static void lyric_update_highlight(double t) {
+    if (!lyrics || lyrics->len == 0 || !lyric_buf || !lyric_offsets || !lyric_hl_tag)
+        return;
+    int cur = 0;
+    for (guint i = 0; i < lyrics->len; i++) {
+        LyricLine *ll = g_ptr_array_index(lyrics, i);
+        if (ll->time <= t) cur = (int)i; else break;
+    }
+    if (cur < 0) cur = 0;
+    if (cur >= (int)lyrics->len) cur = (int)lyrics->len - 1;
+
+    GtkTextIter start, end;
+    gtk_text_buffer_get_bounds(lyric_buf, &start, &end);
+    gtk_text_buffer_remove_tag(lyric_buf, lyric_hl_tag, &start, &end);
+
+    guint off = GPOINTER_TO_UINT(g_ptr_array_index(lyric_offsets, cur));
+    guint next_off;
+    if (cur + 1 < (int)lyrics->len)
+        next_off = GPOINTER_TO_UINT(g_ptr_array_index(lyric_offsets, cur + 1)) - 1; /* 去掉行尾换行 */
+    else {
+        gtk_text_buffer_get_end_iter(lyric_buf, &end);
+        next_off = gtk_text_iter_get_offset(&end);
+    }
+    gtk_text_buffer_get_iter_at_offset(lyric_buf, &start, off);
+    gtk_text_buffer_get_iter_at_offset(lyric_buf, &end, next_off);
+    gtk_text_buffer_apply_tag(lyric_buf, lyric_hl_tag, &start, &end);
+
+    gtk_text_buffer_get_iter_at_offset(lyric_buf, &start, off);
+    gtk_text_view_scroll_to_iter(GTK_TEXT_VIEW(lyric_view), &start, 0.0, FALSE, 0, 0);
+}
+
+/* 加载同名 .lrc：同目录 <歌名>.lrc，解析 [mm:ss.xx] 行 */
+static void lyric_load(const char *audio_path) {
+    lyric_clear();
+    if (!audio_path || !audio_path[0]) {
+        if (lyric_buf) gtk_text_buffer_set_text(lyric_buf, TR("无歌词文件"), -1);
+        return;
+    }
+
+    gchar *dir = g_path_get_dirname(audio_path);
+    gchar *base = g_path_get_basename(audio_path);
+    char *dot = strrchr(base, '.');
+    gchar *stem = g_strndup(base, dot ? (gsize)(dot - base) : strlen(base));
+    gchar *lrcname = g_strdup_printf("%s.lrc", stem);
+    gchar *lrcpath = g_build_filename(dir, lrcname, NULL);
+    g_free(dir); g_free(base); g_free(stem); g_free(lrcname);
+
+    gchar *content = NULL;
+    if (!g_file_get_contents(lrcpath, &content, NULL, NULL) || !content) {
+        g_free(content); g_free(lrcpath);
+        if (lyric_buf) gtk_text_buffer_set_text(lyric_buf, TR("无歌词文件"), -1);
+        return;
+    }
+    g_free(lrcpath);
+
+    if (!lyrics) lyrics = g_ptr_array_new();
+    char **lines = g_strsplit(content, "\n", -1);
+    g_free(content);
+    for (int i = 0; lines[i]; i++) {
+        char *line = g_strstrip(lines[i]);
+        if (!line[0]) continue;
+        /* 跳过元数据标签 [ti:][ar:][al:][by:][offset:] */
+        if (line[0] == '[' &&
+            (g_ascii_strncasecmp(line + 1, "ti:", 3) == 0 ||
+             g_ascii_strncasecmp(line + 1, "ar:", 3) == 0 ||
+             g_ascii_strncasecmp(line + 1, "al:", 3) == 0 ||
+             g_ascii_strncasecmp(line + 1, "by:", 3) == 0 ||
+             g_ascii_strncasecmp(line + 1, "offset:", 7) == 0))
+            continue;
+        char *p = line;
+        double times[8];
+        int ntimes = 0;
+        while (p[0] == '[') {
+            char *rb = strchr(p, ']');
+            if (!rb) break;
+            int mm;
+            double ss;
+            if (sscanf(p + 1, "%d:%lf", &mm, &ss) == 2 && ntimes < 8)
+                times[ntimes++] = mm * 60.0 + ss;
+            p = rb + 1;
+        }
+        if (ntimes > 0 && p[0]) {
+            for (int k = 0; k < ntimes; k++) {
+                LyricLine *ll = g_slice_new(LyricLine);
+                ll->time = times[k];
+                ll->text = g_strdup(p);
+                g_ptr_array_add(lyrics, ll);
+            }
+        }
+    }
+    g_strfreev(lines);
+
+    if (lyrics->len == 0) {
+        if (lyric_buf) gtk_text_buffer_set_text(lyric_buf, TR("无歌词文件"), -1);
+        return;
+    }
+
+    qsort(lyrics->pdata, lyrics->len, sizeof(gpointer), lyric_cmp);
+
+    if (!lyric_buf) return;
+    gtk_text_buffer_set_text(lyric_buf, "", -1);
+    GtkTextIter iter;
+    gtk_text_buffer_get_start_iter(lyric_buf, &iter);
+    for (guint i = 0; i < lyrics->len; i++) {
+        LyricLine *ll = g_ptr_array_index(lyrics, i);
+        if (i > 0) gtk_text_buffer_insert(lyric_buf, &iter, "\n", 1);
+        guint off = gtk_text_iter_get_offset(&iter);
+        g_ptr_array_add(lyric_offsets, GUINT_TO_POINTER(off));
+        gtk_text_buffer_insert(lyric_buf, &iter, ll->text, -1);
+    }
+    if (!lyric_hl_tag)
+        lyric_hl_tag = gtk_text_buffer_create_tag(lyric_buf, "qy-media-lyric-hl",
+            "background", "#FF5C1A", "foreground", "#ffffff",
+            "weight", PANGO_WEIGHT_BOLD, NULL);
+    lyric_update_highlight(0.0);
+}
+
+/* 当前播放到的时间（暂停冻结） */
+static double lyric_current_time(void) {
+    if (lyric_seg_start > 0)
+        return lyric_elapsed + (g_get_monotonic_time() - lyric_seg_start) / 1000000.0;
+    return lyric_elapsed;
+}
+
+/* 定时器：播放中滚动高亮当前歌词行 */
+static gboolean lyric_tick(gpointer ud) {
+    (void)ud;
+    if (lyrics && lyrics->len > 0 && lyric_view)
+        lyric_update_highlight(lyric_current_time());
+    return G_SOURCE_CONTINUE;
+}
+
 /* 切换暂停按钮图标（qy_icon_button 内部是图片子部件） */
 static void set_pause_icon(QyIconId id) {
     if (!btn_pause) return;
@@ -58,6 +228,8 @@ static void stop_player(void) {
     if (player_pid > 0)
         kill(player_pid, SIGKILL);
     paused = FALSE;
+    lyric_seg_start = 0;
+    lyric_elapsed = 0.0;
     set_pause_icon(QY_ICON_PAUSE);
 }
 
@@ -69,6 +241,8 @@ static void on_player_exited(GPid pid, gint status, gpointer ud) {
     if (pid != player_pid) return;
     player_pid = -1;
     paused = FALSE;
+    lyric_seg_start = 0;
+    lyric_elapsed = 0.0;
     set_pause_icon(QY_ICON_PAUSE);
     if (player_manual_stop) {
         player_manual_stop = FALSE;
@@ -89,6 +263,8 @@ static void play_file(const char *path) {
     char st[512];
     g_snprintf(st, sizeof st, "%s: %s...", TR("正在播放"), path);
     gtk_label_set_text(GTK_LABEL(status_label), st);
+    /* 自动查找同名 .lrc 歌词（不阻塞播放） */
+    lyric_load(path);
 
     /* 按扩展名选择解码器：WAV 用 aplay；MP3/OGG 用 mpg123/mpv/ffplay；FLAC 用 mpv/ffplay */
     const char *ext = "";
@@ -136,6 +312,8 @@ static void play_file(const char *path) {
         player_manual_stop = FALSE;
         g_child_watch_add(player_pid, on_player_exited, NULL);
         paused = FALSE;
+        lyric_elapsed = 0.0;
+        lyric_seg_start = g_get_monotonic_time();
         set_pause_icon(QY_ICON_PAUSE);
     }
     g_strfreev(argv);
@@ -304,11 +482,14 @@ static void on_pause(GtkWidget *w, gpointer ud) {
     if (!paused) {
         kill(player_pid, SIGSTOP);
         paused = TRUE;
+        lyric_elapsed = lyric_current_time();
+        lyric_seg_start = 0;
         set_pause_icon(QY_ICON_PLAY);
         gtk_label_set_text(GTK_LABEL(status_label), TR("已暂停"));
     } else {
         kill(player_pid, SIGCONT);
         paused = FALSE;
+        lyric_seg_start = g_get_monotonic_time();
         set_pause_icon(QY_ICON_PAUSE);
         gtk_label_set_text(GTK_LABEL(status_label), TR("正在播放"));
     }
@@ -417,6 +598,22 @@ static void build_ui(void) {
     gtk_widget_set_halign(status_label, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(right_vbox), status_label, FALSE, FALSE, 0);
 
+    /* 右侧歌词面板（只读，#qy-media-lyric） */
+    lyrics = g_ptr_array_new();
+    lyric_offsets = g_ptr_array_new();
+    GtkWidget *lyric_sw = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(lyric_sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(lyric_sw, -1, 150);
+    lyric_view = gtk_text_view_new();
+    gtk_widget_set_name(lyric_view, "qy-media-lyric");
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(lyric_view), FALSE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(lyric_view), GTK_WRAP_WORD_CHAR);
+    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(lyric_view), FALSE);
+    lyric_buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(lyric_view));
+    gtk_text_buffer_set_text(lyric_buf, TR("无歌词文件"), -1);
+    gtk_container_add(GTK_CONTAINER(lyric_sw), lyric_view);
+    gtk_box_pack_start(GTK_BOX(right_vbox), lyric_sw, TRUE, TRUE, 0);
+
     /* 播放/停止控制条 */
     GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_halign(bar, GTK_ALIGN_CENTER);
@@ -457,6 +654,9 @@ static void build_ui(void) {
     gtk_box_pack_start(GTK_BOX(right_vbox), bar2, FALSE, FALSE, 0);
 
     gtk_widget_show_all(win);
+
+    /* 歌词高亮定时器（不阻塞播放） */
+    g_timeout_add(300, lyric_tick, NULL);
 
     const char *auto_path = g_getenv("QYMEDIA_AUTO");
     if (auto_path)
