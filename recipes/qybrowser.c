@@ -32,6 +32,9 @@ static GtkWidget *dl_toggle_btn = NULL;   /* 工具栏「下载」切换按钮 *
 static GPtrArray *hist = NULL;
 static int hist_pos = -1;
 static gboolean hist_nav = FALSE;   /* 历史导航时不重复入栈 */
+static GtkWidget *hist_btn = NULL;      /* 工具栏「历史」按钮（release 264） */
+static GtkWidget *hist_popover = NULL;  /* 历史弹出面板 */
+static GtkWidget *hist_listbox = NULL;  /* 历史 GtkListBox */
 
 static gboolean finish_fetch(gpointer ud);   /* 前向声明 */
 static void on_link_clicked(GtkWidget *w, gpointer ud);   /* 前向声明 */
@@ -313,6 +316,20 @@ static void open_url(const char *url) {
             g_ptr_array_remove_index(hist, hist->len - 1);
         g_ptr_array_add(hist, g_strdup(url));
         hist_pos = (int)hist->len - 1;
+        /* 持久化浏览历史（release 264）：~/.config/lanxiu/qybrowser-history.txt，每行 URL */
+        {
+            gchar *hp = g_build_filename(g_get_user_config_dir(), "lanxiu", "qybrowser-history.txt", NULL);
+            gchar *old = NULL; gsize olen = 0;
+            if (!g_file_get_contents(hp, &old, &olen, NULL)) old = g_strdup("");
+            gchar **ls = g_strsplit(old, "\n", -1);
+            int n = g_strv_length(ls);
+            if (n == 0 || g_strcmp0(ls[n-1], url) != 0) {
+                gchar *nl = g_strdup_printf("%s%s%s", old && old[0] ? old : "", old && old[0] ? "\n" : "", url);
+                g_file_set_contents(hp, nl, -1, NULL);
+                g_free(nl);
+            }
+            g_strfreev(ls); g_free(old); g_free(hp);
+        }
     }
     /* 每次打开替换正文 */
     gtk_text_buffer_set_text(buffer, "", -1);
@@ -335,6 +352,45 @@ static void open_url(const char *url) {
     r->url = g_strdup(url);
     GThread *t = g_thread_new("qyb-fetch", fetch_thread, r);
     g_thread_unref(t);
+}
+
+/* ---------- 浏览历史弹窗（release 264） ---------- */
+static void on_hist_row(GtkListBox *box, GtkListBoxRow *row, gpointer ud) {
+    (void)box; (void)row;
+    const char *url = ud ? (const char *)ud : NULL;
+    if (url && url[0]) open_url(url);
+}
+
+static void on_show_history(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(TR("浏览历史"), NULL, GTK_DIALOG_MODAL,
+        TR("关闭"), GTK_RESPONSE_CLOSE, NULL);
+    qy_window_setup(GTK_WINDOW(dlg), 460, 340, 380, 260, FALSE);
+    GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
+    GtkWidget *lb = gtk_list_box_new();
+    gchar *hp = g_build_filename(g_get_user_config_dir(), "lanxiu", "qybrowser-history.txt", NULL);
+    gchar *content = NULL;
+    if (g_file_get_contents(hp, &content, NULL, NULL) && content) {
+        gchar **ls = g_strsplit(content, "\n", -1);
+        int n = g_strv_length(ls);
+        int start = n > 100 ? n - 100 : 0;
+        for (int i = start; i < n; i++) {
+            if (!ls[i] || !ls[i][0]) continue;
+            GtkWidget *row = gtk_list_box_row_new();
+            GtkWidget *lbl = gtk_label_new(ls[i]);
+            gtk_label_set_xalign(GTK_LABEL(lbl), 0.0);
+            gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
+            gtk_container_add(GTK_CONTAINER(row), lbl);
+            g_signal_connect(row, "activate", G_CALLBACK(on_hist_row), g_strdup(ls[i]));
+            gtk_list_box_insert(GTK_LIST_BOX(lb), row, -1);
+        }
+        g_strfreev(ls);
+    }
+    g_free(content); g_free(hp);
+    gtk_container_add(GTK_CONTAINER(sw), lb);
+    gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dlg))), sw, TRUE, TRUE, 0);
+    gtk_widget_show_all(dlg);
+    g_signal_connect(dlg, "response", G_CALLBACK(gtk_widget_destroy), NULL);
 }
 
 static void on_back(GtkWidget *w, gpointer ud) {
@@ -960,6 +1016,9 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(bar), btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), bm_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), bm_list_btn, FALSE, FALSE, 0);
+    hist_btn = qy_icon_button(QY_ICON_CLOCK, 18, TR("历史"), NULL);
+    g_signal_connect(hist_btn, "clicked", G_CALLBACK(on_show_history), NULL);
+    gtk_box_pack_start(GTK_BOX(bar), hist_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), btn2, FALSE, FALSE, 0);
 
     /* 书签 GtkPopover：列表 + 添加当前页 + 删除 */
