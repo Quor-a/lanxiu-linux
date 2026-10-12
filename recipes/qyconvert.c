@@ -48,14 +48,21 @@ static const Unit data_units[] = {
     { "兆字节 (MB)", 1048576.0 },
     { "吉字节 (GB)", 1073741824.0 },
 };
+static const Unit speed_units[] = {
+    { "米/秒 (m/s)",      1.0 },
+    { "千米/时 (km/h)",   0.27777777778 },
+    { "英里/时 (mph)",    0.44704 },
+    { "节 (kn)",          0.51444444444 },
+};
 
-enum { CAT_LENGTH = 0, CAT_WEIGHT, CAT_TEMP, CAT_DATA };
+enum { CAT_LENGTH = 0, CAT_WEIGHT, CAT_TEMP, CAT_DATA, CAT_SPEED };
 
 static const Category cats[] = {
     { "长度", length_units, G_N_ELEMENTS(length_units) },
     { "重量", weight_units, G_N_ELEMENTS(weight_units) },
     { "温度", temp_units,   G_N_ELEMENTS(temp_units) },
     { "数据", data_units,   G_N_ELEMENTS(data_units) },
+    { "速度", speed_units,  G_N_ELEMENTS(speed_units) },
 };
 #define NCATS ((int)G_N_ELEMENTS(cats))
 
