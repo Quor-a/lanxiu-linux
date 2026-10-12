@@ -26,6 +26,13 @@ static GtkWidget *sum_lb = NULL;   /* #qy-disk-sum */
 static GtkWidget *rows_box = NULL;  /* 挂载点列表容器 */
 static GtkWidget *err_lb = NULL;    /* 错误提示 */
 
+/* 挂载树 */
+static GtkListStore *mount_store = NULL;   /* 挂载树数据 */
+static GtkWidget *mount_tv = NULL;         /* 挂载树视图 */
+static GtkWidget *fs_info_label = NULL;    /* #qydisk-fs-info 选中挂载点详情 */
+
+enum { M_TARGET, M_FSTYPE, M_SIZE, M_USED, M_AVAIL, N_MCOLS };
+
 /* 解析 "1.5G"、"512M" 等人类可读容量为字节数 */
 static guint64 parse_size(const char *s) {
     if (!s || !*s) return 0;
@@ -176,11 +183,182 @@ static void refresh_disk(void) {
     if (err_lb) gtk_widget_hide(err_lb);
 }
 
+/* ---------- 挂载树 / 文件系统信息 ---------- */
+/* 向挂载树添加一行 */
+static void mount_add_row(const char *target, const char *fstype,
+                          const char *size, const char *used, const char *avail) {
+    if (!mount_store) return;
+    GtkTreeIter it;
+    gtk_list_store_append(mount_store, &it);
+    gtk_list_store_set(mount_store, &it,
+                       M_TARGET, target ? target : "?",
+                       M_FSTYPE, fstype ? fstype : "?",
+                       M_SIZE,   size   ? size   : "—",
+                       M_USED,   used   ? used   : "—",
+                       M_AVAIL,  avail  ? avail  : "—", -1);
+}
+
+/* 回退方案：用 mount 获取 挂载点/类型，用 df -h 补 容量/已用/可用 */
+static void mount_fallback(void) {
+    gchar *mout = NULL, *derr = NULL, *dout = NULL;
+    GError *err = NULL;
+    gboolean ok = g_spawn_command_line_sync("mount", &mout, &derr, NULL, &err);
+    if (!ok || !mout) {
+        g_clear_error(&err);
+        g_free(derr);
+        g_free(mout);
+        g_printerr("qydisk: mount 不可用，挂载树为空\n");
+        return;
+    }
+    g_free(derr);
+    ok = g_spawn_command_line_sync("df -h", &dout, &derr, NULL, &err);
+    g_clear_error(&err);
+    g_free(derr);
+
+    /* 解析 df -h：挂载点 -> (容量, 已用, 可用) */
+    GHashTable *dfmap = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+    if (ok && dout) {
+        gchar **lines = g_strsplit(dout, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            gchar **t = g_strsplit_set(lines[i], " \t", -1);
+            int n = 0;
+            while (t[n]) n++;
+            if (n >= 6 && !g_str_has_prefix(t[0], "Filesystem")) {
+                /* t[n-5]=容量 t[n-4]=已用 t[n-3]=可用 t[n-1]=挂载点 */
+                gchar *v = g_strdup_printf("%s|%s|%s", t[n - 5], t[n - 4], t[n - 3]);
+                g_hash_table_replace(dfmap, g_strdup(t[n - 1]), v);
+            }
+            g_strfreev(t);
+        }
+        g_strfreev(lines);
+    }
+    g_free(dout);
+
+    gchar **lines = g_strsplit(mout, "\n", -1);
+    for (int i = 0; lines[i]; i++) {
+        gchar *line = g_strstrip(lines[i]);
+        if (!line[0]) continue;
+        gchar **t = g_strsplit_set(line, " \t", -1);
+        int n = 0;
+        while (t[n]) n++;
+        /* mount 格式: device on mountpoint type fstype (options) */
+        if (n >= 5 && !strcmp(t[1], "on") && !strcmp(t[3], "type")) {
+            const char *mp = t[2];
+            const char *fs = t[4];
+            const char *size = "—", *used = "—", *avail = "—";
+            gchar *dfv = g_hash_table_lookup(dfmap, mp);
+            if (dfv) {
+                gchar **parts = g_strsplit(dfv, "|", 3);
+                if (parts[0]) size = parts[0];
+                if (parts[1]) used = parts[1];
+                if (parts[2]) avail = parts[2];
+                mount_add_row(mp, fs, size, used, avail);
+                g_strfreev(parts);
+            } else {
+                mount_add_row(mp, fs, size, used, avail);
+            }
+        }
+        g_strfreev(t);
+    }
+    g_strfreev(lines);
+    g_free(mout);
+    g_hash_table_destroy(dfmap);
+}
+
+/* 刷新挂载树：优先 findmnt -rno TARGET,FSTYPE,SIZE,USED,AVAIL */
+static void refresh_mount_tree(void) {
+    if (!mount_store) return;
+    gtk_list_store_clear(mount_store);
+
+    gchar *out = NULL, *err_out = NULL;
+    GError *error = NULL;
+    gboolean ok = g_spawn_command_line_sync(
+        "findmnt -rno TARGET,FSTYPE,SIZE,USED,AVAIL",
+        &out, &err_out, NULL, &error);
+    if (ok && out && out[0]) {
+        gchar **lines = g_strsplit(out, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            gchar *line = g_strstrip(lines[i]);
+            if (!line[0]) continue;
+            gchar **t = g_strsplit_set(line, " \t", -1);
+            int n = 0;
+            while (t[n]) n++;
+            /* 挂载点 类型 容量 已用 可用；findmnt -r 每行 5 列，异常少列时补 "—" */
+            if (n >= 2) {
+                const char *target = t[0];
+                const char *fstype = t[1];
+                const char *size = "—", *used = "—", *avail = "—";
+                if (n >= 5) {
+                    size  = t[n - 3];
+                    used  = t[n - 2];
+                    avail = t[n - 1];
+                }
+                mount_add_row(target, fstype, size, used, avail);
+            }
+            g_strfreev(t);
+        }
+        g_strfreev(lines);
+    } else {
+        g_clear_error(&error);
+        g_free(err_out);
+        g_free(out);
+        mount_fallback();
+    }
+    g_free(err_out);
+    g_free(out);
+    g_printerr("QYDISKDBG: mount rows=%d\n",
+               mount_store ? gtk_tree_model_iter_n_children(GTK_TREE_MODEL(mount_store), NULL) : 0);
+}
+
+/* 点击挂载树行：读 /proc/mounts 匹配，显示设备/类型/只读/选项 */
+static void on_mount_cursor_changed(GtkTreeView *tv, gpointer ud) {
+    (void)tv; (void)ud;
+    if (!fs_info_label || !mount_store) return;
+    GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(mount_tv));
+    GtkTreeIter it;
+    if (!gtk_tree_selection_get_selected(sel, NULL, &it)) return;
+    gchar *target = NULL;
+    gtk_tree_model_get(GTK_TREE_MODEL(mount_store), &it, M_TARGET, &target, -1);
+    if (!target) return;
+
+    gchar *content = NULL;
+    if (g_file_get_contents("/proc/mounts", &content, NULL, NULL) && content) {
+        gchar **lines = g_strsplit(content, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            char dev[256], mp[512], type[64], opts[1024];
+            if (sscanf(lines[i], "%255s %511s %63s %1023s", dev, mp, type, opts) == 4) {
+                if (!strcmp(mp, target)) {
+                    gboolean ro = strstr(opts, "ro") != NULL;
+                    gchar *s = g_strdup_printf("%s: %s\n%s: %s\n%s: %s\n%s: %s",
+                                               TR("设备"), dev,
+                                               TR("类型"), type,
+                                               TR("只读"), ro ? TR("是") : TR("否"),
+                                               TR("选项"), opts);
+                    gtk_label_set_text(GTK_LABEL(fs_info_label), s);
+                    g_free(s);
+                    break;
+                }
+            }
+        }
+        g_strfreev(lines);
+    }
+    g_free(content);
+    g_free(target);
+}
+
 /* 自动化刷新包装（GSourceFunc） */
 static gboolean auto_refresh(gpointer p) {
     (void)p;
     refresh_disk();
+    refresh_mount_tree();
     return G_SOURCE_REMOVE;
+}
+
+/* 刷新按钮：同时刷新 df 汇总与挂载树 */
+static void refresh_all(GtkWidget *w, gpointer p) {
+    (void)w; (void)p;
+    refresh_disk();
+    refresh_mount_tree();
 }
 
 /* ---------- UI ---------- */
@@ -206,7 +384,7 @@ int main(int argc, char **argv) {
     gtk_label_set_xalign(GTK_LABEL(sum_lb), 0.0);
     GtkWidget *refresh_btn = gtk_button_new_with_label(TR("刷新"));
     qy_add_class(refresh_btn, "qy-btn");
-    g_signal_connect(refresh_btn, "clicked", G_CALLBACK(refresh_disk), NULL);
+    g_signal_connect(refresh_btn, "clicked", G_CALLBACK(refresh_all), NULL);
     gtk_box_pack_start(GTK_BOX(top), sum_lb, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(top), refresh_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), top, FALSE, FALSE, 0);
@@ -216,17 +394,54 @@ int main(int argc, char **argv) {
     gtk_label_set_xalign(GTK_LABEL(err_lb), 0.0);
     gtk_box_pack_start(GTK_BOX(vbox), err_lb, FALSE, FALSE, 0);
 
-    /* 滚动列表 */
+    /* 滚动列表（df 汇总） */
     GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     rows_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_add(GTK_CONTAINER(sw), rows_box);
     gtk_box_pack_start(GTK_BOX(vbox), sw, TRUE, TRUE, 0);
 
+    /* 挂载树区（底部） */
+    gtk_box_pack_start(GTK_BOX(vbox), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
+                       FALSE, FALSE, 4);
+    GtkWidget *mt_label = gtk_label_new(TR("挂载树"));
+    gtk_widget_set_name(mt_label, "qy-disk-mount-title");
+    gtk_label_set_xalign(GTK_LABEL(mt_label), 0.0);
+    gtk_box_pack_start(GTK_BOX(vbox), mt_label, FALSE, FALSE, 0);
+
+    mount_store = gtk_list_store_new(N_MCOLS, G_TYPE_STRING, G_TYPE_STRING,
+                                     G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
+    mount_tv = gtk_tree_view_new_with_model(GTK_TREE_MODEL(mount_store));
+    GtkCellRenderer *mr = gtk_cell_renderer_text_new();
+    const char *mtitles[N_MCOLS] = { TR("挂载点"), TR("类型"), TR("容量"),
+                                       TR("已用"), TR("可用") };
+    for (int i = 0; i < N_MCOLS; i++) {
+        GtkTreeViewColumn *col = gtk_tree_view_column_new_with_attributes(
+            mtitles[i], mr, "text", i, NULL);
+        gtk_tree_view_column_set_resizable(col, TRUE);
+        gtk_tree_view_column_set_expand(col, i == M_TARGET);
+        gtk_tree_view_append_column(GTK_TREE_VIEW(mount_tv), col);
+    }
+    gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(mount_tv), TRUE);
+    g_signal_connect(mount_tv, "cursor-changed", G_CALLBACK(on_mount_cursor_changed), NULL);
+
+    GtkWidget *msw = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(msw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(msw, -1, 150);
+    gtk_container_add(GTK_CONTAINER(msw), mount_tv);
+    gtk_box_pack_start(GTK_BOX(vbox), msw, FALSE, FALSE, 0);
+
+    fs_info_label = gtk_label_new("");
+    gtk_widget_set_name(fs_info_label, "qydisk-fs-info");
+    gtk_label_set_xalign(GTK_LABEL(fs_info_label), 0.0);
+    gtk_label_set_line_wrap(GTK_LABEL(fs_info_label), TRUE);
+    gtk_box_pack_start(GTK_BOX(vbox), fs_info_label, FALSE, FALSE, 0);
+
     gtk_widget_show_all(win);
     gtk_widget_hide(err_lb);
 
     refresh_disk();
+    refresh_mount_tree();
 
     /* 自动化: QYDISK_REFRESH=1 启动后延迟刷新一次 */
     if (g_getenv("QYDISK_REFRESH"))

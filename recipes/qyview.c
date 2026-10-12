@@ -32,6 +32,9 @@ static GtkWidget *g_da = NULL;          /* 绘图区（幻灯片定时器回调�
 static guint slide_timer = 0;           /* 幻灯片定时器 id */
 static gboolean slide_on = FALSE;      /* 幻灯片是否运行 */
 
+/* 另存为 / 批量转换 */
+static GtkWidget *save_fmt_combo = NULL; /* 另存为目标格式下拉（PNG/JPEG/BMP） */
+
 /* 右侧属性/EXIF 侧栏（定义在 load_path 之后，先声明原型） */
 static void update_info_sidebar(void);
 
@@ -280,6 +283,264 @@ static gboolean save_once(gpointer ud) {
     return G_SOURCE_REMOVE;
 }
 
+/* ---------- 另存为其它格式 ---------- */
+/* 返回当前下拉框选择的格式 id：png / jpeg / bmp */
+static const char *save_fmt_id(void) {
+    if (!save_fmt_combo) return "png";
+    const char *id = gtk_combo_box_get_active_id(GTK_COMBO_BOX(save_fmt_combo));
+    return (id && id[0]) ? id : "png";
+}
+
+/* 另存为：GtkFileChooserNative(ACTION_SAVE) + 格式由窗口内下拉决定 */
+static void on_save_as(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    if (!pix || !current_path) return;
+    const char *fmt = save_fmt_id();
+    const char *ext = (!strcmp(fmt, "jpeg")) ? "jpg" : fmt;
+    gchar *base = g_path_get_basename(current_path);
+    char *dot = strrchr(base, '.');
+    if (dot) *dot = 0;
+    gchar *suggest = g_strdup_printf("%s.%s", base, ext);
+
+    GtkFileChooserNative *dlg = gtk_file_chooser_native_new(TR("另存为"), g_win,
+                                                 GTK_FILE_CHOOSER_ACTION_SAVE,
+                                                 TR("保存"), TR("取消"));
+    gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(dlg), suggest);
+    gint res = gtk_native_dialog_run(GTK_NATIVE_DIALOG(dlg));
+    if (res == GTK_RESPONSE_ACCEPT) {
+        gchar *path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
+        GError *err = NULL;
+        if (gdk_pixbuf_save(pix, path, fmt, &err, NULL)) {
+            if (save_status) {
+                gchar *s = g_strdup_printf("%s %s", TR("已另存为"), path);
+                gtk_label_set_text(GTK_LABEL(save_status), s);
+                g_free(s);
+            }
+        } else {
+            if (save_status) gtk_label_set_text(GTK_LABEL(save_status), TR("另存失败"));
+            if (err) { g_printerr("qyview save-as: %s\n", err->message); g_clear_error(&err); }
+        }
+        g_free(path);
+    }
+    g_object_unref(dlg);
+    g_free(suggest);
+    g_free(base);
+}
+
+/* ---------- 批量转换 ---------- */
+/* 批量转换目标扩展名 */
+static gboolean is_batch_img(const char *name) {
+    static const char *BATCH_EXT[] = {".png", ".jpg", ".jpeg", ".bmp", ".webp", NULL};
+    gchar *low = g_ascii_strdown(name, -1);
+    gboolean ok = FALSE;
+    for (int i = 0; BATCH_EXT[i]; i++)
+        if (g_str_has_suffix(low, BATCH_EXT[i])) { ok = TRUE; break; }
+    g_free(low);
+    return ok;
+}
+
+/* 批量转换对话框的 UI 状态（工作线程通过 g_idle_add 更新主线程控件） */
+typedef struct {
+    gchar *src;              /* 源目录 */
+    gchar *dst;              /* 目标目录 */
+    gchar *fmt;              /* 目标格式 id */
+    gchar *ext;              /* 目标扩展名 */
+    GtkWidget *dlg;           /* 批量转换对话框 */
+    GtkWidget *combo;         /* 目标格式下拉 */
+    GtkWidget *bar;           /* GtkProgressBar */
+    GtkWidget *status;        /* 状态标签 */
+    GThread *thread;         /* 工作线程 */
+    int total;
+    int done;
+    gboolean finished;
+    gboolean thread_started;
+    gboolean thread_done;
+} BatchUi;
+
+/* 工作线程回调：在主线程更新进度/完成状态 */
+static gboolean batch_update_idle(gpointer p) {
+    BatchUi *ui = (BatchUi *)p;
+    if (ui->bar && ui->total > 0)
+        gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(ui->bar),
+                                      (double)ui->done / (double)ui->total);
+    if (ui->status) {
+        if (ui->finished)
+            gtk_label_set_text(GTK_LABEL(ui->status), TR("批量转换完成"));
+        else {
+            gchar *s = g_strdup_printf("%s %d/%d", TR("转换中"), ui->done, ui->total);
+            gtk_label_set_text(GTK_LABEL(ui->status), s);
+            g_free(s);
+        }
+    }
+    if (ui->finished && !ui->thread_done) {
+        ui->thread_done = TRUE;
+        if (ui->thread) g_thread_join(ui->thread);
+        GtkWidget *close = gtk_dialog_get_widget_for_response(GTK_DIALOG(ui->dlg),
+                                                                GTK_RESPONSE_CLOSE);
+        if (close) gtk_widget_set_sensitive(close, TRUE);
+        gtk_widget_set_sensitive(ui->combo, TRUE);
+    }
+    return ui->finished ? G_SOURCE_REMOVE : G_SOURCE_CONTINUE;
+}
+
+/* 工作线程：遍历源目录图片，转换到目标目录 */
+static gpointer batch_worker(gpointer p) {
+    BatchUi *ui = (BatchUi *)p;
+    GPtrArray *files = g_ptr_array_new_with_free_func(g_free);
+    GDir *dir = g_dir_open(ui->src, 0, NULL);
+    if (dir) {
+        const char *n;
+        while ((n = g_dir_read_name(dir)))
+            if (is_batch_img(n)) g_ptr_array_add(files, g_strdup(n));
+        g_dir_close(dir);
+    }
+    ui->total = (int)files->len;
+    for (guint i = 0; i < files->len; i++) {
+        const char *name = (const char *)files->pdata[i];
+        gchar *srcp = g_build_filename(ui->src, name, NULL);
+        GError *err = NULL;
+        GdkPixbuf *pb = gdk_pixbuf_new_from_file(srcp, &err);
+        if (pb) {
+            gchar *noext = g_strdup(name);
+            char *dot = strrchr(noext, '.');
+            if (dot) *dot = 0;
+            gchar *outname = g_strdup_printf("%s.%s", noext, ui->ext);
+            gchar *dstp = g_build_filename(ui->dst, outname, NULL);
+            if (!gdk_pixbuf_save(pb, dstp, ui->fmt, &err, NULL)) {
+                if (err) {
+                    g_printerr("qyview batch: %s -> %s: %s\n", name, outname, err->message);
+                    g_clear_error(&err);
+                }
+            }
+            g_free(noext);
+            g_free(outname);
+            g_free(dstp);
+            g_object_unref(pb);
+        } else {
+            if (err) {
+                g_printerr("qyview batch: %s: %s\n", name, err->message);
+                g_clear_error(&err);
+            }
+        }
+        g_free(srcp);
+        ui->done = (int)i + 1;
+        g_idle_add(batch_update_idle, ui);
+    }
+    g_ptr_array_free(files, TRUE);
+    ui->finished = TRUE;
+    g_idle_add(batch_update_idle, ui);
+    return NULL;
+}
+
+/* 运行中禁止用窗口关闭按钮关掉批量转换对话框 */
+static gboolean on_batch_delete(GtkWidget *w, GdkEventAny *ev, gpointer p) {
+    (void)w; (void)ev;
+    BatchUi *ui = (BatchUi *)p;
+    if (ui->thread_started && !ui->thread_done) return TRUE;
+    return FALSE;
+}
+
+static void on_batch_response(GtkDialog *dlg, gint resp, gpointer p) {
+    BatchUi *ui = (BatchUi *)p;
+    if (resp == GTK_RESPONSE_ACCEPT) {
+        if (ui->thread_started) return;
+        const char *id = gtk_combo_box_get_active_id(GTK_COMBO_BOX(ui->combo));
+        if (!id || !id[0]) id = "png";
+        ui->fmt = g_strdup(id);
+        ui->ext = g_strdup((!strcmp(id, "jpeg")) ? "jpg" : id);
+        gtk_widget_set_sensitive(ui->combo, FALSE);
+        GtkWidget *close = gtk_dialog_get_widget_for_response(dlg, GTK_RESPONSE_CLOSE);
+        if (close) gtk_widget_set_sensitive(close, FALSE);
+        if (ui->bar) gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(ui->bar), 0.0);
+        if (ui->status) gtk_label_set_text(GTK_LABEL(ui->status), TR("转换中…"));
+        ui->thread_started = TRUE;
+        ui->thread = g_thread_new("qyview-batch", batch_worker, ui);
+    } else if (resp == GTK_RESPONSE_CLOSE) {
+        gtk_widget_destroy(GTK_WIDGET(dlg));
+    }
+}
+
+static void on_batch_destroy(GtkWidget *w, gpointer p) {
+    (void)w;
+    BatchUi *ui = (BatchUi *)p;
+    if (ui->thread_started && !ui->thread_done && ui->thread)
+        g_thread_join(ui->thread);
+    g_free(ui->src);
+    g_free(ui->dst);
+    g_free(ui->fmt);
+    g_free(ui->ext);
+    g_free(ui);
+}
+
+/* 选择源/目标目录后弹出批量转换对话框 */
+static void show_batch_dialog(const char *src, const char *dst) {
+    BatchUi *ui = g_new0(BatchUi, 1);
+    ui->src = g_strdup(src);
+    ui->dst = g_strdup(dst);
+
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(TR("批量转换"), g_win, GTK_DIALOG_MODAL,
+                                                 TR("开始转换"), GTK_RESPONSE_ACCEPT,
+                                                 TR("关闭"), GTK_RESPONSE_CLOSE, NULL);
+    ui->dlg = dlg;
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 360, -1);
+
+    GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_container_set_border_width(GTK_CONTAINER(box), 14);
+    gtk_container_add(GTK_CONTAINER(content), box);
+
+    GtkWidget *frow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *fl = gtk_label_new(TR("目标格式"));
+    ui->combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(ui->combo), "png", "PNG");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(ui->combo), "jpeg", "JPEG");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(ui->combo), "bmp", "BMP");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(ui->combo), 0);
+    gtk_box_pack_start(GTK_BOX(frow), fl, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(frow), ui->combo, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(box), frow, FALSE, FALSE, 0);
+
+    ui->bar = gtk_progress_bar_new();
+    gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(ui->bar), FALSE);
+    gtk_box_pack_start(GTK_BOX(box), ui->bar, FALSE, FALSE, 0);
+
+    ui->status = gtk_label_new(TR("选择格式后点击开始转换"));
+    gtk_label_set_xalign(GTK_LABEL(ui->status), 0.0);
+    gtk_box_pack_start(GTK_BOX(box), ui->status, FALSE, FALSE, 0);
+
+    gtk_widget_show_all(content);
+    g_signal_connect(dlg, "response", G_CALLBACK(on_batch_response), ui);
+    g_signal_connect(dlg, "delete-event", G_CALLBACK(on_batch_delete), ui);
+    g_signal_connect(dlg, "destroy", G_CALLBACK(on_batch_destroy), ui);
+    gtk_widget_show(dlg);
+}
+
+/* 批量转换入口：依次选择源目录、目标目录，再弹对话框选格式并执行 */
+static void on_batch_convert(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    GtkFileChooserNative *dlg = gtk_file_chooser_native_new(TR("选择源目录"), g_win,
+                                                 GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
+                                                 TR("选择"), TR("取消"));
+    gint res = gtk_native_dialog_run(GTK_NATIVE_DIALOG(dlg));
+    gchar *src = (res == GTK_RESPONSE_ACCEPT) ?
+                 gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg)) : NULL;
+    g_object_unref(dlg);
+    if (!src) return;
+
+    dlg = gtk_file_chooser_native_new(TR("选择目标目录"), g_win,
+                                      GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
+                                      TR("选择"), TR("取消"));
+    res = gtk_native_dialog_run(GTK_NATIVE_DIALOG(dlg));
+    gchar *dst = (res == GTK_RESPONSE_ACCEPT) ?
+                 gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg)) : NULL;
+    g_object_unref(dlg);
+    if (!dst) { g_free(src); return; }
+
+    show_batch_dialog(src, dst);
+    g_free(src);
+    g_free(dst);
+}
+
 /* ---------- 幻灯片 ---------- */
 static void set_play_icon(gboolean playing) {
     if (!play_btn) return;
@@ -444,9 +705,42 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_window_set_title(GTK_WINDOW(win), "澜岫图片查看器");
     qy_window_setup(GTK_WINDOW(win), 700, 500, 480, 360, FALSE);
 
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_container_add(GTK_CONTAINER(win), vbox);
+
+    /* 顶部工具条：另存为 / 格式下拉 / 批量转换 */
+    GtkWidget *topbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    qy_add_class(topbar, "qy-view-bar");
+    gtk_widget_set_margin_start(topbar, 8);
+    gtk_widget_set_margin_end(topbar, 8);
+    gtk_widget_set_margin_top(topbar, 6);
+    gtk_widget_set_margin_bottom(topbar, 4);
+
+    GtkWidget *b_saveas = gtk_button_new_with_label(TR("另存为"));
+    qy_add_class(b_saveas, "qy-view-bar-btn");
+    g_signal_connect(b_saveas, "clicked", G_CALLBACK(on_save_as), NULL);
+
+    save_fmt_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(save_fmt_combo), "png", "PNG");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(save_fmt_combo), "jpeg", "JPEG");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(save_fmt_combo), "bmp", "BMP");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(save_fmt_combo), 0);
+    qy_add_class(save_fmt_combo, "qy-view-bar-btn");
+
+    GtkWidget *b_batch = gtk_button_new_with_label(TR("批量转换"));
+    qy_add_class(b_batch, "qy-view-bar-btn");
+    g_signal_connect(b_batch, "clicked", G_CALLBACK(on_batch_convert), NULL);
+
+    gtk_box_pack_start(GTK_BOX(topbar), b_saveas, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(topbar), save_fmt_combo, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(topbar), gtk_separator_new(GTK_ORIENTATION_VERTICAL),
+                       FALSE, FALSE, 4);
+    gtk_box_pack_start(GTK_BOX(topbar), b_batch, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), topbar, FALSE, FALSE, 0);
+
     GtkWidget *overlay = gtk_overlay_new();
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_container_add(GTK_CONTAINER(win), hbox);
+    gtk_box_pack_start(GTK_BOX(vbox), hbox, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), overlay, TRUE, TRUE, 0);
 
     /* 图片绘制区 */

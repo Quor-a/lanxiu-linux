@@ -1,8 +1,10 @@
-/* qyclock.c — 澜岫时钟/日历/闹钟/世界时钟
+/* qyclock.c — 澜岫时钟/日历/闹钟/世界时钟/计时器
  * 页0: 大时钟 + 日期星期 + 月历 + 秒表（开始/暂停/复位）+ 今天高亮。
  * 页1: 闹钟（时间输入 + 添加闹钟 + 闹钟列表 + 删除；到点 qynotify 或弹窗；
  *       存储 ~/.config/lanxiu/alarms.txt，每行 HH:MM）。
  * 页2: 世界时钟（北京/伦敦/纽约/东京/悉尼，UTC 偏移 +8/+0/-5/+9/+10，每 1s 刷新）。
+ * 页3: 计时器（分/秒 SpinButton + 开始/停止重置；大字 MM:SS，1s 递减；
+ *       到 0 调用 qynotify 计时结束，无 qynotify 则弹窗，并自动复位）。
  * 风格沿用 qylock 的大时钟与深色主题（#qy-clock-win）。
  * 自动化: QYCLOCK_SW=start 启动后自动开始秒表（用于自测截图）。
  */
@@ -43,6 +45,16 @@ static const CityEntry CITIES[] = {
 };
 #define NCITIES ((int)(sizeof CITIES / sizeof CITIES[0]))
 static GtkWidget *world_time_labels[NCITIES] = { NULL, NULL, NULL, NULL, NULL };
+
+/* ---------- 计时器 ---------- */
+static GtkWidget *timer_label  = NULL;   /* #qyclock-timer 大字 MM:SS */
+static GtkWidget *timer_min    = NULL;   /* 分 SpinButton 0-99 */
+static GtkWidget *timer_sec    = NULL;   /* 秒 SpinButton 0-59 */
+static GtkWidget *timer_start  = NULL;   /* 开始按钮 */
+static GtkWidget *timer_stop   = NULL;   /* 停止/重置按钮 */
+static int   timer_remaining  = 0;      /* 剩余秒数 */
+static gboolean timer_running  = FALSE;
+static guint timer_source      = 0;      /* 1s 定时器 id */
 
 /* 更新大时钟与日期（250ms 调用，秒级闪烁） */
 static gboolean update_clock(gpointer p) {
@@ -274,6 +286,130 @@ static gboolean world_tick(gpointer ud) {
     return G_SOURCE_CONTINUE;
 }
 
+/* ---------- 计时器 ---------- */
+/* 显示当前剩余时间 MM:SS */
+static void timer_update_display(void) {
+    if (!timer_label) return;
+    char buf[16];
+    int total = timer_remaining > 0 ? timer_remaining : 0;
+    g_snprintf(buf, sizeof buf, "%02d:%02d", total / 60, total % 60);
+    gtk_label_set_text(GTK_LABEL(timer_label), buf);
+}
+
+/* 复位显示为 SpinButton 当前设定的时长（未运行时调用） */
+static void timer_reset_display(void) {
+    if (!timer_label || !timer_min || !timer_sec) return;
+    if (timer_running) return;   /* 运行中不干扰倒计时读数 */
+    int m = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(timer_min));
+    int s = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(timer_sec));
+    char buf[16];
+    g_snprintf(buf, sizeof buf, "%02d:%02d", m, s);
+    gtk_label_set_text(GTK_LABEL(timer_label), buf);
+}
+
+/* 到点提醒：优先 qynotify，不可用则弹 GtkDialog（与闹钟一致） */
+static void timer_fire_finished(void) {
+    gchar *cmd = g_strdup("qynotify 计时结束");
+    GError *err = NULL;
+    if (!g_spawn_command_line_async(cmd, &err)) {
+        g_printerr("qyclock: qynotify 不可用: %s\n", err ? err->message : "?");
+        g_clear_error(&err);
+        GtkWidget *dlg = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL,
+                                                GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
+                                                "%s", TR("计时结束"));
+        gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dlg), "%s",
+                                                 TR("倒计时已结束"));
+        gtk_window_set_title(GTK_WINDOW(dlg), TR("计时器"));
+        gtk_dialog_run(GTK_DIALOG(dlg));
+        gtk_widget_destroy(dlg);
+    }
+    g_free(cmd);
+}
+
+/* 1s 递减；到 0 提醒并自动复位为设定时长 */
+static gboolean timer_tick(gpointer p) {
+    (void)p;
+    if (!timer_running) return G_SOURCE_CONTINUE;
+    if (timer_remaining > 0) {
+        timer_remaining--;
+        timer_update_display();
+    }
+    if (timer_remaining <= 0) {
+        timer_running = FALSE;
+        if (timer_start) gtk_button_set_label(GTK_BUTTON(timer_start), TR("开始"));
+        timer_fire_finished();
+        /* 自动复位：回到 SpinButton 设定时长 */
+        timer_reset_display();
+    }
+    return G_SOURCE_CONTINUE;
+}
+
+static void on_timer_start(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    if (timer_running) return;   /* 运行中忽略重复开始 */
+    int m = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(timer_min));
+    int s = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(timer_sec));
+    timer_remaining = m * 60 + s;
+    if (timer_remaining <= 0) return;
+    timer_running = TRUE;
+    gtk_button_set_label(GTK_BUTTON(timer_start), TR("开始"));
+    timer_update_display();
+    if (!timer_source)
+        timer_source = g_timeout_add(1000, timer_tick, NULL);
+}
+
+static void on_timer_stop(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    timer_running = FALSE;
+    timer_remaining = 0;
+    gtk_button_set_label(GTK_BUTTON(timer_start), TR("开始"));
+    timer_reset_display();
+}
+
+/* make_clock_btn 在下方定义，这里先声明（build_timer_page 使用） */
+static GtkWidget *make_clock_btn(const char *label, GCallback cb);
+
+/* 计时器页面 */
+static GtkWidget *build_timer_page(void) {
+    GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+    gtk_container_set_border_width(GTK_CONTAINER(page), 14);
+
+    timer_label = gtk_label_new("05:00");
+    gtk_widget_set_name(timer_label, "qyclock-timer");
+    gtk_box_pack_start(GTK_BOX(page), timer_label, FALSE, FALSE, 0);
+
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_halign(row, GTK_ALIGN_CENTER);
+
+    GtkWidget *ml = gtk_label_new(TR("分"));
+    GtkWidget *sl = gtk_label_new(TR("秒"));
+    timer_min = gtk_spin_button_new_with_range(0, 99, 1);
+    timer_sec = gtk_spin_button_new_with_range(0, 59, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(timer_min), 5);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(timer_sec), 0);
+    gtk_entry_set_width_chars(GTK_ENTRY(timer_min), 3);
+    gtk_entry_set_width_chars(GTK_ENTRY(timer_sec), 3);
+    /* 未运行时，修改时长即时预览大字 */
+    g_signal_connect(timer_min, "value-changed", G_CALLBACK(timer_reset_display), NULL);
+    g_signal_connect(timer_sec, "value-changed", G_CALLBACK(timer_reset_display), NULL);
+
+    gtk_box_pack_start(GTK_BOX(row), ml, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(row), timer_min, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(row), sl, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(row), timer_sec, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(page), row, FALSE, FALSE, 0);
+
+    GtkWidget *btns = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_halign(btns, GTK_ALIGN_CENTER);
+    timer_start = make_clock_btn(TR("开始"), G_CALLBACK(on_timer_start));
+    timer_stop  = make_clock_btn(TR("停止/重置"), G_CALLBACK(on_timer_stop));
+    gtk_box_pack_start(GTK_BOX(btns), timer_start, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(btns), timer_stop, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(page), btns, FALSE, FALSE, 0);
+
+    return page;
+}
+
 /* ---------- 页面构建 ---------- */
 static GtkWidget *build_alarm_page(void) {
     GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
@@ -411,6 +547,9 @@ int main(int argc, char **argv) {
     /* 页2: 世界时钟 */
     gtk_notebook_append_page(GTK_NOTEBOOK(nb), build_world_page(), gtk_label_new(TR("世界时钟")));
 
+    /* 页3: 计时器 */
+    gtk_notebook_append_page(GTK_NOTEBOOK(nb), build_timer_page(), gtk_label_new(TR("计时器")));
+
     gtk_widget_show_all(win);
 
     update_clock(NULL);
@@ -418,9 +557,11 @@ int main(int argc, char **argv) {
     g_timeout_add(100, sw_tick, NULL);          /* 100ms：秒表十分之一秒 */
     g_timeout_add(1000, alarm_tick, NULL);   /* 1s：闹钟检查 */
     g_timeout_add(1000, world_tick, NULL);    /* 1s：世界时钟刷新 */
+    timer_source = g_timeout_add(1000, timer_tick, NULL);  /* 1s：倒计时递减 */
     world_tick(NULL);
     cal_select_today();
     alarm_load();
+    timer_reset_display();
 
     /* 自动化: QYCLOCK_SW=start 启动后自动开始秒表 */
     const char *sw_env = g_getenv("QYCLOCK_SW");

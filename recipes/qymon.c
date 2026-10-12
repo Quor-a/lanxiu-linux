@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h>
+#include <errno.h>
 #include <sys/statvfs.h>
 
 #define NHIST 120   /* 曲线历史点数 */
@@ -32,10 +34,17 @@ static GtkWidget *proc_label = NULL;   /* 内存占用 TOP 5 进程列表 */
 static GtkWidget *proc_info_label = NULL; /* 进程列表信息（数量/操作提示） */
 static GtkListStore *proc_store = NULL;   /* 全量进程列表 */
 static GtkWidget *proc_tv = NULL;         /* 进程列表视图 */
+static GtkWidget *proc_search = NULL;     /* GtkSearchEntry 进程过滤 */
+static gchar *proc_filter = NULL;         /* 当前过滤文本（小写） */
+
+/* 右键菜单选中的进程上下文 */
+static gint  ctx_pid = 0;
+static gchar *ctx_name = NULL;
 
 enum { P_PID, P_NAME, P_MEM, N_PCOLS };
 
-/* 刷新全量进程列表（/proc/PID/comm + status VmRSS），默认按内存降序 */
+/* 刷新全量进程列表（/proc/PID/comm + status VmRSS），默认按内存降序。
+ * 若设置了 proc_filter，仅保留进程名（忽略大小写）包含过滤词的条目。 */
 static void refresh_proc_list(void) {
     if (!proc_store) return;
     gtk_list_store_clear(proc_store);
@@ -49,6 +58,17 @@ static void refresh_proc_list(void) {
         gchar *comm = NULL;
         if (g_file_get_contents(cp, &comm, NULL, NULL) && comm) {
             g_strstrip(comm);
+            /* 搜索过滤：进程名包含过滤词（strstr 忽略大小写） */
+            if (proc_filter && proc_filter[0]) {
+                gchar *low = g_ascii_strdown(comm, -1);
+                gboolean match = strstr(low, proc_filter) != NULL;
+                g_free(low);
+                if (!match) {
+                    g_free(comm);
+                    g_free(cp);
+                    continue;
+                }
+            }
             gchar *sp = g_strdup_printf("/proc/%s/status", ent);
             gchar *status = NULL;
             long rss_kb = 0;
@@ -421,6 +441,98 @@ static void on_kill_clicked(GtkWidget *w, gpointer ud) {
     g_free(name);
 }
 
+/* 搜索框内容变化：更新过滤词并立即刷新进程列表 */
+static void on_proc_search_changed(GtkSearchEntry *e, gpointer ud) {
+    (void)ud;
+    g_free(proc_filter);
+    proc_filter = g_ascii_strdown(gtk_entry_get_text(GTK_ENTRY(e)), -1);
+    refresh_proc_list();
+}
+
+/* 直接向进程发送信号（kill(2)），并反馈结果 */
+static void kill_proc(int pid, const char *name, int sig) {
+    if (kill(pid, sig) == 0) {
+        if (proc_info_label) {
+            gchar *s = g_strdup_printf(TR("已向 %d (%s) 发送信号 %d"),
+                                   pid, name ? name : "?", sig);
+            gtk_label_set_text(GTK_LABEL(proc_info_label), s);
+            g_free(s);
+        }
+        g_printerr("QYMONDBG: kill pid=%d sig=%d name=%s\n", pid, sig, name ? name : "?");
+    } else {
+        if (proc_info_label) {
+            gchar *s = g_strdup_printf(TR("发送信号 %d 到 %d 失败: %s"),
+                                         sig, pid, g_strerror(errno));
+            gtk_label_set_text(GTK_LABEL(proc_info_label), s);
+            g_free(s);
+        }
+        g_printerr("QYMONDBG: kill pid=%d sig=%d err=%s\n", pid, sig, g_strerror(errno));
+    }
+    refresh_proc_list();
+}
+
+/* 右键菜单：结束进程 (SIGTERM)，带确认对话框 */
+static void on_menu_sigterm(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    if (ctx_pid <= 0) return;
+    GtkWidget *dlg = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_WARNING,
+        GTK_BUTTONS_YES_NO, "%s %d (%s)?", TR("确认结束进程"), ctx_pid, ctx_name ? ctx_name : "?");
+    int rc = gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+    if (rc == GTK_RESPONSE_YES)
+        kill_proc(ctx_pid, ctx_name, SIGTERM);
+    g_free(ctx_name);
+    ctx_name = NULL;
+    ctx_pid = 0;
+}
+
+/* 右键菜单：强制结束 (SIGKILL)，带确认对话框 */
+static void on_menu_sigkill(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    if (ctx_pid <= 0) return;
+    GtkWidget *dlg = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_WARNING,
+        GTK_BUTTONS_YES_NO, "%s %d (%s)?", TR("确认强制结束进程"), ctx_pid, ctx_name ? ctx_name : "?");
+    int rc = gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+    if (rc == GTK_RESPONSE_YES)
+        kill_proc(ctx_pid, ctx_name, SIGKILL);
+    g_free(ctx_name);
+    ctx_name = NULL;
+    ctx_pid = 0;
+}
+
+/* 进程列表右键：选中行并弹出信号菜单 */
+static gboolean on_proc_button_press(GtkWidget *tv, GdkEventButton *ev, gpointer ud) {
+    (void)ud;
+    if (ev->button != 3 || ev->type != GDK_BUTTON_PRESS) return FALSE;
+    GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(tv));
+    GtkTreePath *path = NULL;
+    if (gtk_tree_view_get_path_at_pos(GTK_TREE_VIEW(tv), (gint)ev->x, (gint)ev->y,
+                                      &path, NULL, NULL, NULL)) {
+        gtk_tree_selection_unselect_all(sel);
+        gtk_tree_selection_select_path(sel, path);
+        gtk_tree_path_free(path);
+    }
+    GtkTreeIter it;
+    if (!gtk_tree_selection_get_selected(sel, NULL, &it)) return TRUE;
+    g_free(ctx_name);
+    ctx_name = NULL;
+    ctx_pid = 0;
+    gtk_tree_model_get(GTK_TREE_MODEL(proc_store), &it,
+                       P_PID, &ctx_pid, P_NAME, &ctx_name, -1);
+
+    GtkWidget *menu = gtk_menu_new();
+    GtkWidget *mi = gtk_menu_item_new_with_label(TR("结束进程 (SIGTERM)"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_menu_sigterm), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    mi = gtk_menu_item_new_with_label(TR("强制结束 (SIGKILL)"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_menu_sigkill), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    gtk_widget_show_all(menu);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (const GdkEvent *)ev);
+    return TRUE;
+}
+
 /* 刷新进程列表按钮 */
 static void on_proc_refresh(GtkWidget *w, gpointer ud) {
     (void)w; (void)ud;
@@ -494,10 +606,20 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_tree_view_column_set_sort_column_id(col, P_MEM);
     gtk_tree_view_column_set_clickable(col, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(proc_tv), col);
+    /* 进程搜索框：输入即过滤（进程刷新时应用），置于列表上方 */
+    proc_search = gtk_search_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(proc_search), TR("搜索进程…"));
+    g_signal_connect(proc_search, "search-changed", G_CALLBACK(on_proc_search_changed), NULL);
+    gtk_box_pack_start(GTK_BOX(vbox), proc_search, FALSE, FALSE, 0);
+
     GtkWidget *psw = gtk_scrolled_window_new(NULL, NULL);
     gtk_widget_set_size_request(psw, -1, 190);
     gtk_container_add(GTK_CONTAINER(psw), proc_tv);
     gtk_box_pack_start(GTK_BOX(vbox), psw, TRUE, TRUE, 0);
+
+    /* 进程行右键菜单：结束进程 / 强制结束 */
+    gtk_widget_add_events(proc_tv, GDK_BUTTON_PRESS_MASK);
+    g_signal_connect(proc_tv, "button-press-event", G_CALLBACK(on_proc_button_press), NULL);
 
     /* 进程操作按钮行 */
     GtkWidget *pbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
