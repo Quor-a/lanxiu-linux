@@ -187,7 +187,13 @@ list row button:hover {
     color: #ffffff;
     font-size: 20px;
     min-width: 48px;
-    min-height: 48px;
+    /* release 255: 原 48px + 全局 button padding 4px 导致 12 图标+网格按钮
+     * 总高约 854px，超出 Dock 752px（y=40..792），底部“显示应用”网格按钮
+     * 被推到 y>800 屏幕外。改为 padding:0 + min-height:40px，总高约 646px，
+     * 网格按钮回到 Dock 底部可见可点。 */
+    min-height: 40px;
+    padding: 0;
+    margin: 0;
     transition: box-shadow 150ms ease, transform 150ms ease;
 }
 .qy-dock-icon:hover {
