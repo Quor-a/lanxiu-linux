@@ -734,6 +734,18 @@ notebook tab:checked {
     margin-bottom: 4px;
 }
 
+/* 实验性功能提示：橙色小字（qysettings 实验性页面顶部） */
+.qy-exp-hint,
+#qy-settings-exp-hint {
+    font-size: 11px;
+    font-weight: 500;
+    color: #FF8A4C;
+    background-color: rgba(233, 84, 32, 0.10);
+    border: 1px solid rgba(255, 92, 26, 0.25);
+    border-radius: 6px;
+    padding: 3px 8px;
+}
+
 /* ---------- 编辑器工具栏按钮 ---------- */
 .qy-editor-btn {
     background-color: #1b2430;

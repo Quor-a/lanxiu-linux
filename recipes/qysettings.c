@@ -134,6 +134,18 @@ static GtkWidget *settings_group(GtkBox *box, const char *title) {
     return l;
 }
 
+/* 实验性功能提示（橙色小字）: 加在实验性页面顶部。
+ * 本设置结构为左侧平铺标签页（无二级分组），因此按审计降级方案
+ * 在每个实验性页面顶部加提示标签（.qy-exp-hint / #qy-settings-exp-hint）。 */
+static void settings_exp_hint(GtkBox *box) {
+    GtkWidget *h = gtk_label_new(TR("以下功能为实验性，可能不稳定"));
+    gtk_widget_set_name(h, "qy-settings-exp-hint");
+    gtk_widget_set_halign(h, GTK_ALIGN_START);
+    gtk_widget_set_margin_bottom(h, 4);
+    qy_add_class(h, "qy-exp-hint");
+    gtk_box_pack_start(box, h, FALSE, FALSE, 0);
+}
+
 /* 从设置启动其他应用 */
 static void launch_app(GtkButton *b, gpointer cmd) {
     char buf[128];
@@ -3115,6 +3127,7 @@ static void activate(GtkApplication *app, gpointer ud) {
         GtkWidget *vap2 = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
         gtk_container_set_border_width(GTK_CONTAINER(vap2), 14);
         settings_group(GTK_BOX(vap2), TR("自动播放设置"));
+        settings_exp_hint(GTK_BOX(vap2));
         GtkWidget *tip = gtk_label_new(TR("自动播放"));
         gtk_widget_set_halign(tip, GTK_ALIGN_START);
         qy_add_class(tip, "qy-settings-curlang");
@@ -3271,6 +3284,7 @@ static void activate(GtkApplication *app, gpointer ud) {
         GtkWidget *vd = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
         gtk_container_set_border_width(GTK_CONTAINER(vd), 14);
         settings_group(GTK_BOX(vd), TR("多显示器设置"));
+        settings_exp_hint(GTK_BOX(vd));
         gtk_box_pack_start(GTK_BOX(vd), row(TR("检测到的显示器"), "Virtual-1 (1280x800)"), FALSE, FALSE, 0);
         GtkWidget *dl_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         GtkWidget *dl_l = gtk_label_new(TR("多显示器模式"));
@@ -3358,6 +3372,7 @@ static void activate(GtkApplication *app, gpointer ud) {
         GtkWidget *vtp = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
         gtk_container_set_border_width(GTK_CONTAINER(vtp), 14);
         settings_group(GTK_BOX(vtp), TR("触摸板设置"));
+        settings_exp_hint(GTK_BOX(vtp));
         GtkWidget *tp_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         GtkWidget *tp_l = gtk_label_new(TR("启用触摸板"));
         gtk_widget_set_size_request(tp_l, 180, -1);
@@ -3415,6 +3430,7 @@ static void activate(GtkApplication *app, gpointer ud) {
         GtkWidget *vg = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
         gtk_container_set_border_width(GTK_CONTAINER(vg), 14);
         settings_group(GTK_BOX(vg), TR("图形设置"));
+        settings_exp_hint(GTK_BOX(vg));
         gtk_box_pack_start(GTK_BOX(vg), row(TR("显卡"), TR("未检测到独立显卡")), FALSE, FALSE, 0);
         GtkWidget *gfx_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         GtkWidget *gfx_l = gtk_label_new(TR("图形模式"));
@@ -3445,6 +3461,7 @@ static void activate(GtkApplication *app, gpointer ud) {
         GtkWidget *vrd = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
         gtk_container_set_border_width(GTK_CONTAINER(vrd), 14);
         settings_group(GTK_BOX(vrd), TR("远程桌面设置"));
+        settings_exp_hint(GTK_BOX(vrd));
         gtk_box_pack_start(GTK_BOX(vrd), row(TR("远程桌面"), TR("允许远程连接到这台电脑")), FALSE, FALSE, 0);
         gtk_box_pack_start(GTK_BOX(vrd), row(TR("端口"), "3389"), FALSE, FALSE, 0);
         GtkWidget *rdp_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
@@ -3487,6 +3504,7 @@ static void activate(GtkApplication *app, gpointer ud) {
         GtkWidget *vpj = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
         gtk_container_set_border_width(GTK_CONTAINER(vpj), 14);
         settings_group(GTK_BOX(vpj), TR("投影设置"));
+        settings_exp_hint(GTK_BOX(vpj));
         gtk_box_pack_start(GTK_BOX(vpj), row(TR("投影"), TR("选择第二屏幕的投影模式")), FALSE, FALSE, 0);
         GtkWidget *pj_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         GtkWidget *pj_l = gtk_label_new(TR("投影模式"));
@@ -3520,6 +3538,7 @@ static void activate(GtkApplication *app, gpointer ud) {
         GtkWidget *vhd = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
         gtk_container_set_border_width(GTK_CONTAINER(vhd), 14);
         settings_group(GTK_BOX(vhd), TR("HD Color 设置"));
+        settings_exp_hint(GTK_BOX(vhd));
         gtk_box_pack_start(GTK_BOX(vhd), row(TR("HD Color"), TR("高动态范围颜色与显示配置文件")), FALSE, FALSE, 0);
         GtkWidget *hdr_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         GtkWidget *hdr_l = gtk_label_new(TR("HDR 视频"));
@@ -3596,6 +3615,7 @@ static void activate(GtkApplication *app, gpointer ud) {
         GtkWidget *vmt = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
         gtk_container_set_border_width(GTK_CONTAINER(vmt), 14);
         settings_group(GTK_BOX(vmt), TR("流量计费设置"));
+        settings_exp_hint(GTK_BOX(vmt));
         gtk_box_pack_start(GTK_BOX(vmt), row(TR("按流量计费的连接"), TR("限制后台数据下载")), FALSE, FALSE, 0);
         /* 数据用量: /proc/net/dev 累加 rx+tx */
         double total_b = 0;
@@ -3722,6 +3742,7 @@ static void activate(GtkApplication *app, gpointer ud) {
         GtkWidget *vpn = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
         gtk_container_set_border_width(GTK_CONTAINER(vpn), 14);
         settings_group(GTK_BOX(vpn), TR("笔和Ink设置"));
+        settings_exp_hint(GTK_BOX(vpn));
         gtk_box_pack_start(GTK_BOX(vpn), row(TR("笔和Ink"), TR("手写笔设置")), FALSE, FALSE, 0);
         g_pen_loading = 1;
         static const char *pen_keys[] = { "pen", "ignore_touch" };

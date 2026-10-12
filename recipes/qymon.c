@@ -14,6 +14,7 @@
 #include <sys/statvfs.h>
 
 #define NHIST 120   /* 曲线历史点数 */
+#define NTEMP 60    /* 温度曲线历史点数（每 2s 追加一点，约 2 分钟） */
 
 static void add_class(GtkWidget *w, const char *cls) {
     gtk_style_context_add_class(gtk_widget_get_style_context(w), cls);
@@ -24,6 +25,10 @@ static double mem_hist[NHIST];  /* 0..1 */
 static double disk_hist[NHIST]; /* 0..1 */
 static double net_hist[NHIST];  /* 0..1 (KB/s / 1024 归一化) */
 static int hist_n = 0;
+static double temp_hist[NTEMP]; /* 温度历史（°C） */
+static int temp_hist_n = 0;
+static int temp_tick = 0;       /* 每 2 次 tick（2s）追加一个温度点 */
+static GtkWidget *temp_da = NULL;  /* 温度曲线 #qymon-temp */
 static char line_buf[256];
 static long prev_total = 0, prev_idle = 0;
 static unsigned long mem_total_kb = 1;
@@ -316,14 +321,24 @@ static gboolean tick(gpointer ud) {
     }
     g_snprintf(big, sizeof big, TR("磁盘 %d%%"), (int)(disk * 100 + 0.5));
     if (disk_label) gtk_label_set_text(GTK_LABEL(disk_label), big);
-    /* CPU 温度 */
+    /* CPU 温度: 标签显示「CPU 温度: NN°C」，每 2s 追加一个历史点 */
     double temp = read_cpu_temp();
     if (temp > 0) {
-        g_snprintf(big, sizeof big, TR("温度 %d°C"), (int)(temp + 0.5));
+        g_snprintf(big, sizeof big, TR("CPU 温度: %d°C"), (int)(temp + 0.5));
+        temp_tick++;
+        if ((temp_tick % 2) == 0) {
+            if (temp_hist_n < NTEMP) {
+                temp_hist[temp_hist_n++] = temp;
+            } else {
+                memmove(temp_hist, temp_hist + 1, sizeof(double) * (NTEMP - 1));
+                temp_hist[NTEMP - 1] = temp;
+            }
+        }
     } else {
-        g_snprintf(big, sizeof big, "%s --", TR("温度"));
+        g_snprintf(big, sizeof big, TR("CPU 温度: --"));
     }
     if (temp_label) gtk_label_set_text(GTK_LABEL(temp_label), big);
+    if (temp_da) gtk_widget_queue_draw(temp_da);
     /* 窗口标题实时显示 CPU 使用率 */
     GtkWidget *win = gtk_widget_get_toplevel(GTK_WIDGET(ud));
     if (win && GTK_IS_WINDOW(win)) {
@@ -407,6 +422,63 @@ static gboolean on_draw(GtkWidget *da, cairo_t *cr, gpointer ud) {
     cairo_set_source_rgb(cr, 0.9, 0.9, 0.9);
     cairo_move_to(cr, w - 126, h / 2.0 + 14);
     cairo_show_text(cr, g_strdup_printf("DISK %3.0f%%", last_disk * 100));
+    return FALSE;
+}
+
+/* 温度曲线: 深蓝底 + 橙色线 #FF5C1A，显示 60 点历史 */
+static gboolean on_temp_draw(GtkWidget *da, cairo_t *cr, gpointer ud) {
+    (void)ud;
+    GtkAllocation a;
+    gtk_widget_get_allocation(da, &a);
+    int w = a.width, h = a.height;
+    /* 深蓝底 */
+    cairo_set_source_rgb(cr, 0.06, 0.09, 0.16);
+    cairo_paint(cr);
+    /* 1/3、2/3 参考线 */
+    cairo_set_source_rgb(cr, 0.20, 0.23, 0.30);
+    cairo_set_line_width(cr, 1);
+    for (int i = 1; i <= 2; i++) {
+        double y = h - (double)i / 3.0 * (h - 10) - 3;
+        cairo_move_to(cr, 0, y); cairo_line_to(cr, w, y);
+    }
+    cairo_stroke(cr);
+    if (temp_hist_n < 2) {
+        /* 数据不足时仅显示当前温度文字 */
+        if (temp_hist_n == 1) {
+            char txt[64];
+            g_snprintf(txt, sizeof txt, "%.0f°C", temp_hist[temp_hist_n - 1]);
+            cairo_set_font_size(cr, 11);
+            cairo_set_source_rgb(cr, 0.9, 0.9, 0.9);
+            cairo_move_to(cr, 8, 16);
+            cairo_show_text(cr, txt);
+        }
+        return FALSE;
+    }
+    /* 动态范围: 最小 2°C 跨度，避免曲线太平 */
+    double tmin = 1000, tmax = -1000;
+    for (int i = 0; i < temp_hist_n; i++) {
+        if (temp_hist[i] < tmin) tmin = temp_hist[i];
+        if (temp_hist[i] > tmax) tmax = temp_hist[i];
+    }
+    if (tmax - tmin < 2.0) { tmin -= 1; tmax += 1; }
+    /* 橙色线 #FF5C1A */
+    cairo_set_source_rgb(cr, 1.0, 0.36, 0.10);
+    cairo_set_line_width(cr, 1.8);
+    int started = 0;
+    for (int i = 0; i < temp_hist_n; i++) {
+        double x = (double)i / (double)(NTEMP - 1) * w;
+        double y = h - (temp_hist[i] - tmin) / (tmax - tmin) * (h - 12) - 4;
+        if (!started) { cairo_move_to(cr, x, y); started = 1; }
+        else cairo_line_to(cr, x, y);
+    }
+    cairo_stroke(cr);
+    /* 右上角当前温度 */
+    char txt[64];
+    g_snprintf(txt, sizeof txt, "%.0f°C", temp_hist[temp_hist_n - 1]);
+    cairo_set_font_size(cr, 11);
+    cairo_set_source_rgb(cr, 0.95, 0.55, 0.15);
+    cairo_move_to(cr, w - 70, 16);
+    cairo_show_text(cr, txt);
     return FALSE;
 }
 
@@ -572,6 +644,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     g_snprintf(lbl, sizeof lbl, "%s --", TR("温度"));
     temp_label = gtk_label_new(lbl);
     add_class(temp_label, "qy-mon-temp");
+    gtk_widget_set_name(temp_label, "qymon-temp");   /* #qymon-temp */
     gtk_box_pack_start(GTK_BOX(hrow), cpu_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hrow), mem_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hrow), disk_label, FALSE, FALSE, 0);
@@ -583,6 +656,12 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_widget_set_size_request(da, -1, 140);
     g_signal_connect(da, "draw", G_CALLBACK(on_draw), NULL);
     gtk_box_pack_start(GTK_BOX(vbox), da, FALSE, FALSE, 0);
+
+    /* 温度曲线区（深蓝底 + 橙线 #FF5C1A，60 点历史；无 thermal_zone 时隐藏） */
+    temp_da = gtk_drawing_area_new();
+    gtk_widget_set_size_request(temp_da, -1, 72);
+    g_signal_connect(temp_da, "draw", G_CALLBACK(on_temp_draw), NULL);
+    gtk_box_pack_start(GTK_BOX(vbox), temp_da, FALSE, FALSE, 0);
 
     /* 内存占用 TOP 5 进程列表（快速视图） */
     proc_label = gtk_label_new(NULL);
@@ -651,6 +730,12 @@ static void activate(GtkApplication *app, gpointer ud) {
     g_timeout_add_seconds(1, tick, da);
     /* 首帧立即采样 */
     tick(da);
+
+    /* 无 thermal_zone 时隐藏温度相关 UI */
+    if (read_cpu_temp() < 0) {
+        if (temp_label) gtk_widget_set_visible(temp_label, FALSE);
+        if (temp_da) gtk_widget_set_visible(temp_da, FALSE);
+    }
 }
 
 int main(int argc, char **argv) {

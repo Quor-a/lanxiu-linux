@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <glib/gstdio.h>
 #include "qytheme.h"
+#include "qyicon.h"
 #include "qyl10n.h"
 
 static GtkWidget *file_label = NULL;
@@ -20,6 +21,17 @@ static GtkWidget *btn_pause = NULL;
 static GtkWidget *btn_stop = NULL;
 static GtkWidget *playlist = NULL;      /* GtkListBox 播放列表 */
 static GtkWidget *win = NULL;
+
+/* ---------- 封面显示（同目录 cover.jpg/png/webp，128x128） ---------- */
+static GtkWidget *cover_stack = NULL;   /* img/empty 二选一 */
+static GtkWidget *cover_img = NULL;     /* 有封面时显示 GdkPixbuf */
+static GtkWidget *cover_empty = NULL;   /* 无封面时 qy_draw_empty_state(kind="note") */
+
+/* ---------- 均衡器（占位：6 段滑杆，写 /etc/qymedia-eq.conf，无真实音频后端） ---------- */
+static GtkWidget *eq_scales[6] = { NULL, NULL, NULL, NULL, NULL, NULL };
+static const char *eq_band_names[6] = { "63Hz", "250Hz", "1kHz", "4kHz", "8kHz", "16kHz" };
+
+static void cover_update(const char *audio_path);   /* 前向声明 */
 
 /* ---------- 本地歌词（LRC） ---------- */
 typedef struct {
@@ -260,6 +272,7 @@ static void play_file(const char *path) {
     g_free(current_file);
     current_file = g_strdup(path);
     gtk_label_set_text(GTK_LABEL(file_label), path);
+    cover_update(path);
     char st[512];
     g_snprintf(st, sizeof st, "%s: %s...", TR("正在播放"), path);
     gtk_label_set_text(GTK_LABEL(status_label), st);
@@ -433,6 +446,7 @@ static void on_clear_playlist(GtkWidget *w, gpointer ud) {
     g_list_free(ch);
     g_free(current_file);
     current_file = NULL;
+    cover_update(NULL);
     gtk_label_set_text(GTK_LABEL(file_label), TR("未选择音频"));
     gtk_label_set_text(GTK_LABEL(status_label), TR("播放列表已清空"));
 }
@@ -534,6 +548,92 @@ static gboolean on_win_delete(GtkWidget *w, GdkEventAny *ev, gpointer ud) {
     return FALSE;
 }
 
+/* ---------- 封面显示 ---------- */
+
+/* 无封面时的空状态插图（qy_draw_empty_state kind="note"） */
+static gboolean cover_empty_draw(GtkWidget *w, cairo_t *cr, gpointer ud) {
+    (void)ud;
+    GtkAllocation a;
+    gtk_widget_get_allocation(w, &a);
+    qy_draw_empty_state(cr, a.width, a.height, "note");
+    return FALSE;
+}
+
+/* 根据正在播放的音频路径查找同目录 cover.jpg/png/webp 并显示；
+ * 找不到封面时回退到空状态插图。 */
+static void cover_update(const char *audio_path) {
+    if (!cover_stack) return;
+    GdkPixbuf *pb = NULL;
+    if (audio_path && audio_path[0]) {
+        gchar *dir = g_path_get_dirname(audio_path);
+        static const char *names[] = { "cover.jpg", "cover.png", "cover.webp", NULL };
+        for (int i = 0; names[i] && !pb; i++) {
+            gchar *full = g_build_filename(dir, names[i], NULL);
+            pb = gdk_pixbuf_new_from_file_at_scale(full, 128, 128, TRUE, NULL);
+            g_free(full);
+        }
+        g_free(dir);
+    }
+    if (pb) {
+        gtk_image_set_from_pixbuf(GTK_IMAGE(cover_img), pb);
+        g_object_unref(pb);
+        gtk_stack_set_visible_child_name(GTK_STACK(cover_stack), "img");
+    } else {
+        gtk_stack_set_visible_child_name(GTK_STACK(cover_stack), "empty");
+    }
+}
+
+/* ---------- 均衡器（占位实现） ---------- */
+
+/* 把 6 段滑杆当前值写入 /etc/qymedia-eq.conf（[eq] bandN=值） */
+static void eq_save(void) {
+    GString *s = g_string_new("[eq]\n");
+    for (int i = 0; i < 6; i++) {
+        double v = eq_scales[i] ? gtk_range_get_value(GTK_RANGE(eq_scales[i])) : 0.0;
+        g_string_append_printf(s, "band%d=%.0f\n", i + 1, v);
+    }
+    GError *err = NULL;
+    if (!g_file_set_contents("/etc/qymedia-eq.conf", s->str, (gssize)s->len, &err)) {
+        g_printerr("QYMEDIADBG: eq save failed: %s\n", err ? err->message : "?");
+        g_clear_error(&err);
+    } else {
+        g_printerr("QYMEDIADBG: eq saved to /etc/qymedia-eq.conf\n");
+    }
+    g_string_free(s, TRUE);
+}
+
+static void on_eq_changed(GtkRange *r, gpointer ud) {
+    (void)r; (void)ud;
+    eq_save();
+}
+
+/* 工具栏「均衡器」按钮: 弹出 6 个垂直滑杆的 GtkPopover */
+static void on_eq_clicked(GtkButton *b, gpointer ud) {
+    (void)ud;
+    static GtkWidget *popover = NULL;
+    if (!popover) {
+        popover = gtk_popover_new(GTK_WIDGET(b));
+        GtkWidget *grid = gtk_grid_new();
+        gtk_grid_set_row_spacing(GTK_GRID(grid), 4);
+        gtk_grid_set_column_spacing(GTK_GRID(grid), 6);
+        gtk_container_set_border_width(GTK_CONTAINER(grid), 10);
+        for (int i = 0; i < 6; i++) {
+            GtkWidget *lbl = gtk_label_new(eq_band_names[i]);
+            gtk_widget_set_halign(lbl, GTK_ALIGN_CENTER);
+            gtk_grid_attach(GTK_GRID(grid), lbl, i, 0, 1, 1);
+            GtkWidget *scale = gtk_scale_new_with_range(GTK_ORIENTATION_VERTICAL, -12, 12, 1);
+            gtk_scale_set_draw_value(GTK_SCALE(scale), FALSE);
+            gtk_widget_set_size_request(scale, 44, 140);
+            gtk_range_set_value(GTK_RANGE(scale), 0);
+            eq_scales[i] = scale;
+            g_signal_connect(scale, "value-changed", G_CALLBACK(on_eq_changed), NULL);
+            gtk_grid_attach(GTK_GRID(grid), scale, i, 1, 1, 1);
+        }
+        gtk_container_add(GTK_CONTAINER(popover), grid);
+    }
+    gtk_popover_popup(GTK_POPOVER(popover));
+}
+
 static void build_ui(void) {
     qy_load_theme();
     track_list = g_ptr_array_new_with_free_func(g_free);
@@ -588,15 +688,34 @@ static void build_ui(void) {
     GtkWidget *right_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_box_pack_start(GTK_BOX(main_hbox), right_vbox, TRUE, TRUE, 0);
 
+    /* 封面显示: 左侧 128x128，右侧为文件/状态信息 */
+    GtkWidget *cover_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    cover_stack = gtk_stack_new();
+    cover_img = gtk_image_new();
+    gtk_widget_set_size_request(cover_img, 128, 128);
+    gtk_widget_set_halign(cover_img, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(cover_img, GTK_ALIGN_CENTER);
+    gtk_stack_add_named(GTK_STACK(cover_stack), cover_img, "img");
+    cover_empty = gtk_drawing_area_new();
+    gtk_widget_set_size_request(cover_empty, 128, 128);
+    g_signal_connect(cover_empty, "draw", G_CALLBACK(cover_empty_draw), NULL);
+    gtk_stack_add_named(GTK_STACK(cover_stack), cover_empty, "empty");
+    gtk_stack_set_visible_child_name(GTK_STACK(cover_stack), "empty");
+    gtk_box_pack_start(GTK_BOX(cover_hbox), cover_stack, FALSE, FALSE, 0);
+
+    GtkWidget *cover_info = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_box_pack_start(GTK_BOX(cover_hbox), cover_info, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(right_vbox), cover_hbox, FALSE, FALSE, 0);
+
     file_label = gtk_label_new(TR("未选择音频"));
     qy_add_class(file_label, "qy-mon-info");
     gtk_widget_set_halign(file_label, GTK_ALIGN_START);
-    gtk_box_pack_start(GTK_BOX(right_vbox), file_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(cover_info), file_label, FALSE, FALSE, 0);
 
     status_label = gtk_label_new(TR("就绪"));
     qy_add_class(status_label, "qy-mon-info");
     gtk_widget_set_halign(status_label, GTK_ALIGN_START);
-    gtk_box_pack_start(GTK_BOX(right_vbox), status_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(cover_info), status_label, FALSE, FALSE, 0);
 
     /* 右侧歌词面板（只读，#qy-media-lyric） */
     lyrics = g_ptr_array_new();
@@ -638,8 +757,12 @@ static void build_ui(void) {
     gtk_box_pack_start(GTK_BOX(bar), b_next, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(right_vbox), bar, FALSE, FALSE, 0);
 
-    /* 循环 + 音量 */
+    /* 循环 + 均衡器 + 音量 */
     GtkWidget *bar2 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *eq_btn = gtk_button_new_with_label(TR("均衡器"));
+    qy_add_class(eq_btn, "qy-btn");
+    g_signal_connect(eq_btn, "clicked", G_CALLBACK(on_eq_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(bar2), eq_btn, FALSE, FALSE, 0);
     GtkWidget *loop_btn = gtk_toggle_button_new_with_label(TR("循环"));
     g_signal_connect(loop_btn, "toggled", G_CALLBACK(on_loop_toggled), NULL);
     gtk_box_pack_start(GTK_BOX(bar2), loop_btn, FALSE, FALSE, 0);
@@ -654,6 +777,7 @@ static void build_ui(void) {
     gtk_box_pack_start(GTK_BOX(right_vbox), bar2, FALSE, FALSE, 0);
 
     gtk_widget_show_all(win);
+    cover_update(NULL);
 
     /* 歌词高亮定时器（不阻塞播放） */
     g_timeout_add(300, lyric_tick, NULL);

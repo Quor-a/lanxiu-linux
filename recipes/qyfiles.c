@@ -26,8 +26,25 @@ static GdkPixbuf *load_icon_for(const char *name, gboolean isdir);
 static GtkWidget *icon_view = NULL;
 static GtkWidget *stack = NULL;
 static gboolean icon_mode = FALSE;  /* 当前视图: FALSE=列表 TRUE=图标 */
-static GtkWidget *empty_da = NULL; /* 空状态插图 */
 static GtkWidget *empty_lb = NULL; /* 空状态文字 */
+
+/* ---------- 多标签（GtkNotebook，#qyfiles-tabs） ---------- */
+typedef struct {
+    char path[4096];       /* 当前目录 */
+    int in_trash;          /* 是否回收站视图 */
+    char search[128];      /* 本标签搜索关键字 */
+    GtkWidget *view;       /* 列表视图 */
+    GtkWidget *icon_view;  /* 图标视图 */
+    GtkWidget *stack;      /* list/icon/empty 切换 */
+    GtkWidget *empty_lb;   /* 空状态文字（本标签） */
+    GtkWidget *label;      /* 标签页标题（basename） */
+} QyFilesTab;
+
+static GtkWidget *notebook = NULL;
+static QyFilesTab *cur_tab = NULL;
+static GtkWidget *search_entry = NULL; /* 搜索框（各标签共享控件，文本随标签切换） */
+
+static void update_tab_label(void);
 
 /* v2.0 主题 + 工具栏状态按钮 */
 static void load_theme(void) {
@@ -74,6 +91,14 @@ static void set_mode_buttons(void) {
     gtk_widget_set_visible(b_pur, trash);
     gtk_widget_set_visible(b_emp, trash);
     gtk_widget_set_visible(b_bm, !trash);
+}
+
+/* 把当前标签的目录/回收站/搜索状态回写到 cur_tab */
+static void save_cur_tab(void) {
+    if (!cur_tab) return;
+    g_strlcpy(cur_tab->path, cwd, sizeof cur_tab->path);
+    cur_tab->in_trash = in_trash;
+    g_strlcpy(cur_tab->search, g_search, sizeof cur_tab->search);
 }
 
 /* ---------- freedesktop Trash 规范: ~/.local/share/Trash/files + info ---------- */
@@ -1025,6 +1050,23 @@ static void chdir_to(const char *path) {
     }
     g_strlcpy(cwd, path, sizeof cwd);
     if (path_entry) gtk_entry_set_text(GTK_ENTRY(path_entry), cwd);
+    update_tab_label();
+}
+
+/* 标签页标题: 显示目录 basename，tooltip 显示完整路径（回收站显示「回收站」） */
+static void update_tab_label(void) {
+    if (!cur_tab || !cur_tab->label) return;
+    if (cur_tab->in_trash) {
+        char files[4096], info[4096];
+        trash_dir(files, sizeof files, info, sizeof info);
+        gtk_label_set_text(GTK_LABEL(cur_tab->label), TR("回收站"));
+        gtk_widget_set_tooltip_text(cur_tab->label, files);
+    } else {
+        gchar *base = g_path_get_basename(cwd[0] ? cwd : "/");
+        gtk_label_set_text(GTK_LABEL(cur_tab->label), (base && base[0]) ? base : "/");
+        gtk_widget_set_tooltip_text(cur_tab->label, cwd);
+        g_free(base);
+    }
 }
 
 static void chdir_trash(void) {
@@ -1064,6 +1106,7 @@ static void chdir_trash(void) {
         gtk_stack_set_visible_child_name(GTK_STACK(stack), icon_mode ? "icon" : "list");
     }
     g_strlcpy(cwd, files, sizeof cwd);
+    update_tab_label();
 }
 
 /* ---------- 搜索过滤 ---------- */
@@ -1413,6 +1456,156 @@ static void on_up(GtkButton *b, gpointer ud) {
 
 static void on_home(GtkButton *b, gpointer ud) { chdir_to(g_get_home_dir()); }
 
+/* ---------- 多标签页 ---------- */
+
+/* 新建一个目录标签页：每个标签拥有独立的列表模型/树视图/图标视图/空状态 */
+static QyFilesTab *create_tab(const char *path) {
+    QyFilesTab *t = g_new0(QyFilesTab, 1);
+    GtkListStore *store = gtk_list_store_new(4, G_TYPE_STRING, G_TYPE_STRING,
+                                             G_TYPE_STRING, GDK_TYPE_PIXBUF);
+
+    GtkWidget *tv = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
+    GtkCellRenderer *r1 = gtk_cell_renderer_text_new();
+    gtk_tree_view_insert_column_with_attributes(GTK_TREE_VIEW(tv), -1, TR("类型/原位置"), r1, "text", 0, NULL);
+    GtkCellRenderer *r2 = gtk_cell_renderer_text_new();
+    gtk_tree_view_insert_column_with_attributes(GTK_TREE_VIEW(tv), -1, TR("名称"), r2, "text", 1, NULL);
+    GtkCellRenderer *r3 = gtk_cell_renderer_text_new();
+    gtk_tree_view_insert_column_with_attributes(GTK_TREE_VIEW(tv), -1, TR("大小"), r3, "text", 2, NULL);
+    GtkTreeViewColumn *c0 = gtk_tree_view_get_column(GTK_TREE_VIEW(tv), 0);
+    GtkTreeViewColumn *c1 = gtk_tree_view_get_column(GTK_TREE_VIEW(tv), 1);
+    GtkTreeViewColumn *c2 = gtk_tree_view_get_column(GTK_TREE_VIEW(tv), 2);
+    gtk_tree_view_column_set_clickable(c0, TRUE);
+    gtk_tree_view_column_set_sort_indicator(c0, TRUE);
+    gtk_tree_view_column_set_sort_column_id(c0, 0);
+    gtk_tree_view_column_set_clickable(c1, TRUE);
+    gtk_tree_view_column_set_sort_indicator(c1, TRUE);
+    gtk_tree_view_column_set_sort_column_id(c1, 1);
+    gtk_tree_view_column_set_clickable(c2, TRUE);
+    gtk_tree_view_column_set_sort_indicator(c2, TRUE);
+    gtk_tree_view_column_set_sort_column_id(c2, 2);
+    gtk_tree_sortable_set_sort_column_id(GTK_TREE_SORTABLE(store), 1, GTK_SORT_ASCENDING);
+    gtk_tree_selection_set_mode(gtk_tree_view_get_selection(GTK_TREE_VIEW(tv)), GTK_SELECTION_MULTIPLE);
+
+    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_container_add(GTK_CONTAINER(scroll), tv);
+
+    GtkWidget *iv = gtk_icon_view_new_with_model(GTK_TREE_MODEL(store));
+    gtk_icon_view_set_text_column(GTK_ICON_VIEW(iv), 1);
+    gtk_icon_view_set_pixbuf_column(GTK_ICON_VIEW(iv), 3);
+    gtk_icon_view_set_item_width(GTK_ICON_VIEW(iv), 100);
+    gtk_icon_view_set_selection_mode(GTK_ICON_VIEW(iv), GTK_SELECTION_MULTIPLE);
+    gtk_icon_view_set_item_padding(GTK_ICON_VIEW(iv), 4);
+    gtk_icon_view_set_spacing(GTK_ICON_VIEW(iv), 8);
+    gtk_icon_view_set_column_spacing(GTK_ICON_VIEW(iv), 8);
+    gtk_icon_view_set_row_spacing(GTK_ICON_VIEW(iv), 8);
+    GtkWidget *scroll_icon = gtk_scrolled_window_new(NULL, NULL);
+    gtk_container_add(GTK_CONTAINER(scroll_icon), iv);
+
+    GtkWidget *st = gtk_stack_new();
+    gtk_stack_add_named(GTK_STACK(st), scroll, "list");
+    gtk_stack_add_named(GTK_STACK(st), scroll_icon, "icon");
+
+    GtkWidget *empty_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *eda = gtk_drawing_area_new();
+    gtk_widget_set_size_request(eda, 240, 170);
+    gtk_widget_set_halign(eda, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(eda, GTK_ALIGN_CENTER);
+    gtk_widget_set_vexpand(eda, TRUE);
+    g_signal_connect(eda, "draw", G_CALLBACK(empty_draw_cb), NULL);
+    GtkWidget *elb = gtk_label_new(TR("此文件夹为空"));
+    gtk_widget_set_halign(elb, GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(empty_page), eda, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(empty_page), elb, FALSE, FALSE, 4);
+    gtk_stack_add_named(GTK_STACK(st), empty_page, "empty");
+    gtk_stack_set_visible_child_name(GTK_STACK(st), "list");
+
+    g_signal_connect(tv, "row-activated", G_CALLBACK(on_activated), NULL);
+    g_signal_connect(tv, "button-press-event", G_CALLBACK(on_popup), NULL);
+    g_signal_connect(tv, "cursor-changed", G_CALLBACK(on_view_cursor_changed), NULL);
+    g_signal_connect(iv, "item-activated", G_CALLBACK(on_icon_activated), NULL);
+    g_signal_connect(iv, "selection-changed", G_CALLBACK(on_view_cursor_changed), NULL);
+
+    /* 标签页标题 = 目录 basename，tooltip = 完整路径 */
+    const char *dir = (path && path[0]) ? path : "/";
+    gchar *base = g_path_get_basename(dir);
+    GtkWidget *lbl = gtk_label_new((base && base[0]) ? base : "/");
+    gtk_widget_set_tooltip_text(lbl, dir);
+    g_free(base);
+
+    int page_idx = gtk_notebook_append_page(GTK_NOTEBOOK(notebook), st, lbl);
+
+    g_strlcpy(t->path, dir, sizeof t->path);
+    t->in_trash = 0;
+    t->search[0] = 0;
+    t->view = tv;
+    t->icon_view = iv;
+    t->stack = st;
+    t->empty_lb = elb;
+    t->label = lbl;
+    g_object_set_data(G_OBJECT(st), "tab", t);
+
+    save_cur_tab();
+    cur_tab = t;
+    view = tv;
+    icon_view = iv;
+    stack = st;
+    empty_lb = elb;
+    in_trash = 0;
+    g_search[0] = 0;
+    g_strlcpy(cwd, dir, sizeof cwd);   /* 先切 cwd，避免 search-changed 误刷旧目录 */
+    if (search_entry) gtk_entry_set_text(GTK_ENTRY(search_entry), "");
+    set_mode_buttons();
+    chdir_to(dir);
+    gtk_notebook_set_current_page(GTK_NOTEBOOK(notebook), page_idx);
+    return t;
+}
+
+/* 工具栏「+ 新标签」: 打开主目录新标签 */
+static void on_new_tab(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    create_tab(g_get_home_dir());
+}
+
+/* 工具栏「关闭标签」: 关闭当前标签（至少保留一个） */
+static void on_close_tab(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    if (!notebook) return;
+    int n = gtk_notebook_get_n_pages(GTK_NOTEBOOK(notebook));
+    if (n <= 1) {
+        gtk_label_set_text(GTK_LABEL(status), TR("至少保留一个标签"));
+        return;
+    }
+    int cur = gtk_notebook_get_current_page(GTK_NOTEBOOK(notebook));
+    GtkWidget *page = gtk_notebook_get_nth_page(GTK_NOTEBOOK(notebook), cur);
+    QyFilesTab *t = page ? g_object_get_data(G_OBJECT(page), "tab") : NULL;
+    int target = cur > 0 ? cur - 1 : 1;
+    gtk_notebook_set_current_page(GTK_NOTEBOOK(notebook), target);
+    gtk_notebook_remove_page(GTK_NOTEBOOK(notebook), cur);
+    if (t) g_free(t);
+}
+
+/* 切换标签: 保存旧标签状态，载入新标签（不丢失各自目录） */
+static void on_tab_switch(GtkNotebook *nb, GtkWidget *page, guint page_num, gpointer ud) {
+    (void)nb; (void)page_num; (void)ud;
+    QyFilesTab *t = g_object_get_data(G_OBJECT(page), "tab");
+    if (!t || t == cur_tab) return;
+    save_cur_tab();
+    cur_tab = t;
+    view = t->view;
+    icon_view = t->icon_view;
+    stack = t->stack;
+    empty_lb = t->empty_lb;
+    g_strlcpy(cwd, t->path, sizeof cwd);
+    in_trash = t->in_trash;
+    g_strlcpy(g_search, t->search, sizeof g_search);
+    if (search_entry) gtk_entry_set_text(GTK_ENTRY(search_entry), g_search);
+    if (path_entry) gtk_entry_set_text(GTK_ENTRY(path_entry), cwd);
+    set_mode_buttons();
+    if (in_trash) chdir_trash(); else chdir_to(cwd);
+    if (preview_revealer && gtk_revealer_get_reveal_child(GTK_REVEALER(preview_revealer)))
+        update_preview();
+}
+
 static void activate(GtkApplication *app, gpointer ud) {
     load_theme();
     GtkWidget *win = gtk_application_window_new(app);
@@ -1537,6 +1730,13 @@ static void activate(GtkApplication *app, gpointer ud) {
     b_preview = gtk_toggle_button_new_with_label(TR("预览"));
     add_class(b_preview, "qy-btn");
     g_signal_connect(b_preview, "toggled", G_CALLBACK(on_preview_toggled), NULL);
+    /* 多标签工具栏按钮（始终可见） */
+    GtkWidget *b_new_tab = qy_icon_button(QY_ICON_PLUS, 18, TR("新标签"), NULL);
+    add_class(b_new_tab, "qy-btn");
+    g_signal_connect(b_new_tab, "clicked", G_CALLBACK(on_new_tab), NULL);
+    GtkWidget *b_close_tab = gtk_button_new_with_label(TR("关闭标签"));
+    add_class(b_close_tab, "qy-btn");
+    g_signal_connect(b_close_tab, "clicked", G_CALLBACK(on_close_tab), NULL);
     b_res = gtk_button_new_with_label(TR("还原"));
     add_class(b_res, "qy-btn");
     add_class(b_res, "qy-btn-danger");
@@ -1562,7 +1762,9 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(hbox), b_bm, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_view, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_preview, FALSE, FALSE, 0);
-    GtkWidget *search_entry = gtk_search_entry_new();
+    gtk_box_pack_start(GTK_BOX(hbox), b_new_tab, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(hbox), b_close_tab, FALSE, FALSE, 0);
+    search_entry = gtk_search_entry_new();
     gtk_widget_set_size_request(search_entry, 220, -1);
     gtk_entry_set_placeholder_text(GTK_ENTRY(search_entry), TR("搜索当前目录"));
     g_signal_connect(search_entry, "search-changed", G_CALLBACK(on_search_changed), NULL);
@@ -1572,74 +1774,16 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(hbox), b_pur, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_emp, FALSE, FALSE, 0);
 
-    GtkListStore *store = gtk_list_store_new(4, G_TYPE_STRING, G_TYPE_STRING,
-                                             G_TYPE_STRING, GDK_TYPE_PIXBUF);
-    view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(store));
-    GtkCellRenderer *r1 = gtk_cell_renderer_text_new();
-    gtk_tree_view_insert_column_with_attributes(GTK_TREE_VIEW(view), -1, TR("类型/原位置"), r1, "text", 0, NULL);
-    GtkCellRenderer *r2 = gtk_cell_renderer_text_new();
-    gtk_tree_view_insert_column_with_attributes(GTK_TREE_VIEW(view), -1, TR("名称"), r2, "text", 1, NULL);
-    GtkCellRenderer *r3 = gtk_cell_renderer_text_new();
-    gtk_tree_view_insert_column_with_attributes(GTK_TREE_VIEW(view), -1, TR("大小"), r3, "text", 2, NULL);
-    /* 列头点击排序 */
-    GtkTreeViewColumn *c0 = gtk_tree_view_get_column(GTK_TREE_VIEW(view), 0);
-    GtkTreeViewColumn *c1 = gtk_tree_view_get_column(GTK_TREE_VIEW(view), 1);
-    GtkTreeViewColumn *c2 = gtk_tree_view_get_column(GTK_TREE_VIEW(view), 2);
-    gtk_tree_view_column_set_clickable(c0, TRUE);
-    gtk_tree_view_column_set_sort_indicator(c0, TRUE);
-    gtk_tree_view_column_set_sort_column_id(c0, 0);
-    gtk_tree_view_column_set_clickable(c1, TRUE);
-    gtk_tree_view_column_set_sort_indicator(c1, TRUE);
-    gtk_tree_view_column_set_sort_column_id(c1, 1);
-    gtk_tree_view_column_set_clickable(c2, TRUE);
-    gtk_tree_view_column_set_sort_indicator(c2, TRUE);
-    gtk_tree_view_column_set_sort_column_id(c2, 2);
-    /* 默认按名称排序 */
-    gtk_tree_sortable_set_sort_column_id(GTK_TREE_SORTABLE(store), 1, GTK_SORT_ASCENDING);
-    /* 多选 */
-    gtk_tree_selection_set_mode(gtk_tree_view_get_selection(GTK_TREE_VIEW(view)), GTK_SELECTION_MULTIPLE);
-    gint sort_col = -1;
-    GtkSortType sort_order = GTK_SORT_ASCENDING;
-    gtk_tree_sortable_get_sort_column_id(GTK_TREE_SORTABLE(store), &sort_col, &sort_order);
-    g_printerr("QYFILESDBG: sort col=%d order=%d multi=1\n", sort_col, (int)sort_order);
-    GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
-    gtk_container_add(GTK_CONTAINER(scroll), view);
-    g_signal_connect(view, "row-activated", G_CALLBACK(on_activated), NULL);
-    g_signal_connect(view, "button-press-event", G_CALLBACK(on_popup), NULL);
-    g_signal_connect(view, "cursor-changed", G_CALLBACK(on_view_cursor_changed), NULL);
-    /* 图标视图（与列表共享同一模型，第 3 列 pixbuf） */
-    icon_view = gtk_icon_view_new_with_model(GTK_TREE_MODEL(store));
-    gtk_icon_view_set_text_column(GTK_ICON_VIEW(icon_view), 1);
-    gtk_icon_view_set_pixbuf_column(GTK_ICON_VIEW(icon_view), 3);
-    gtk_icon_view_set_item_width(GTK_ICON_VIEW(icon_view), 100);
-    gtk_icon_view_set_selection_mode(GTK_ICON_VIEW(icon_view), GTK_SELECTION_MULTIPLE);
-    /* release 235: 统一图标间距（内边距 4，行列间距 8） */
-    gtk_icon_view_set_item_padding(GTK_ICON_VIEW(icon_view), 4);
-    gtk_icon_view_set_spacing(GTK_ICON_VIEW(icon_view), 8);
-    gtk_icon_view_set_column_spacing(GTK_ICON_VIEW(icon_view), 8);
-    gtk_icon_view_set_row_spacing(GTK_ICON_VIEW(icon_view), 8);
-    g_signal_connect(icon_view, "item-activated", G_CALLBACK(on_icon_activated), NULL);
-    g_signal_connect(icon_view, "selection-changed", G_CALLBACK(on_view_cursor_changed), NULL);
-    GtkWidget *scroll_icon = gtk_scrolled_window_new(NULL, NULL);
-    gtk_container_add(GTK_CONTAINER(scroll_icon), icon_view);
-    stack = gtk_stack_new();
-    gtk_stack_add_named(GTK_STACK(stack), scroll, "list");
-    gtk_stack_add_named(GTK_STACK(stack), scroll_icon, "icon");
-    /* 空状态页：空目录时显示 cairo 空状态插图 + 文字 */
-    GtkWidget *empty_page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    empty_da = gtk_drawing_area_new();
-    gtk_widget_set_size_request(empty_da, 240, 170);
-    gtk_widget_set_halign(empty_da, GTK_ALIGN_CENTER);
-    gtk_widget_set_valign(empty_da, GTK_ALIGN_CENTER);
-    gtk_widget_set_vexpand(empty_da, TRUE);
-    g_signal_connect(empty_da, "draw", G_CALLBACK(empty_draw_cb), NULL);
-    empty_lb = gtk_label_new(TR("此文件夹为空"));
-    gtk_widget_set_halign(empty_lb, GTK_ALIGN_CENTER);
-    gtk_box_pack_start(GTK_BOX(empty_page), empty_da, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(empty_page), empty_lb, FALSE, FALSE, 4);
-    gtk_stack_add_named(GTK_STACK(stack), empty_page, "empty");
-    gtk_stack_set_visible_child_name(GTK_STACK(stack), "list");
-    gtk_box_pack_start(GTK_BOX(vbox), stack, TRUE, TRUE, 0);
+    /* ---------- 多标签内容区（GtkNotebook，#qyfiles-tabs） ---------- */
+    notebook = gtk_notebook_new();
+    gtk_widget_set_name(notebook, "qyfiles-tabs");
+    gtk_notebook_set_scrollable(GTK_NOTEBOOK(notebook), TRUE);
+    gtk_notebook_set_show_border(GTK_NOTEBOOK(notebook), FALSE);
+    g_signal_connect(notebook, "switch-page", G_CALLBACK(on_tab_switch), NULL);
+    gtk_box_pack_start(GTK_BOX(vbox), notebook, TRUE, TRUE, 0);
+
+    /* 首个标签 = 主目录 */
+    create_tab(home);
 
     status = gtk_label_new(TR("位置: /"));
     gtk_widget_set_halign(status, GTK_ALIGN_START);
