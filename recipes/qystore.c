@@ -371,6 +371,16 @@ static void on_act(GtkWidget *w, gpointer ud) {
     char cmd[1024];
     int rc;
     if (g_status[0] == 'i') {
+        /* 卸载确认（release 268） */
+        GtkWidget *dlg = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(w)),
+                                                GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION,
+                                                GTK_BUTTONS_YES_NO,
+                                                TR("确认卸载 %s?"), g_name);
+        gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dlg), "%s",
+                                                 TR("该应用将从系统中移除。"));
+        int ans = gtk_dialog_run(GTK_DIALOG(dlg));
+        gtk_widget_destroy(dlg);
+        if (ans != GTK_RESPONSE_YES) return;
         snprintf(cmd, sizeof cmd, "qysudo -n /usr/bin/qypkg-inst -r %s", g_name);
     } else {
         build_install_cmd(g_file, cmd, sizeof cmd);
