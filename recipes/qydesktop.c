@@ -288,6 +288,12 @@ static gboolean on_ws_enter(GtkWidget *w, GdkEventCrossing *ev, gpointer ud) {
         gtk_box_pack_start(GTK_BOX(v), btn, FALSE, FALSE, 0);
     }
 
+    /* 快捷键提示（release 265） */
+    GtkWidget *hint = gtk_label_new(TR("Ctrl+Alt+←/→ 切换工作区"));
+    gtk_widget_set_margin_top(hint, 4);
+    add_class(hint, "qy-exp-hint");
+    gtk_box_pack_start(GTK_BOX(v), hint, FALSE, FALSE, 0);
+
     gtk_widget_show_all(ws_pop);
     gtk_popover_popup(GTK_POPOVER(ws_pop));
     return FALSE;
