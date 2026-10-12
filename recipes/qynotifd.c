@@ -17,7 +17,7 @@
 static gboolean notif_enabled = TRUE;
 static gboolean mon_enabled = FALSE;
 
-/* 发送通知（写入 latest.msg + 追加 history.log 历史） */
+/* 发送通知（写入 latest.msg + 追加 history.log 历史 + 持久化到用户数据目录） */
 static void send_notif(const char *title, const char *msg) {
     if (!notif_enabled) return;
     g_mkdir_with_parents("/tmp/qynotif", 0755);
@@ -38,6 +38,39 @@ static void send_notif(const char *title, const char *msg) {
     }
     g_file_set_contents("/tmp/qynotif/history.log", h->str, h->len, NULL);
     g_string_free(h, TRUE);
+
+    /* 持久化历史 ~/.local/share/lanxiu/notifications.log（时间|应用|标题|正文，最多 200 行） */
+    gchar *dir = g_build_filename(g_get_user_data_dir(), "lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    gchar *path = g_build_filename(dir, "notifications.log", NULL);
+    g_free(dir);
+    GDateTime *now = g_date_time_new_now_local();
+    gchar *ts = g_date_time_format(now, "%Y-%m-%d %H:%M:%S");
+    g_date_time_unref(now);
+    GString *line = g_string_new(NULL);
+    g_string_append_printf(line, "%s|%s|%s|%s\n", ts, "qynotifd",
+                           title ? title : "", msg ? msg : "");
+    g_free(ts);
+    gchar *old = NULL;
+    if (g_file_get_contents(path, &old, NULL, NULL) && old) {
+        GString *out = g_string_new(NULL);
+        gchar **lines = g_strsplit(old, "\n", 0);
+        int n = 0;
+        for (int i = 0; lines[i] && lines[i][0]; i++) n++;
+        int start = n - 199;   /* 保留最近 199 行 + 新行 = 200 行 */
+        if (start < 0) start = 0;
+        for (int i = start; lines[i] && lines[i][0]; i++)
+            g_string_append_printf(out, "%s\n", lines[i]);
+        g_strfreev(lines);
+        g_string_append(out, line->str);
+        g_file_set_contents(path, out->str, out->len, NULL);
+        g_string_free(out, TRUE);
+    } else {
+        g_file_set_contents(path, line->str, line->len, NULL);
+    }
+    g_string_free(line, TRUE);
+    g_free(old);
+    g_free(path);
 }
 
 /* ---------- 电源/电池监控 ---------- */

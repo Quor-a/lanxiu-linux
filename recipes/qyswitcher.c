@@ -1,15 +1,37 @@
 /* qyswitcher.c — 澜岫窗口切换器（Alt-Tab）
- * 弹出式窗口列表（X11 枚举），点击激活窗口。
+ * 弹出式窗口列表（X11 枚举），每项两行显示 应用名 + 窗口标题，点击激活窗口。
+ * 选中项显示窗口缩略图预览（X11 尝试 import 抓图；Wayland 显示「预览不可用」）。
  * 自动化: QYSWITCH_AUTO=1 启动后自动枚举；QYSWITCH_DISPLAY 指定 DISPLAY（默认 :0）。
  */
 #include <gtk/gtk.h>
 #include <string.h>
+#include <glib/gstdio.h>
 #include "qytheme.h"
 #include "qyl10n.h"
 
 static GtkWidget *listbox = NULL;
 static GtkWidget *status_label = NULL;
+static GtkWidget *count_label = NULL;
 static GtkWidget *win = NULL;
+static GtkWidget *preview_popover = NULL;
+static GtkWidget *preview_image = NULL;
+static GtkWidget *preview_label = NULL;
+
+/* 行数据 */
+typedef struct {
+    gchar *id;       /* X11 窗口 id（NULL=运行中应用行） */
+    gchar *app;
+    gchar *title;
+    gboolean is_app; /* 运行中应用行 */
+} SwRow;
+
+static void sw_row_free(gpointer p) {
+    SwRow *r = (SwRow *)p;
+    g_free(r->id);
+    g_free(r->app);
+    g_free(r->title);
+    g_free(r);
+}
 
 /* 枚举 X 窗口 */
 static char **fetch_windows(int *out_n) {
@@ -36,8 +58,6 @@ static void clear_rows(void) {
     gtk_container_foreach(GTK_CONTAINER(listbox), (GtkCallback)gtk_widget_destroy, NULL);
 }
 
-static void on_row_clicked(GtkWidget *w, gpointer ud);
-
 /* 已知澜岫应用（用于检测运行中） */
 static const char *known_apps[] = {
     "qyfiles", "qyedit", "qyterm", "qysettings", "qymon", "qynet",
@@ -46,6 +66,30 @@ static const char *known_apps[] = {
     "qydesktop", "qyappmenu", "qyusers", "qysudo",
 };
 #define NKNOWN ((int)(sizeof known_apps / sizeof known_apps[0]))
+
+/* 两行行：应用名（上）+ 窗口标题（下） */
+static GtkWidget *make_row(const char *id, const char *app, const char *title, gboolean is_app) {
+    GtkWidget *row = gtk_list_box_row_new();
+    GtkWidget *v = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
+    gtk_container_set_border_width(GTK_CONTAINER(v), 4);
+    gtk_container_add(GTK_CONTAINER(row), v);
+    GtkWidget *app_lbl = gtk_label_new(app && app[0] ? app : "?");
+    gtk_label_set_xalign(GTK_LABEL(app_lbl), 0.0);
+    gtk_label_set_ellipsize(GTK_LABEL(app_lbl), PANGO_ELLIPSIZE_END);
+    gtk_box_pack_start(GTK_BOX(v), app_lbl, FALSE, FALSE, 0);
+    GtkWidget *title_lbl = gtk_label_new(title && title[0] ? title : (is_app ? TR("已运行") : ""));
+    gtk_label_set_xalign(GTK_LABEL(title_lbl), 0.0);
+    gtk_label_set_ellipsize(GTK_LABEL(title_lbl), PANGO_ELLIPSIZE_END);
+    gtk_widget_set_opacity(title_lbl, 0.7);
+    gtk_box_pack_start(GTK_BOX(v), title_lbl, FALSE, FALSE, 0);
+    SwRow *sr = g_new0(SwRow, 1);
+    sr->id = g_strdup(id);
+    sr->app = g_strdup(app ? app : "");
+    sr->title = g_strdup(title ? title : "");
+    sr->is_app = is_app;
+    g_object_set_data_full(G_OBJECT(row), "sw-row", sr, sw_row_free);
+    return row;
+}
 
 /* 运行中澜岫应用 */
 static void add_running_apps(void) {
@@ -56,7 +100,6 @@ static void add_running_apps(void) {
     }
     gchar **lines = g_strsplit(out, "\n", 0);
     g_free(out);
-    int shown = 0;
     for (int i = 0; lines && lines[i]; i++) {
         if (!lines[i][0]) continue;
         /* 行: pid /usr/bin/name ... */
@@ -67,20 +110,13 @@ static void add_running_apps(void) {
         if (space) *space = 0;
         for (int k = 0; k < NKNOWN; k++) {
             if (strcmp(name, known_apps[k]) == 0) {
-                GtkWidget *row = gtk_button_new_with_label(
-                    g_strdup_printf("· %s", name));
-                gtk_widget_set_halign(row, GTK_ALIGN_FILL);
-                gtk_widget_set_tooltip_text(row, TR("已运行"));
-                g_signal_connect(row, "clicked", G_CALLBACK(on_row_clicked),
-                                 g_strdup(name));
+                GtkWidget *row = make_row(NULL, name, TR("已运行"), TRUE);
                 gtk_list_box_insert(GTK_LIST_BOX(listbox), row, -1);
-                shown++;
                 break;
             }
         }
     }
     g_strfreev(lines);
-    (void)shown;
 }
 
 /* 进程存活检查（/proc/comm，不依赖 pidof） */
@@ -104,31 +140,92 @@ static gboolean proc_alive(const char *name) {
     return found;
 }
 
-static void on_row_clicked(GtkWidget *w, gpointer ud) {
-    (void)w;
-    const char *id = (const char *)ud;
-    /* 若是已知应用名则启动（已运行则提示） */
-    for (int k = 0; k < NKNOWN; k++) {
-        if (strcmp(id, known_apps[k]) == 0) {
-            if (proc_alive(id)) {
-                gtk_label_set_text(GTK_LABEL(status_label), g_strdup_printf("%s %s", id, TR("已在运行")));
-                g_free(ud);
-                return;
-            }
-            gchar *cmd = g_strdup_printf("%s &", id);
-            g_spawn_command_line_async(cmd, NULL);
-            g_free(cmd);
-            g_free(ud);
-            return;
-        }
-    }
-    /* 否则视为 X11 窗口 id 激活 */
+/* 激活 X11 窗口 */
+static void activate_window(const char *id) {
     const char *dpy = g_getenv("QYSWITCH_DISPLAY");
     if (!dpy) dpy = ":0";
     gchar *cmd = g_strdup_printf("DISPLAY=%s /usr/bin/qysw-x11 -a %s", dpy, id);
     g_spawn_command_line_async(cmd, NULL);
     g_free(cmd);
-    g_free(ud);
+}
+
+/* 点击/回车行：X11 窗口则激活；运行中应用则启动 */
+static void on_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer ud) {
+    (void)box; (void)ud;
+    SwRow *sr = row ? (SwRow *)g_object_get_data(G_OBJECT(row), "sw-row") : NULL;
+    if (!sr) return;
+    if (sr->id && sr->id[0]) {
+        activate_window(sr->id);
+        return;
+    }
+    if (sr->is_app && sr->app && sr->app[0]) {
+        if (proc_alive(sr->app)) {
+            gchar *msg = g_strdup_printf("%s %s", sr->app, TR("已在运行"));
+            gtk_label_set_text(GTK_LABEL(status_label), msg);
+            g_free(msg);
+            return;
+        }
+        gchar *cmd = g_strdup_printf("%s &", sr->app);
+        g_spawn_command_line_async(cmd, NULL);
+        g_free(cmd);
+    }
+}
+
+/* 选中行：更新预览 popover + 窗口 N/M 计数 */
+static void on_row_selected(GtkListBox *box, GtkListBoxRow *row, gpointer ud) {
+    (void)ud;
+    /* 预览 */
+    if (preview_popover) {
+        SwRow *sr = row ? (SwRow *)g_object_get_data(G_OBJECT(row), "sw-row") : NULL;
+        gtk_image_clear(GTK_IMAGE(preview_image));
+        if (sr && sr->id && sr->id[0] && !g_getenv("WAYLAND_DISPLAY")) {
+            /* X11: 尝试 import 抓窗口缩略图 */
+            const char *dpy = g_getenv("QYSWITCH_DISPLAY");
+            if (!dpy) dpy = ":0";
+            gchar *png = g_strdup("/tmp/qysw-preview.png");
+            gchar *cmd = g_strdup_printf("DISPLAY=%s import -window %s %s 2>/dev/null",
+                                         dpy, sr->id, png);
+            gchar *out = NULL;
+            gboolean ok = FALSE;
+            if (g_spawn_command_line_sync(cmd, &out, NULL, NULL, NULL))
+                ok = g_file_test(png, G_FILE_TEST_EXISTS);
+            g_free(cmd); g_free(out);
+            GdkPixbuf *pb = ok ? gdk_pixbuf_new_from_file_at_scale(png, 320, 200, TRUE, NULL) : NULL;
+            if (pb) {
+                gtk_image_set_from_pixbuf(GTK_IMAGE(preview_image), pb);
+                g_object_unref(pb);
+                gtk_widget_show(preview_image);
+                gtk_widget_hide(preview_label);
+            } else {
+                gtk_label_set_text(GTK_LABEL(preview_label), TR("预览不可用"));
+                gtk_widget_show(preview_label);
+                gtk_widget_hide(preview_image);
+            }
+            g_unlink(png);
+            g_free(png);
+        } else {
+            gtk_label_set_text(GTK_LABEL(preview_label), TR("预览不可用"));
+            gtk_widget_show(preview_label);
+            gtk_widget_hide(preview_image);
+        }
+        if (row) gtk_popover_popup(GTK_POPOVER(preview_popover));
+    }
+    /* 窗口 N/M */
+    if (count_label && row) {
+        GList *children = gtk_container_get_children(GTK_CONTAINER(box));
+        int total = g_list_length(children);
+        int idx = 0;
+        for (GList *l = children; l; l = l->next) {
+            idx++;
+            if (l->data == row) break;
+        }
+        g_list_free(children);
+        if (idx >= 1) {
+            char buf[64];
+            g_snprintf(buf, sizeof buf, "%s %d/%d", TR("窗口"), idx, total);
+            gtk_label_set_text(GTK_LABEL(count_label), buf);
+        }
+    }
 }
 
 /* 填充窗口列表 */
@@ -148,15 +245,19 @@ static void populate(void) {
     }
     for (int i = 0; i < n; i++) {
         char *line = lines[i];
-        char *bar = strchr(line, '|');
-        if (!bar) continue;
-        *bar = 0;
-        const char *id = line;
-        const char *name = bar + 1;
-        GtkWidget *row = gtk_button_new_with_label(name);
-        gtk_widget_set_halign(row, GTK_ALIGN_FILL);
-        gtk_widget_set_tooltip_text(row, id);
-        g_signal_connect(row, "clicked", G_CALLBACK(on_row_clicked), g_strdup(id));
+        char *p1 = strchr(line, '|');
+        if (!p1) continue;
+        *p1 = 0;
+        char *id = line;
+        char *p2 = strchr(p1 + 1, '|');
+        const char *app = "X11";
+        const char *title = p1 + 1;
+        if (p2) {
+            *p2 = 0;
+            app = p1 + 1;
+            title = p2 + 1;
+        }
+        GtkWidget *row = make_row(id, app, title, FALSE);
         gtk_list_box_insert(GTK_LIST_BOX(listbox), row, -1);
     }
     g_strfreev(lines);
@@ -186,7 +287,7 @@ static void build_ui(void) {
     qy_load_theme();
     win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(win), TR("窗口切换器"));
-    gtk_window_set_default_size(GTK_WINDOW(win), 420, 320);
+    gtk_window_set_default_size(GTK_WINDOW(win), 460, 360);
     gtk_window_set_position(GTK_WINDOW(win), GTK_WIN_POS_CENTER);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
@@ -202,13 +303,38 @@ static void build_ui(void) {
     g_signal_connect(b_refresh, "clicked", G_CALLBACK(on_refresh), NULL);
     gtk_box_pack_start(GTK_BOX(row), lbl, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(row), b_refresh, FALSE, FALSE, 0);
+    count_label = gtk_label_new("");
+    gtk_widget_set_halign(count_label, GTK_ALIGN_END);
+    gtk_widget_set_hexpand(count_label, TRUE);
+    gtk_box_pack_end(GTK_BOX(row), count_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), row, FALSE, FALSE, 0);
 
+    GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     listbox = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(listbox), GTK_SELECTION_SINGLE);
+    gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(listbox), TRUE);
+    g_signal_connect(listbox, "row-activated", G_CALLBACK(on_row_activated), NULL);
+    g_signal_connect(listbox, "row-selected", G_CALLBACK(on_row_selected), NULL);
     gtk_container_add(GTK_CONTAINER(sw), listbox);
-    gtk_box_pack_start(GTK_BOX(vbox), sw, TRUE, TRUE, 0);
+    gtk_widget_set_hexpand(sw, TRUE);
+    gtk_box_pack_start(GTK_BOX(hbox), sw, TRUE, TRUE, 0);
+
+    /* 预览 popover（附着在列表右侧，选中时弹出） */
+    preview_popover = gtk_popover_new(sw);
+    gtk_popover_set_position(GTK_POPOVER(preview_popover), GTK_POS_RIGHT);
+    GtkWidget *pv = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_container_set_border_width(GTK_CONTAINER(pv), 6);
+    gtk_container_add(GTK_CONTAINER(preview_popover), pv);
+    preview_image = gtk_image_new();
+    gtk_widget_set_size_request(preview_image, 320, 200);
+    gtk_box_pack_start(GTK_BOX(pv), preview_image, TRUE, TRUE, 0);
+    preview_label = gtk_label_new(TR("预览不可用"));
+    gtk_widget_set_opacity(preview_label, 0.6);
+    gtk_box_pack_start(GTK_BOX(pv), preview_label, TRUE, TRUE, 0);
+
+    gtk_box_pack_start(GTK_BOX(vbox), hbox, TRUE, TRUE, 0);
 
     status_label = gtk_label_new("");
     qy_add_class(status_label, "qy-mon-info");

@@ -33,6 +33,7 @@
 #include <stdarg.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <glib/gstdio.h>
 
 #define QY_WINDOWS  "/tmp/xdg/qy-windows"
 #define QY_FOCUS    "/tmp/xdg/qy-focus"
@@ -1263,6 +1264,50 @@ static void on_notif_pop_destroy(GtkWidget *w, gpointer ud) {
     if (notif_pop == w) notif_pop = NULL;
 }
 
+/* 通知历史全文：持久化文件 ~/.local/share/lanxiu/notifications.log + 现有内存历史 /tmp/qynotif/history.log */
+static gchar *notif_history_text(void) {
+    GString *out = g_string_new(NULL);
+    gchar *dir = g_build_filename(g_get_user_data_dir(), "lanxiu", NULL);
+    gchar *path = g_build_filename(dir, "notifications.log", NULL);
+    gchar *content = NULL;
+    if (g_file_get_contents(path, &content, NULL, NULL) && content && content[0])
+        g_string_append(out, content);
+    g_free(content);
+    g_free(path);
+    g_free(dir);
+    gchar *hist = NULL;
+    if (g_file_get_contents("/tmp/qynotif/history.log", &hist, NULL, NULL) && hist && hist[0])
+        g_string_append(out, hist);
+    g_free(hist);
+    if (out->len == 0) {
+        g_string_free(out, TRUE);
+        return g_strdup(TR("暂无通知"));
+    }
+    return g_string_free(out, FALSE);
+}
+
+/* 「清空历史」：删除持久化通知文件并清空内存历史 */
+static void on_notif_clear_history(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    gchar *dir = g_build_filename(g_get_user_data_dir(), "lanxiu", NULL);
+    gchar *path = g_build_filename(dir, "notifications.log", NULL);
+    g_unlink(path);
+    g_free(path);
+    g_free(dir);
+    g_mkdir_with_parents("/tmp/qynotif", 0755);
+    g_file_set_contents("/tmp/qynotif/history.log", "", 0, NULL);
+    notif_badge_hide();
+    /* 若通知中心打开，立即刷新历史文本 */
+    if (notif_pop) {
+        GtkWidget *tv = g_object_get_data(G_OBJECT(notif_pop), "hist-tv");
+        if (tv) {
+            gchar *txt = notif_history_text();
+            gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(tv)), txt, -1);
+            g_free(txt);
+        }
+    }
+}
+
 /* 点击通知图标：弹出通知中心（快捷开关行 + 历史列表） */
 static gboolean on_notif_clicked(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
     (void)w; (void)ev; (void)ud;
@@ -1316,14 +1361,19 @@ static gboolean on_notif_clicked(GtkWidget *w, GdkEventButton *ev, gpointer ud) 
 
     gtk_box_pack_start(GTK_BOX(vbox), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 4);
 
+    GtkWidget *hist_hdr_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *hist_hdr = gtk_label_new(TR("通知历史"));
     add_class(hist_hdr, "qy-notif-panel-title");
     gtk_label_set_xalign(GTK_LABEL(hist_hdr), 0.0);
-    gtk_box_pack_start(GTK_BOX(vbox), hist_hdr, FALSE, FALSE, 0);
+    gtk_widget_set_hexpand(hist_hdr, TRUE);
+    gtk_box_pack_start(GTK_BOX(hist_hdr_box), hist_hdr, TRUE, TRUE, 0);
+    GtkWidget *clear_btn = gtk_button_new_with_label(TR("清空历史"));
+    add_class(clear_btn, "qy-btn");
+    g_signal_connect(clear_btn, "clicked", G_CALLBACK(on_notif_clear_history), NULL);
+    gtk_box_pack_start(GTK_BOX(hist_hdr_box), clear_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), hist_hdr_box, FALSE, FALSE, 0);
 
-    gchar *hist = NULL;
-    if (!g_file_get_contents("/tmp/qynotif/history.log", &hist, NULL, NULL) || !hist)
-        hist = g_strdup(TR("暂无通知"));
+    gchar *hist = notif_history_text();
     GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     gtk_widget_set_size_request(sw, 320, 180);
@@ -1334,6 +1384,7 @@ static gboolean on_notif_clicked(GtkWidget *w, GdkEventButton *ev, gpointer ud) 
     gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(tv)), hist, -1);
     gtk_container_add(GTK_CONTAINER(sw), tv);
     gtk_box_pack_start(GTK_BOX(vbox), sw, TRUE, TRUE, 0);
+    g_object_set_data(G_OBJECT(pop), "hist-tv", tv);
     g_free(hist);
 
     gtk_widget_show_all(pop);

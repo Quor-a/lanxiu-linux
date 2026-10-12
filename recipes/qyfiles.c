@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <glib/gstdio.h>
+#include <sys/wait.h>
 
 static GtkWidget *view;
 static GtkWidget *status;
@@ -71,6 +72,18 @@ static GtkWidget *b_res = NULL, *b_pur = NULL, *b_emp = NULL;
 static GtkWidget *b_bm = NULL;   /* 添加书签按钮（release 256） */
 static GtkWidget *book_list = NULL; /* 侧边栏书签 GtkListBox */
 
+/* 网络挂载（release: SMB/CIFS + SSHFS） */
+static GtkWidget *b_mount = NULL;       /* 工具栏「挂载」按钮 */
+static GtkWidget *mount_type_combo = NULL;
+static GtkWidget *mount_server_entry = NULL;
+static GtkWidget *mount_share_entry = NULL;
+static GtkWidget *mount_user_entry = NULL;
+static GtkWidget *mount_pass_entry = NULL;
+static GtkWidget *mount_point_entry = NULL;
+static GtkWidget *mount_status = NULL;   /* #qyfiles-mount-status */
+static GtkWidget *mount_share_lbl = NULL;
+static gboolean mount_point_auto = TRUE; /* 挂载点未被手动编辑时自动跟随服务器 */
+
 /* 预览面板（release 258） */
 static GtkWidget *preview_revealer = NULL;  /* 右侧 GtkRevealer */
 static GtkWidget *preview_box = NULL;        /* 预览内容容器 */
@@ -91,6 +104,7 @@ static void set_mode_buttons(void) {
     gtk_widget_set_visible(b_pur, trash);
     gtk_widget_set_visible(b_emp, trash);
     gtk_widget_set_visible(b_bm, !trash);
+    gtk_widget_set_visible(b_mount, !trash);
 }
 
 /* 把当前标签的目录/回收站/搜索状态回写到 cur_tab */
@@ -1456,6 +1470,296 @@ static void on_up(GtkButton *b, gpointer ud) {
 
 static void on_home(GtkButton *b, gpointer ud) { chdir_to(g_get_home_dir()); }
 
+/* ---------- 网络挂载（SMB/CIFS + SSHFS） ---------- */
+
+/* 异步命令执行：捕获 stdout/stderr，退出后更新 #qyfiles-mount-status */
+typedef struct {
+    GtkWidget *status;    /* 状态标签 */
+    GString *out;
+} MountJob;
+
+static gboolean mount_read_io(GIOChannel *ch, GIOCondition cond, gpointer ud) {
+    MountJob *job = (MountJob *)ud;
+    if (cond & (G_IO_HUP | G_IO_ERR)) return FALSE;
+    gchar buf[512];
+    gsize n = 0;
+    GError *err = NULL;
+    GIOStatus st = g_io_channel_read_chars(ch, buf, sizeof buf - 1, &n, &err);
+    if (st == G_IO_STATUS_NORMAL && n > 0) {
+        buf[n] = 0;
+        g_string_append(job->out, buf);
+        return TRUE;
+    }
+    g_clear_error(&err);
+    return st != G_IO_STATUS_EOF;
+}
+
+static void mount_exit_cb(GPid pid, gint status, gpointer ud) {
+    MountJob *job = (MountJob *)ud;
+    g_spawn_close_pid(pid);
+    if (job->status) {
+        gchar *out = g_strstrip(job->out->str);
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+            gtk_label_set_text(GTK_LABEL(job->status), out[0] ? out : TR("挂载成功"));
+        else
+            gtk_label_set_text(GTK_LABEL(job->status), out[0] ? out : TR("挂载失败"));
+    }
+    if (job->status)
+        g_object_remove_weak_pointer(G_OBJECT(job->status), (gpointer *)&job->status);
+    g_string_free(job->out, TRUE);
+    g_free(job);
+}
+
+static void mount_spawn(const gchar *cmd) {
+    if (!mount_status) return;
+    gtk_label_set_text(GTK_LABEL(mount_status), TR("执行中…"));
+    gchar **argv = NULL;
+    GError *err = NULL;
+    if (!g_shell_parse_argv(cmd, NULL, &argv, &err)) {
+        gtk_label_set_text(GTK_LABEL(mount_status),
+                          err && err->message ? err->message : TR("命令解析失败"));
+        g_clear_error(&err);
+        return;
+    }
+    GPid pid = 0;
+    int out_fd = -1, err_fd = -1;
+    if (!g_spawn_async_with_pipes(NULL, argv, NULL,
+                                  G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
+                                  NULL, NULL, &pid, NULL, &out_fd, &err_fd, &err)) {
+        gtk_label_set_text(GTK_LABEL(mount_status),
+                          err && err->message ? err->message : TR("启动失败"));
+        g_clear_error(&err);
+        g_strfreev(argv);
+        return;
+    }
+    g_strfreev(argv);
+    MountJob *job = g_new0(MountJob, 1);
+    job->status = mount_status;
+    job->out = g_string_new(NULL);
+    g_object_add_weak_pointer(G_OBJECT(job->status), (gpointer *)&job->status);
+    GIOChannel *ch_out = g_io_channel_unix_new(out_fd);
+    GIOChannel *ch_err = g_io_channel_unix_new(err_fd);
+    g_io_channel_set_encoding(ch_out, NULL, NULL);
+    g_io_channel_set_encoding(ch_err, NULL, NULL);
+    g_io_channel_set_close_on_unref(ch_out, TRUE);
+    g_io_channel_set_close_on_unref(ch_err, TRUE);
+    g_io_add_watch(ch_out, G_IO_IN | G_IO_HUP | G_IO_ERR, mount_read_io, job);
+    g_io_add_watch(ch_err, G_IO_IN | G_IO_HUP | G_IO_ERR, mount_read_io, job);
+    g_io_channel_unref(ch_out);
+    g_io_channel_unref(ch_err);
+    g_child_watch_add(pid, mount_exit_cb, job);
+}
+
+/* 由服务器地址生成默认挂载点 /mnt/lanxiu-<名> */
+static gchar *mount_default_point(const char *server) {
+    const char *at = strrchr(server ? server : "", '@');
+    const char *s = at ? at + 1 : (server ? server : "");
+    GString *g = g_string_new("/mnt/lanxiu-");
+    for (const char *p = s; *p && *p != '/'; p++) {
+        if (g_ascii_isalnum(*p) || *p == '-' || *p == '_' || *p == '.')
+            g_string_append_c(g, *p);
+        else if (*p == ':')
+            g_string_append_c(g, '-');
+    }
+    return g_string_free(g, FALSE);
+}
+
+static void mount_update_default_point(void) {
+    if (!mount_point_entry) return;
+    gchar *mp = mount_default_point(gtk_entry_get_text(GTK_ENTRY(mount_server_entry)));
+    gtk_entry_set_text(GTK_ENTRY(mount_point_entry), mp);
+    g_free(mp);
+}
+
+static void mount_on_server_changed(GtkEditable *ed, gpointer ud) {
+    (void)ed; (void)ud;
+    if (mount_point_auto) mount_update_default_point();
+}
+
+static void mount_on_point_changed(GtkEditable *ed, gpointer ud) {
+    (void)ed; (void)ud;
+    mount_point_auto = FALSE;
+}
+
+/* 类型切换：SMB 用「共享路径」，SSHFS 用「远程路径」 */
+static void mount_on_type_changed(GtkComboBox *cb, gpointer ud) {
+    (void)ud;
+    int idx = gtk_combo_box_get_active(cb);
+    if (mount_share_lbl)
+        gtk_label_set_text(GTK_LABEL(mount_share_lbl), idx == 1 ? TR("远程路径") : TR("共享路径"));
+}
+
+static void mount_do_mount(void) {
+    const char *server = gtk_entry_get_text(GTK_ENTRY(mount_server_entry));
+    const char *share  = gtk_entry_get_text(GTK_ENTRY(mount_share_entry));
+    const char *user   = gtk_entry_get_text(GTK_ENTRY(mount_user_entry));
+    const char *pass   = gtk_entry_get_text(GTK_ENTRY(mount_pass_entry));
+    const char *mp     = gtk_entry_get_text(GTK_ENTRY(mount_point_entry));
+    if (!server[0] || !mp[0]) {
+        gtk_label_set_text(GTK_LABEL(mount_status), TR("请填写服务器地址与挂载点"));
+        return;
+    }
+    gchar *sudo_path = g_find_program_in_path("sudo");
+    gchar *cmd = NULL;
+    int type = gtk_combo_box_get_active(GTK_COMBO_BOX(mount_type_combo));
+    if (type == 1) {
+        /* SSHFS */
+        if (!g_find_program_in_path("sshfs")) {
+            gtk_label_set_text(GTK_LABEL(mount_status), TR("未安装 sshfs"));
+            g_free(sudo_path);
+            return;
+        }
+        gchar *host = NULL;
+        if (user[0]) host = g_strdup_printf("%s@%s", user, server);
+        else         host = g_strdup(server);
+        gchar *src = g_strdup_printf("%s:%s", host, share[0] ? share : "/");
+        gchar *q_src = g_shell_quote(src);
+        gchar *q_mp = g_shell_quote(mp);
+        cmd = g_strdup_printf("sshfs %s %s", q_src, q_mp);
+        g_free(q_src); g_free(q_mp);
+        g_free(src); g_free(host);
+    } else {
+        /* SMB/CIFS */
+        if (!g_find_program_in_path("mount.cifs")) {
+            gtk_label_set_text(GTK_LABEL(mount_status), TR("未安装 mount.cifs"));
+            g_free(sudo_path);
+            return;
+        }
+        gchar *src = g_strdup_printf("//%s/%s", server, share[0] ? share : "");
+        gchar *opts = NULL;
+        if (user[0])
+            opts = g_strdup_printf("username=%s,password=%s", user, pass);
+        else
+            opts = g_strdup("guest");
+        gchar *q_src = g_shell_quote(src);
+        gchar *q_mp = g_shell_quote(mp);
+        if (sudo_path)
+            cmd = g_strdup_printf("sudo mount -t cifs %s %s -o %s", q_src, q_mp, opts);
+        else
+            cmd = g_strdup_printf("mount -t cifs %s %s -o %s", q_src, q_mp, opts);
+        g_free(q_src); g_free(q_mp); g_free(opts); g_free(src);
+    }
+    g_free(sudo_path);
+    if (cmd) {
+        mount_spawn(cmd);
+        g_free(cmd);
+    }
+}
+
+static void mount_do_umount(void) {
+    const char *mp = gtk_entry_get_text(GTK_ENTRY(mount_point_entry));
+    if (!mp[0]) {
+        gtk_label_set_text(GTK_LABEL(mount_status), TR("请填写要卸载的挂载点"));
+        return;
+    }
+    gchar *sudo_path = g_find_program_in_path("sudo");
+    gchar *q_mp = g_shell_quote(mp);
+    gchar *cmd = NULL;
+    if (sudo_path)
+        cmd = g_strdup_printf("sudo umount %s", q_mp);
+    else
+        cmd = g_strdup_printf("umount %s", q_mp);
+    g_free(sudo_path);
+    g_free(q_mp);
+    mount_spawn(cmd);
+    g_free(cmd);
+}
+
+static void mount_on_response(GtkDialog *dlg, gint response, gpointer ud) {
+    (void)ud;
+    if (response == GTK_RESPONSE_CANCEL || response == GTK_RESPONSE_DELETE_EVENT) {
+        mount_status = NULL;   /* 对话框销毁后不再更新 */
+        gtk_widget_destroy(GTK_WIDGET(dlg));
+    } else if (response == 1) {
+        mount_do_mount();
+    } else if (response == 2) {
+        mount_do_umount();
+    }
+}
+
+/* 工具栏「挂载」：弹出「挂载远程」对话框 */
+static void on_mount_clicked(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    GtkWidget *parent = gtk_widget_get_toplevel(view);
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(TR("挂载远程"),
+        GTK_WINDOW(parent), GTK_DIALOG_MODAL,
+        "_取消", GTK_RESPONSE_CANCEL,
+        TR("卸载"), 2,
+        TR("挂载"), 1, NULL);
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), 1);
+    g_signal_connect(dlg, "response", G_CALLBACK(mount_on_response), NULL);
+    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_container_set_border_width(GTK_CONTAINER(box), 12);
+    GtkWidget *grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 10);
+    gtk_container_add(GTK_CONTAINER(box), grid);
+
+    mount_type_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(mount_type_combo), NULL, "SMB/CIFS");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(mount_type_combo), NULL, "SSHFS");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(mount_type_combo), 0);
+    g_signal_connect(mount_type_combo, "changed", G_CALLBACK(mount_on_type_changed), NULL);
+
+    mount_server_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(mount_server_entry), "192.168.1.100");
+    g_signal_connect(mount_server_entry, "changed", G_CALLBACK(mount_on_server_changed), NULL);
+
+    mount_share_lbl = gtk_label_new(TR("共享路径"));
+    gtk_widget_set_halign(mount_share_lbl, GTK_ALIGN_START);
+    mount_share_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(mount_share_entry), "share / /");
+
+    mount_user_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(mount_user_entry), TR("用户名（可空）"));
+    mount_pass_entry = gtk_entry_new();
+    gtk_entry_set_visibility(GTK_ENTRY(mount_pass_entry), FALSE);
+    gtk_entry_set_placeholder_text(GTK_ENTRY(mount_pass_entry), TR("密码"));
+
+    mount_point_entry = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(mount_point_entry), "/mnt/lanxiu-");
+    mount_point_auto = TRUE;
+    g_signal_connect(mount_point_entry, "changed", G_CALLBACK(mount_on_point_changed), NULL);
+
+    mount_status = gtk_label_new(TR("就绪"));
+    gtk_widget_set_name(mount_status, "qyfiles-mount-status");
+    gtk_label_set_line_wrap(GTK_LABEL(mount_status), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(mount_status), 0.0);
+    gtk_widget_set_hexpand(mount_status, TRUE);
+
+    const char *labels[][2] = {
+        { TR("类型"), NULL },
+        { TR("服务器地址"), NULL },
+        { NULL, NULL },
+        { TR("用户名"), NULL },
+        { TR("密码"), NULL },
+        { TR("挂载点"), NULL },
+    };
+    GtkWidget *entries[] = { NULL, mount_server_entry, mount_share_entry,
+                             mount_user_entry, mount_pass_entry, mount_point_entry };
+    int row = 0;
+    for (int i = 0; i < 6; i++) {
+        if (i == 2) {
+            GtkWidget *lbl = mount_share_lbl;
+            gtk_grid_attach(GTK_GRID(grid), lbl, 0, row, 1, 1);
+            gtk_grid_attach(GTK_GRID(grid), mount_share_entry, 1, row, 1, 1);
+            row++;
+            continue;
+        }
+        GtkWidget *lbl = gtk_label_new(labels[i][0]);
+        gtk_widget_set_halign(lbl, GTK_ALIGN_START);
+        gtk_grid_attach(GTK_GRID(grid), lbl, 0, row, 1, 1);
+        if (i == 0) gtk_grid_attach(GTK_GRID(grid), mount_type_combo, 1, row, 1, 1);
+        else        gtk_grid_attach(GTK_GRID(grid), entries[i], 1, row, 1, 1);
+        row++;
+    }
+    gtk_grid_attach(GTK_GRID(grid), mount_status, 0, row, 2, 1);
+
+    gtk_widget_show_all(dlg);
+    /* 打开时按当前服务器值刷新默认挂载点 */
+    mount_update_default_point();
+}
+
 /* ---------- 多标签页 ---------- */
 
 /* 新建一个目录标签页：每个标签拥有独立的列表模型/树视图/图标视图/空状态 */
@@ -1724,6 +2028,9 @@ static void activate(GtkApplication *app, gpointer ud) {
     b_bm = gtk_button_new_with_label(TR("添加书签"));
     add_class(b_bm, "qy-btn");
     g_signal_connect(b_bm, "clicked", G_CALLBACK(do_add_bookmark), NULL);
+    b_mount = gtk_button_new_with_label(TR("挂载"));
+    add_class(b_mount, "qy-btn");
+    g_signal_connect(b_mount, "clicked", G_CALLBACK(on_mount_clicked), NULL);
     GtkWidget *b_view = qy_icon_button(QY_ICON_GRID, 18, TR("图标视图"), NULL);
     add_class(b_view, "qy-btn");
     g_signal_connect(b_view, "clicked", G_CALLBACK(on_toggle_view), NULL);
@@ -1760,6 +2067,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(hbox), b_cp, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_prop, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_bm, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(hbox), b_mount, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_view, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_preview, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_new_tab, FALSE, FALSE, 0);

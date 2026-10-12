@@ -359,75 +359,204 @@ static void on_fwd(GtkWidget *w, gpointer ud) {
     }
 }
 
-/* 收藏当前页到 /etc/qybookmarks.conf */
-static void on_bookmark(GtkWidget *w, gpointer ud) {
-    (void)w; (void)ud;
-    const char *url = gtk_entry_get_text(GTK_ENTRY(url_entry));
-    if (!url || !url[0]) return;
-    gchar *content = NULL;
-    g_file_get_contents("/etc/qybookmarks.conf", &content, NULL, NULL);
-    if (content && strstr(content, url)) {
-        g_free(content);
-        gtk_label_set_text(GTK_LABEL(status_label), TR("已收藏"));
-        return;
+/* ---------- 书签管理（存 ~/.config/lanxiu/qybrowser-bookmarks.txt，每行 名称|URL） ---------- */
+typedef struct { gchar *name; gchar *url; } BmEntry;
+
+static GPtrArray *bm_entries = NULL;   /* BmEntry 列表 */
+static GtkWidget *bm_popover = NULL;    /* 工具栏「书签」弹出面板 */
+static GtkWidget *bm_listbox = NULL;    /* 书签 GtkListBox */
+
+static gchar *bm_file_path(void) {
+    gchar *dir = g_build_filename(g_get_user_config_dir(), "lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    gchar *p = g_build_filename(dir, "qybrowser-bookmarks.txt", NULL);
+    g_free(dir);
+    return p;
+}
+
+static void bm_entry_free(gpointer p) {
+    BmEntry *e = (BmEntry *)p;
+    g_free(e->name);
+    g_free(e->url);
+    g_free(e);
+}
+
+/* 由 URL 推导书签名（http(s) 用主机名，其余用 URL 本身） */
+static gchar *bm_name_for_url(const char *url) {
+    const char *h = NULL;
+    if (g_str_has_prefix(url, "https://")) h = url + 8;
+    else if (g_str_has_prefix(url, "http://")) h = url + 7;
+    if (h) {
+        const char *end = strpbrk(h, "/:?#");
+        if (!end) end = h + strlen(h);
+        return g_strndup(h, (gsize)(end - h));
     }
+    return g_strdup(url);
+}
+
+/* 书签行：名称 + URL 两行 */
+static GtkWidget *bm_make_row(BmEntry *e) {
+    GtkWidget *row = gtk_list_box_row_new();
+    GtkWidget *v = gtk_box_new(GTK_ORIENTATION_VERTICAL, 1);
+    gtk_container_set_border_width(GTK_CONTAINER(v), 4);
+    gtk_container_add(GTK_CONTAINER(row), v);
+    GtkWidget *name = gtk_label_new(e->name);
+    gtk_label_set_xalign(GTK_LABEL(name), 0.0);
+    gtk_label_set_ellipsize(GTK_LABEL(name), PANGO_ELLIPSIZE_END);
+    gtk_box_pack_start(GTK_BOX(v), name, FALSE, FALSE, 0);
+    GtkWidget *url = gtk_label_new(e->url);
+    gtk_label_set_xalign(GTK_LABEL(url), 0.0);
+    gtk_label_set_ellipsize(GTK_LABEL(url), PANGO_ELLIPSIZE_END);
+    gtk_widget_set_opacity(url, 0.65);
+    gtk_box_pack_start(GTK_BOX(v), url, FALSE, FALSE, 0);
+    g_object_set_data(G_OBJECT(row), "bm-entry", e);   /* 所有权仍在 bm_entries */
+    return row;
+}
+
+/* 写入书签文件（全量） */
+static void bm_save(void) {
+    if (!bm_entries) return;
+    gchar *path = bm_file_path();
     GString *out = g_string_new(NULL);
-    if (content) g_string_append(out, content);
-    g_string_append_printf(out, "%s\n", url);
-    g_file_set_contents("/etc/qybookmarks.conf", out->str, out->len, NULL);
-    g_free(content);
+    for (guint i = 0; i < bm_entries->len; i++) {
+        BmEntry *e = (BmEntry *)g_ptr_array_index(bm_entries, i);
+        g_string_append_printf(out, "%s|%s\n", e->name, e->url);
+    }
+    g_file_set_contents(path, out->str, out->len, NULL);
     g_string_free(out, TRUE);
+    g_free(path);
+}
+
+/* 添加当前页为书签（去重） */
+static void bm_add_url(const char *url) {
+    if (!url || !url[0]) return;
+    for (guint i = 0; i < bm_entries->len; i++) {
+        BmEntry *e = (BmEntry *)g_ptr_array_index(bm_entries, i);
+        if (e->url && !strcmp(e->url, url)) {
+            gtk_label_set_text(GTK_LABEL(status_label), TR("已收藏"));
+            return;
+        }
+    }
+    BmEntry *e = g_new0(BmEntry, 1);
+    e->name = bm_name_for_url(url);
+    e->url = g_strdup(url);
+    g_ptr_array_add(bm_entries, e);
+    if (bm_listbox) {
+        GtkWidget *row = bm_make_row(e);
+        gtk_list_box_insert(GTK_LIST_BOX(bm_listbox), row, -1);
+        gtk_widget_show_all(row);
+    }
+    bm_save();
     gtk_label_set_text(GTK_LABEL(status_label), TR("已收藏"));
 }
 
-/* ---------- 书签列表窗口 ---------- */
-static void on_bm_list_clicked(GtkWidget *b, gpointer ud) {
-    (void)b;
-    const char *url = (const char *)ud;
-    gtk_entry_set_text(GTK_ENTRY(url_entry), url);
-    open_url(url);
-    g_free(ud);
+/* 收藏当前页（工具栏按钮 + 弹层面板按钮共用） */
+static void on_bookmark(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    const char *url = gtk_entry_get_text(GTK_ENTRY(url_entry));
+    bm_add_url(url);
 }
 
-static void show_bookmarks_window(void) {
-    GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(win), TR("书签"));
-    qy_make_titlebar(GTK_WINDOW(win), TR("书签"));
-    gtk_window_set_default_size(GTK_WINDOW(win), 420, 320);
-    GtkWidget *v = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    gtk_container_set_border_width(GTK_CONTAINER(v), 8);
-    gtk_container_add(GTK_CONTAINER(win), v);
-    gchar *c = NULL;
-    g_file_get_contents("/etc/qybookmarks.conf", &c, NULL, NULL);
-    gchar **lines = g_strsplit(c ? c : "", "\n", 0);
-    int n = 0;
-    for (int i = 0; lines[i]; i++) {
-        gchar *line = g_strstrip(lines[i]);
-        if (!line[0]) continue;
-        GtkWidget *b = gtk_button_new_with_label(line);
-        gtk_widget_set_halign(b, GTK_ALIGN_START);
-        g_signal_connect(b, "clicked", G_CALLBACK(on_bm_list_clicked), g_strdup(line));
-        gtk_box_pack_start(GTK_BOX(v), b, FALSE, FALSE, 0);
-        n++;
+/* 删除一条书签：从数组与列表移除并保存 */
+static void bm_delete_row(GtkListBoxRow *row) {
+    if (!row) return;
+    BmEntry *e = (BmEntry *)g_object_get_data(G_OBJECT(row), "bm-entry");
+    if (e) {
+        for (guint i = 0; i < bm_entries->len; i++) {
+            if (g_ptr_array_index(bm_entries, i) == e) {
+                g_ptr_array_remove_index(bm_entries, i);   /* free_func 释放 e */
+                break;
+            }
+        }
     }
-    if (n == 0) {
-        GtkWidget *lbl = gtk_label_new(TR("暂无书签"));
-        gtk_box_pack_start(GTK_BOX(v), lbl, FALSE, FALSE, 0);
-    }
-    g_strfreev(lines);
-    g_free(c);
-    g_printerr("QYBROWSERDBG: bookmarks=%d\n", n);
-    gtk_widget_show_all(win);
+    gtk_widget_destroy(GTK_WIDGET(row));
+    bm_save();
+    gtk_label_set_text(GTK_LABEL(status_label), TR("已删除书签"));
 }
 
+/* 右键菜单：删除 */
+static void bm_on_menu_delete(GtkMenuItem *mi, gpointer ud) {
+    (void)mi;
+    bm_delete_row(GTK_LIST_BOX_ROW(ud));
+}
+
+/* 右键书签行 → 「删除」 */
+static gboolean bm_on_button_press(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->type != GDK_BUTTON_PRESS || ev->button != 3) return FALSE;
+    GtkListBoxRow *row = gtk_list_box_get_row_at_y(GTK_LIST_BOX(bm_listbox), (gint)ev->y);
+    if (!row) return TRUE;
+    gtk_list_box_select_row(GTK_LIST_BOX(bm_listbox), row);
+    GtkWidget *menu = gtk_menu_new();
+    GtkWidget *mi = gtk_menu_item_new_with_label(TR("删除"));
+    g_signal_connect(mi, "activate", G_CALLBACK(bm_on_menu_delete), row);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    gtk_widget_show_all(menu);
+    gtk_menu_attach_to_widget(GTK_MENU(menu), w, NULL);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (const GdkEvent *)ev);
+    return TRUE;
+}
+
+/* 弹层内「删除」按钮：删除当前选中书签 */
+static void bm_delete_selected(GtkWidget *b, gpointer ud) {
+    (void)b; (void)ud;
+    GtkListBoxRow *row = gtk_list_box_get_selected_row(GTK_LIST_BOX(bm_listbox));
+    if (row) bm_delete_row(row);
+}
+
+/* 点击书签行 → 打开 URL */
+static void bm_on_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer ud) {
+    (void)box; (void)ud;
+    BmEntry *e = row ? (BmEntry *)g_object_get_data(G_OBJECT(row), "bm-entry") : NULL;
+    if (e && e->url && e->url[0]) {
+        gtk_entry_set_text(GTK_ENTRY(url_entry), e->url);
+        open_url(e->url);
+        if (bm_popover) gtk_popover_popdown(GTK_POPOVER(bm_popover));
+    }
+}
+
+/* 启动时从 qybrowser-bookmarks.txt 加载书签 */
+static void bm_load(void) {
+    if (!bm_listbox) return;
+    if (!bm_entries) bm_entries = g_ptr_array_new_with_free_func(bm_entry_free);
+    gchar *path = bm_file_path();
+    gchar *content = NULL;
+    if (g_file_get_contents(path, &content, NULL, NULL) && content) {
+        gchar **lines = g_strsplit(content, "\n", 0);
+        for (int i = 0; lines[i]; i++) {
+            gchar *line = g_strstrip(lines[i]);
+            if (!line[0]) continue;
+            gchar **parts = g_strsplit(line, "|", 2);
+            if (parts[0] && parts[0][0] && parts[1] && parts[1][0]) {
+                BmEntry *e = g_new0(BmEntry, 1);
+                e->name = g_strdup(parts[0]);
+                e->url = g_strdup(parts[1]);
+                g_ptr_array_add(bm_entries, e);
+                GtkWidget *row = bm_make_row(e);
+                gtk_list_box_insert(GTK_LIST_BOX(bm_listbox), row, -1);
+                gtk_widget_show_all(row);
+            }
+            g_strfreev(parts);
+        }
+        g_strfreev(lines);
+    }
+    g_free(content);
+    g_free(path);
+}
+
+/* 工具栏「书签」：弹出/收起 GtkPopover */
 static void on_show_bookmarks(GtkWidget *w, gpointer ud) {
     (void)w; (void)ud;
-    show_bookmarks_window();
+    if (!bm_popover) return;
+    if (gtk_widget_get_visible(GTK_WIDGET(bm_popover)))
+        gtk_popover_popdown(GTK_POPOVER(bm_popover));
+    else
+        gtk_popover_popup(GTK_POPOVER(bm_popover));
 }
 
 static gboolean auto_show_bookmarks(gpointer p) {
     (void)p;
-    show_bookmarks_window();
+    on_show_bookmarks(NULL, NULL);
     return G_SOURCE_REMOVE;
 }
 
@@ -819,7 +948,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     qy_add_class(btn, "qy-btn");
     GtkWidget *bm_btn = qy_icon_button(QY_ICON_BOOKMARK, 18, TR("收藏"), NULL);
     g_signal_connect(bm_btn, "clicked", G_CALLBACK(on_bookmark), NULL);
-    GtkWidget *bm_list_btn = qy_icon_button(QY_ICON_LIST, 18, TR("书签列表"), NULL);
+    GtkWidget *bm_list_btn = qy_icon_button(QY_ICON_LIST, 18, TR("书签"), NULL);
     g_signal_connect(bm_list_btn, "clicked", G_CALLBACK(on_show_bookmarks), NULL);
     GtkWidget *btn2 = gtk_button_new_with_label(TR("清空"));
     g_signal_connect(btn, "clicked", G_CALLBACK(on_open), NULL);
@@ -832,6 +961,35 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(bar), bm_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), bm_list_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), btn2, FALSE, FALSE, 0);
+
+    /* 书签 GtkPopover：列表 + 添加当前页 + 删除 */
+    bm_popover = gtk_popover_new(bm_list_btn);
+    gtk_popover_set_position(GTK_POPOVER(bm_popover), GTK_POS_BOTTOM);
+    gtk_popover_set_modal(GTK_POPOVER(bm_popover), FALSE);
+    GtkWidget *bm_v = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_set_margin_start(bm_v, 8);
+    gtk_widget_set_margin_end(bm_v, 8);
+    gtk_widget_set_margin_top(bm_v, 6);
+    gtk_widget_set_margin_bottom(bm_v, 6);
+    gtk_container_add(GTK_CONTAINER(bm_popover), bm_v);
+    GtkWidget *bm_add_btn = gtk_button_new_with_label(TR("添加当前页为书签"));
+    qy_add_class(bm_add_btn, "qy-btn");
+    g_signal_connect(bm_add_btn, "clicked", G_CALLBACK(on_bookmark), NULL);
+    gtk_box_pack_start(GTK_BOX(bm_v), bm_add_btn, FALSE, FALSE, 0);
+    GtkWidget *bm_sw = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(bm_sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(bm_sw, 280, 200);
+    bm_listbox = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(bm_listbox), GTK_SELECTION_SINGLE);
+    gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(bm_listbox), TRUE);
+    g_signal_connect(bm_listbox, "row-activated", G_CALLBACK(bm_on_row_activated), NULL);
+    g_signal_connect(bm_listbox, "button-press-event", G_CALLBACK(bm_on_button_press), NULL);
+    gtk_container_add(GTK_CONTAINER(bm_sw), bm_listbox);
+    gtk_box_pack_start(GTK_BOX(bm_v), bm_sw, TRUE, TRUE, 0);
+    GtkWidget *bm_del_btn = gtk_button_new_with_label(TR("删除"));
+    qy_add_class(bm_del_btn, "qy-btn");
+    g_signal_connect(bm_del_btn, "clicked", G_CALLBACK(bm_delete_selected), NULL);
+    gtk_box_pack_start(GTK_BOX(bm_v), bm_del_btn, FALSE, FALSE, 0);
     /* 下载管理: 工具栏「下载」按钮切换底部历史面板 */
     dl_toggle_btn = gtk_toggle_button_new_with_label(TR("下载"));
     qy_add_class(dl_toggle_btn, "qy-btn");
@@ -943,7 +1101,8 @@ static void activate(GtkApplication *app, gpointer ud) {
 
     gtk_widget_show_all(win);
 
-    /* 加载下载历史 */
+    /* 加载书签 + 下载历史 */
+    bm_load();
     dl_load();
 }
 
