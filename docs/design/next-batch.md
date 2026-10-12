@@ -1,57 +1,65 @@
-# LANXIU 下一批功能 UI 设计规格
+# LANXIU 第十三批功能 UI 设计规格
 
-> 依据 `ui-design-guide` skill 输出（品牌色/深色底为既有设计系统覆盖项）。
+> 依据 `ui-design-guide` skill（品牌深蓝 #0A0E1A/#111724 + 品牌橙 #FF5C1A，禁紫/禁系统字体/禁 emoji，布局非对称留白）。
 
-## 1. qyview 增强：图片查看器（全屏/幻灯片）
-
-```
-DESIGN SPECIFICATION
-====================
-1. Purpose: 让图片查看器承担"看图"主场景——沉浸全屏浏览与自动幻灯片，保留现有缩放/旋转/翻页。
-2. Aesthetic Direction: Editorial/magazine（编辑式——大图为主，暗色留白，底部细工具栏悬浮）
-3. Color Palette: 底 #0A0E1A（近黑）、工具栏 #111724（半透明 rgba(17,23,36,0.85)）、强调橙 #FF5C1A、次要文字 #9AA7B8、白色 #E8ECF4
-4. Typography: 系统无字体依赖（GTK 主题字体）；界面仅用小字号计数/文件名，不引入新字体
-5. Layout Strategy: 非对称——图片居中偏上（留出下方工具条），左下角文件名（小字）、右下角页码；全屏时图片按窗口等比适配并留 6% 边距（打破顶满布局）；幻灯片切换用淡入（GtkStack transition 0.3s）
-```
-
-实现要点（GTK3）：
-- 全屏按钮（F11）切换 GtkWindow fullscreen；空格键开始/暂停幻灯片（间隔 3s，g_timeout_add）；方向键左右翻页。
-- 底部悬浮工具条（GtkOverlay 子层）：上一张/播放暂停/下一张/缩放滑杆/全屏/旋转。
-- 复用 qyview.c 现有 GdkPixbuf 加载与缩放逻辑。
-
-## 2. qyaudio：音频/音量控制面板（ALSA）
+## 1. 系统托盘 SNI（StatusNotifierItem 接入）
 
 ```
 DESIGN SPECIFICATION
-====================
-1. Purpose: 提供系统级音量/输出设备控制，替代仅顶栏滑块的哑控制——显示当前设备、主音量、简单均衡（高/中/低音滑杆占位）。
-2. Aesthetic Direction: Industrial/utilitarian（工业感——仪表式音量表、暗底高对比、橙色主音量）
-3. Color Palette: 面板 #101826、表体 #1c2434、主音量橙 #FF5C1A、刻度 #3a4558、文字 #E8ECF4
-4. Typography: 不依赖新字体；用等宽数字显示 dB/百分比（GTK 默认 monospace）
-5. Layout Strategy: 左侧垂直主音量滑杆（不对称——占左 40%），右侧设备列表（输出/输入分组）+ 静音按钮；底部一行"高/中/低音"小滑杆（占位）
+1. Purpose: 让第三方应用图标进入系统托盘（qydesktop 自绘托盘区改为接收 SNI 注册）。
+2. Aesthetic Direction: Industrial/utilitarian（工业简洁——图标等距排列，hover 橙框）
+3. Color Palette: 托盘底 #111724、图标 hover 背景 rgba(255,92,26,0.15)、hover 描边 #FF5C1A
+4. Typography: 无新增字体；tooltip 用系统字体
+5. Layout Strategy: 托盘图标水平排列在顶栏右侧（时钟左侧），固定宽度 24px/图标，hover 显示圆角背景；右键菜单（gtk_menu_popup_at_pointer）
 ```
 
-实现要点（GTK3 + ALSA，sysroot 有 alsa 头与 amixer）：
-- `snd_mixer_open` 打开 default，遍历 "Master" 等控件，读/写音量百分比（`snd_mixer_selem_set_playback_volume_all`）。
-- 无 ALSA 设备时显示友好错误（`#qyaudio-err`），不崩溃。
-- 窗口 420x360，类 `qy-audio-win`。
+实现要点：
+- qydesktop 用 DBus 注册 `org.kde.StatusNotifierWatcher`（监听 `ItemRegistered/ItemUnregistered`），接收第三方注册。
+- 每个 SNI 图标用 GtkImage 占位（`gdk_pixbuf`），点击发送 `Activate`，右键菜单发送 `ContextMenu` 请求显示 DBus 菜单（简化：先显示"应用菜单"占位）。
+- 无第三方注册时保留现有固定系统图标（音量/网络/铃铛/电池）。
 
-## 3. qypower：电池/电源状态
+## 2. 输入法框架集成引导（qysettings 输入法页增强）
 
 ```
 DESIGN SPECIFICATION
-====================
-1. Purpose: 显示电池与电源状态（充电/百分比/剩余时间），并提供"省电模式"开关（写 /etc/qypower.conf）。
-2. Aesthetic Direction: Luxury/refined（精致仪表风——环形电量指示、深蓝底、橙色电量弧）
-3. Color Palette: 深蓝 #0A0E1A、面板 #111724、电量弧橙 #FF5C1A、充电绿 #4CAF50（电量>20 时）、低电红 #E5484D（<20）
-4. Typography: 大数字百分比（GTK 默认），无新字体
-5. Layout Strategy: 环形电量图居中偏左（cairo arc 绘制），右侧信息列（充电状态/剩余时间/温度/循环次数占位）；底部"省电模式"开关（写 /etc/qypower.conf）+ 亮度滑杆（写 backlight）
+1. Purpose: 引导用户安装并启用 fcitx5/ibus，并检测运行状态。
+2. Aesthetic Direction: Guidance 式（清晰分步——状态检测卡 + 安装指引卡 + 启用开关卡）
+3. Color Palette: 卡片 #111724 圆角 12、状态点（已安装绿 #4CAF50 / 未安装灰 #3A4558）、按钮橙 #FF5C1A
+4. Layout: 三卡片纵向排列，非对称（左侧状态列 + 右侧说明文字）
 ```
 
-实现要点（GTK3 + cairo + /sys/class/power_supply）：
-- 读 `/sys/class/power_supply/*/`（capacity/status/voltage_now），无电池时显示"未检测到电池"。
-- 窗口 400x320，类 `qy-power-win`。
+实现要点：
+- 检测 `command -v fcitx5/ibus`；未安装显示安装命令（`sudo qypkg install fcitx5` 提示）。
+- 启用开关写 `/etc/profile.d/lanxiu-inputmethod.sh`（已有逻辑，增强 UI 分组）。
 
-## 审计（三应用通用）
-- 无 purple/violet/indigo/fuchsia；无 Inter/Roboto/Arial/system-ui；无 emoji 图标（用 cairo 线稿图标，复用 qyicon.c）。
-- 布局均含不对称/留白破格，非纯居中对称。
+## 3. 虚拟桌面窗口管理（qydesktop 工作区）
+
+```
+DESIGN SPECIFICATION
+1. Purpose: 支持把当前窗口发送到其他工作区（键盘/右键），并显示每工作区窗口概览。
+2. Aesthetic Direction: 保持顶栏简洁——右键菜单项 + 快捷键显示，预览弹窗用深色卡片
+3. Color Palette: 复用 #111724/#FF5C1A/#9AA7B8
+4. Layout: 工作区预览弹窗横向 4 卡片（每卡显示工作区名 + 窗口数 + 迷你窗口缩略占位）
+```
+
+实现要点：
+- 工作区 Popover 增加「将当前窗口发送到工作区 N」子菜单（wmctrl -t N 或占位写配置）。
+- 预览卡片迷你窗口占位（cairo 圆角小方块，橙框当前工作区）。
+
+## 4. 备份任务管理（qybackup 计划列表增强）
+
+```
+DESIGN SPECIFICATION
+1. Purpose: 可视化查看 crontab 中的备份计划（下次执行时间/上次执行状态）。
+2. Aesthetic Direction: 表格式清单（时间线感——左侧计划列表 + 右侧执行日志）
+3. Color Palette: 列表深色 #111724、状态标签（成功绿/失败红/待执行橙）
+4. Layout: 计划区上下分割（上：计划列表；下：最近执行日志，来自 ~/.local/share/lanxiu/backup.log）
+```
+
+实现要点：
+- 解析 crontab 中含 `# lanxiu-scheduled-backup` 的行，显示频率/时间/下次执行。
+- 备份执行时追加日志到 `~/.local/share/lanxiu/backup.log`（时间|源|目标|状态），列表区读取显示最近 20 条。
+
+## 审计
+- 无 purple/violet/indigo/fuchsia；无 Inter/Roboto/Arial/system-ui；无 emoji 图标（全部 cairo 线稿/字符）。
+- 布局含非对称/分组卡片，非纯居中对称。
