@@ -30,6 +30,18 @@ static GtkWidget *cover_empty = NULL;   /* 无封面时 qy_draw_empty_state(kind
 /* ---------- 均衡器（占位：6 段滑杆，写 /etc/qymedia-eq.conf，无真实音频后端） ---------- */
 static GtkWidget *eq_scales[6] = { NULL, NULL, NULL, NULL, NULL, NULL };
 static const char *eq_band_names[6] = { "63Hz", "250Hz", "1kHz", "4kHz", "8kHz", "16kHz" };
+static double g_play_speed = 1.0;   /* 播放速度（release 267） */
+static GtkWidget *speed_combo = NULL;
+
+static void on_speed_changed(GtkComboBox *combo, gpointer ud) {
+    (void)ud;
+    const char *id = gtk_combo_box_get_active_id(GTK_COMBO_BOX(combo));
+    g_play_speed = id ? g_ascii_strtod(id, NULL) : 1.0;
+    if (g_play_speed <= 0.0) g_play_speed = 1.0;
+    gchar *s = g_strdup_printf(TR("播放速度 %.1fx（下次播放生效）"), g_play_speed);
+    if (status_label) gtk_label_set_text(GTK_LABEL(status_label), s);
+    g_free(s);
+}
 
 static void cover_update(const char *audio_path);   /* 前向声明 */
 
@@ -305,7 +317,15 @@ static void play_file(const char *path) {
     }
     gchar *cmd;
     gchar *qpath = g_shell_quote(path);
-    if (extra)
+    /* 播放速度（release 267）：mpv --speed / ffplay -af atempo */
+    if (g_play_speed != 1.0 && player && (strstr(player, "mpv") || strstr(player, "ffplay"))) {
+        gchar *speed_opt = g_strdup_printf(strstr(player, "mpv") ? "--speed=%.2f" : "-af atempo=%.2f", g_play_speed);
+        if (extra)
+            cmd = g_strdup_printf("%s %s %s %s", player, extra, speed_opt, qpath);
+        else
+            cmd = g_strdup_printf("%s -q %s %s", player, speed_opt, qpath);
+        g_free(speed_opt);
+    } else if (extra)
         cmd = g_strdup_printf("%s %s %s", player, extra, qpath);
     else
         cmd = g_strdup_printf("%s -q %s", player, qpath);
@@ -814,6 +834,15 @@ static void build_ui(void) {
     gtk_box_pack_start(GTK_BOX(bar), btn_pause, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), btn_stop, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), b_next, FALSE, FALSE, 0);
+    /* 播放速度下拉（release 267） */
+    speed_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(speed_combo), "0.5", "0.5x");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(speed_combo), "1.0", "1.0x");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(speed_combo), "1.5", "1.5x");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(speed_combo), "2.0", "2.0x");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(speed_combo), 1);
+    g_signal_connect(speed_combo, "changed", G_CALLBACK(on_speed_changed), NULL);
+    gtk_box_pack_start(GTK_BOX(bar), speed_combo, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(right_vbox), bar, FALSE, FALSE, 0);
 
     /* 循环 + 均衡器 + 音量 */
