@@ -49,6 +49,18 @@ RECIPE_NOTIFY_C = Path(__file__).parent / "qynotify.c"
 RECIPE_NOTIFD_C = Path(__file__).parent / "qynotifd.c"
 RECIPE_DRIVER_C = Path(__file__).parent / "qydriver.c"
 RECIPE_GIT_C = Path(__file__).parent / "qygit.c"
+# v2.x (release 247-252 新应用)：全量集成进 qydesktop 包
+RECIPE_CLOCK_C = Path(__file__).parent / "qyclock.c"
+RECIPE_WEATHER_C = Path(__file__).parent / "qyweather.c"
+RECIPE_NOTE_C = Path(__file__).parent / "qynote.c"
+RECIPE_CONVERT_C = Path(__file__).parent / "qyconvert.c"
+RECIPE_HELP_C = Path(__file__).parent / "qyhelp.c"
+RECIPE_DISK_C = Path(__file__).parent / "qydisk.c"
+RECIPE_AUDIO_C = Path(__file__).parent / "qyaudio.c"
+RECIPE_POWER_C = Path(__file__).parent / "qypower.c"
+RECIPE_REC_C = Path(__file__).parent / "qyrec.c"
+RECIPE_BACKUP_C = Path(__file__).parent / "qybackup.c"
+RECIPE_MIME_C = Path(__file__).parent / "qymime.c"
 RECIPE_QYICON_C = Path(__file__).parent / "qyicon.c"
 RECIPE_QYICON_H = Path(__file__).parent / "qyicon.h"
 
@@ -84,6 +96,18 @@ def build(ctx):
     shutil.copy(RECIPE_DRIVER_C, Path(ctx.srcdir) / "qydriver.c")
     shutil.copytree(Path(__file__).parent / "git-bundle", Path(ctx.srcdir) / "git-bundle")
     shutil.copy(RECIPE_GIT_C, Path(ctx.srcdir) / "qygit.c")
+    # v2.x (release 247-252 新应用)：全量复制源码，随 qydesktop 一并编译
+    shutil.copy(RECIPE_CLOCK_C, Path(ctx.srcdir) / "qyclock.c")
+    shutil.copy(RECIPE_WEATHER_C, Path(ctx.srcdir) / "qyweather.c")
+    shutil.copy(RECIPE_NOTE_C, Path(ctx.srcdir) / "qynote.c")
+    shutil.copy(RECIPE_CONVERT_C, Path(ctx.srcdir) / "qyconvert.c")
+    shutil.copy(RECIPE_HELP_C, Path(ctx.srcdir) / "qyhelp.c")
+    shutil.copy(RECIPE_DISK_C, Path(ctx.srcdir) / "qydisk.c")
+    shutil.copy(RECIPE_AUDIO_C, Path(ctx.srcdir) / "qyaudio.c")
+    shutil.copy(RECIPE_POWER_C, Path(ctx.srcdir) / "qypower.c")
+    shutil.copy(RECIPE_REC_C, Path(ctx.srcdir) / "qyrec.c")
+    shutil.copy(RECIPE_BACKUP_C, Path(ctx.srcdir) / "qybackup.c")
+    shutil.copy(RECIPE_MIME_C, Path(ctx.srcdir) / "qymime.c")
     shutil.copy(Path(__file__).parent / "qystore.desktop", Path(ctx.srcdir) / "qystore.desktop")
     shutil.copy(Path(__file__).parent / "qynet.unit", Path(ctx.srcdir) / "qynet.unit")
     shutil.copy(Path(__file__).parent / "start-qynet.sh", Path(ctx.srcdir) / "start-qynet.sh")
@@ -140,6 +164,18 @@ def build(ctx):
         "$CC qynotifd.c -o qynotifd $(pkg-config --cflags --libs glib-2.0 gio-2.0) -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) -O2 && "
         "$CC qydriver.c qyicon.c qytheme.c qyl10n.c -o qydriver $(pkg-config --cflags --libs gtk+-3.0) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
         "$CC qygit.c qyicon.c qytheme.c qyl10n.c -o qygit $(pkg-config --cflags --libs gtk+-3.0) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
+        # v2.x (release 247-252 新应用)：随 qydesktop 编译安装
+        "$CC qyclock.c qyicon.c qytheme.c qyl10n.c -o qyclock $(pkg-config --cflags --libs gtk+-3.0) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
+        "$CC qyweather.c qyicon.c qytheme.c qyl10n.c -o qyweather $(pkg-config --cflags --libs gtk+-3.0) $(pkg-config --cflags --libs json-c libcurl) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
+        "$CC qynote.c qyicon.c qytheme.c qyl10n.c -o qynote $(pkg-config --cflags --libs gtk+-3.0) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
+        "$CC qyconvert.c qyicon.c qytheme.c qyl10n.c -o qyconvert $(pkg-config --cflags --libs gtk+-3.0) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
+        "$CC qyhelp.c qyicon.c qytheme.c qyl10n.c -o qyhelp $(pkg-config --cflags --libs gtk+-3.0) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
+        "$CC qydisk.c qyicon.c qytheme.c qyl10n.c -o qydisk $(pkg-config --cflags --libs gtk+-3.0) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
+        "$CC qyaudio.c qyicon.c qytheme.c qyl10n.c -o qyaudio $(pkg-config --cflags --libs gtk+-3.0) $(pkg-config --cflags --libs alsa) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
+        "$CC qypower.c qyicon.c qytheme.c qyl10n.c -o qypower $(pkg-config --cflags --libs gtk+-3.0) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
+        "$CC qyrec.c qyicon.c qytheme.c qyl10n.c -o qyrec $(pkg-config --cflags --libs gtk+-3.0) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
+        "$CC qybackup.c qyicon.c qytheme.c qyl10n.c -o qybackup $(pkg-config --cflags --libs gtk+-3.0) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
+        "$CC qymime.c qyicon.c qytheme.c qyl10n.c -o qymime $(pkg-config --cflags --libs gtk+-3.0) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
         "$CC qypkg-inst.c -o qypkg-inst -O2".format(ctx.sysroot)
     )
 
@@ -170,6 +206,18 @@ def package(ctx):
     ctx.run("cp qynotifd {}/usr/bin/qynotifd".format(ctx.destdir))
     ctx.run("cp qydriver {}/usr/bin/qydriver".format(ctx.destdir))
     ctx.run("cp qygit {}/usr/bin/qygit".format(ctx.destdir))
+    # v2.x (release 247-252 新应用)：全量安装
+    ctx.run("cp qyclock {}/usr/bin/qyclock".format(ctx.destdir))
+    ctx.run("cp qyweather {}/usr/bin/qyweather".format(ctx.destdir))
+    ctx.run("cp qynote {}/usr/bin/qynote".format(ctx.destdir))
+    ctx.run("cp qyconvert {}/usr/bin/qyconvert".format(ctx.destdir))
+    ctx.run("cp qyhelp {}/usr/bin/qyhelp".format(ctx.destdir))
+    ctx.run("cp qydisk {}/usr/bin/qydisk".format(ctx.destdir))
+    ctx.run("cp qyaudio {}/usr/bin/qyaudio".format(ctx.destdir))
+    ctx.run("cp qypower {}/usr/bin/qypower".format(ctx.destdir))
+    ctx.run("cp qyrec {}/usr/bin/qyrec".format(ctx.destdir))
+    ctx.run("cp qybackup {}/usr/bin/qybackup".format(ctx.destdir))
+    ctx.run("cp qymime {}/usr/bin/qymime".format(ctx.destdir))
     ctx.run("mkdir -p {}/usr/lib/git-core {}/usr/share/git-core".format(ctx.destdir, ctx.destdir))
     if getattr(ctx, "target_arch", None) is None:
         ctx.run("cp git-bundle/git {}/usr/bin/git && chmod 0755 {}/usr/bin/git".format(ctx.destdir, ctx.destdir))
