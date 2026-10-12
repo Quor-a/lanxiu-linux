@@ -30,6 +30,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <unistd.h>
 #include <dirent.h>
 
@@ -201,7 +202,51 @@ static gboolean mon_tick(gpointer data) {
 }
 
 /* ---------- 应用菜单 ---------- */
-static void on_appmenu_clicked(GtkButton *b, gpointer ud) { launch_cmd("qyappmenu"); }
+/* 调试输出：同时写入 /tmp/qyappmenu-err.log 与 stderr（串口可读）。 */
+static void appmenu_debug(const char *fmt, ...) {
+    va_list ap;
+    FILE *f = fopen("/tmp/qyappmenu-err.log", "a");
+    va_start(ap, fmt);
+    if (f) { vfprintf(f, fmt, ap); fclose(f); }
+    va_end(ap);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+}
+
+/* 启动应用菜单。修复：开始菜单按钮不要只依赖 clicked（release 事件可能
+ * 不被投递到按钮，导致有 active 高亮但 qyappmenu 不启动），改为
+ * button-press-event（按下即启动，已验证按下事件可靠到达）+ activate（键盘）。
+ */
+static void launch_appmenu(void) {
+    GError *err = NULL;
+    appmenu_debug("QYDESKTOPDBG: on_appmenu launch qyappmenu\n");
+    if (!g_spawn_command_line_async("qyappmenu", &err)) {
+        if (err) {
+            appmenu_debug("QYDESKTOPDBG: qyappmenu spawn FAILED: %s\n", err->message);
+            g_printerr("launch: %s\n", err->message);
+            g_error_free(err);
+        }
+        return;
+    }
+    appmenu_debug("QYDESKTOPDBG: qyappmenu spawn OK\n");
+}
+
+/* 兼容键盘 activate 与正常 release 的 clicked 路径 */
+static void on_appmenu_clicked(GtkButton *b, gpointer ud) { launch_appmenu(); }
+
+/* 按下即启动（修复 release 不投递的问题）；返回 FALSE 保留 GTK active 高亮 */
+static gboolean on_appmenu_pressed(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    if (ev->button == 1)
+        launch_appmenu();
+    return FALSE;
+}
+
+/* 诊断：按钮内 drawing area 是否收到按下事件（排查事件投递路径） */
+static gboolean on_appmenu_da_press(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    appmenu_debug("QYDESKTOPDBG: app_da button-press btn=%u x=%.0f y=%.0f\n", ev->button, ev->x, ev->y);
+    return FALSE;
+}
 
 /* ---------- 窗口任务栏：读 weston 补丁的窗口列表 ---------- */
 typedef struct { guint id; gchar title[96]; } WinInfo;
@@ -1047,8 +1092,10 @@ static void build_bar(void) {
     gtk_widget_set_size_request(app_btn, 32, 32);
     GtkWidget *app_da = gtk_drawing_area_new();
     g_signal_connect(app_da, "draw", G_CALLBACK(app_logo_draw_cb), NULL);
+    g_signal_connect(app_da, "button-press-event", G_CALLBACK(on_appmenu_da_press), NULL);
     gtk_container_add(GTK_CONTAINER(app_btn), app_da);
-    g_signal_connect(app_btn, "clicked", G_CALLBACK(on_appmenu_clicked), NULL);
+    g_signal_connect(app_btn, "activate", G_CALLBACK(on_appmenu_clicked), NULL);
+    g_signal_connect(app_btn, "button-press-event", G_CALLBACK(on_appmenu_pressed), NULL);
     gtk_widget_set_tooltip_text(app_btn, TR("显示应用"));
     gtk_box_pack_start(GTK_BOX(left), app_btn, FALSE, FALSE, 0);
     active_title = gtk_label_new(NULL);
@@ -1169,7 +1216,8 @@ static void build_dock(void) {
     g_signal_connect(gd, "draw", G_CALLBACK(desktop_icon_draw_cb), GINT_TO_POINTER(QY_ICON_GRID));
     gtk_container_add(GTK_CONTAINER(grid_btn), gd);
     gtk_widget_set_tooltip_text(grid_btn, TR("显示应用"));
-    g_signal_connect(grid_btn, "clicked", G_CALLBACK(on_appmenu_clicked), NULL);
+    g_signal_connect(grid_btn, "activate", G_CALLBACK(on_appmenu_clicked), NULL);
+    g_signal_connect(grid_btn, "button-press-event", G_CALLBACK(on_appmenu_pressed), NULL);
     gtk_box_pack_end(GTK_BOX(vbox), grid_btn, FALSE, FALSE, 0);
 
     gtk_fixed_put(GTK_FIXED(desktop_fixed), dock, 0, BAR_H);
