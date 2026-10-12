@@ -2253,3 +2253,15 @@ spinner {
 .qy-color-scale {
     font-size: 13px;
 }
+/* qytodo 待办清单（release 268） */
+.qy-todo-done {
+    text-decoration: line-through;
+    color: #5A6B85;
+}
+.qytodo-list row {
+    padding: 8px 10px;
+    border-bottom: 1px solid #1A2233;
+}
+.qytodo-list row:selected {
+    background-color: rgba(255, 92, 26, 0.15);
+}
