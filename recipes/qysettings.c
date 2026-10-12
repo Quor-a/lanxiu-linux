@@ -3938,6 +3938,21 @@ static void activate(GtkApplication *app, gpointer ud) {
         qy_add_class(im_hint, "qy-exp-hint");
         gtk_box_pack_start(GTK_BOX(vim), im_hint, FALSE, FALSE, 0);
 
+        /* 状态检测标签（release 265） */
+        GtkWidget *im_status = gtk_label_new(NULL);
+        gtk_widget_set_name(im_status, "qysettings-im-status");
+        gtk_widget_set_halign(im_status, GTK_ALIGN_START);
+        gtk_widget_set_margin_top(im_status, 2);
+        qy_add_class(im_status, "qy-exp-hint");
+        int im_det = im_detect_default();
+        if (im_det == 1)
+            gtk_label_set_text(GTK_LABEL(im_status), TR("已检测到 fcitx5 输入法框架"));
+        else if (im_det == 2)
+            gtk_label_set_text(GTK_LABEL(im_status), TR("已检测到 ibus 输入法框架"));
+        else
+            gtk_label_set_text(GTK_LABEL(im_status), TR("未检测到输入法框架，可运行: sudo qypkg install fcitx5"));
+        gtk_box_pack_start(GTK_BOX(vim), im_status, FALSE, FALSE, 0);
+
         /* 应用按钮 #qysettings-im-apply（品牌橙） */
         GtkWidget *im_btn = gtk_button_new_with_label(TR("应用"));
         gtk_widget_set_name(im_btn, "qysettings-im-apply");
