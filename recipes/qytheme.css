@@ -214,11 +214,11 @@ list row button:hover {
 
 /* ---------- 图标颜色类（统一玻璃底，配色交给 cairo 线稿） ---------- */
 .c-files, .c-term, .c-settings, .c-store, .c-mon, .c-home, .c-trash, .c-grid,
-.c-clock, .c-weather, .c-note {
+.c-clock, .c-weather, .c-note, .c-todo {
     background-color: rgba(255, 255, 255, 0.08);
 }
 .c-files:hover, .c-term:hover, .c-settings:hover, .c-store:hover, .c-mon:hover, .c-home:hover, .c-trash:hover, .c-grid:hover,
-.c-clock:hover, .c-weather:hover, .c-note:hover {
+.c-clock:hover, .c-weather:hover, .c-note:hover, .c-todo:hover {
     background-color: rgba(255, 255, 255, 0.16);
 }
 

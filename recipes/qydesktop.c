@@ -72,6 +72,7 @@ static AppEntry apps[] = {
     { "换算",   "c-convert", "qyconvert",         "qyconvert",    0, NULL },
     { "帮助",   "c-help",    "qyhelp",            "qyhelp",       0, NULL },
     { "磁盘",   "c-disk",    "qydisk",            "qydisk",       0, NULL },
+    { "待办",   "c-todo",    "qytodo",            "qytodo",       0, NULL },
 };
 #define NAPPS ((int)(sizeof apps / sizeof apps[0]))
 
