@@ -17,6 +17,141 @@ static GtkListStore *store = NULL;
 static GtkWidget *count_label = NULL;
 static GtkWidget *status_label = NULL;
 
+/* ---------- 实时流量曲线 ---------- */
+#define RATE_HISTORY 60
+static double rate_hist[RATE_HISTORY] = {0};   /* 历史速率（字节/秒） */
+static int rate_pos = 0;                       /* 下一个写入位置 */
+static int rate_count = 0;                    /* 已采样的有效点数 */
+static guint64 prev_bytes = 0;                /* 上一次总字节数 */
+static gboolean have_prev = FALSE;            /* 是否有上一次采样 */
+static gint64 prev_time = 0;                   /* 上一次采样时间（us） */
+static GtkWidget *rate_label = NULL;          /* #qynet-rate */
+static GtkWidget *graph = NULL;               /* #qynet-graph */
+
+/* 读取 /proc/net/dev 所有非 lo 接口的总 RX+TX 字节数 */
+static guint64 read_net_total(void) {
+    FILE *f = fopen("/proc/net/dev", "r");
+    if (!f) return 0;
+    char line[512];
+    guint64 total = 0;
+    /* 跳过两行表头 */
+    if (!fgets(line, sizeof line, f)) { fclose(f); return 0; }
+    if (!fgets(line, sizeof line, f)) { fclose(f); return 0; }
+    while (fgets(line, sizeof line, f)) {
+        char *colon = strchr(line, ':');
+        if (!colon) continue;
+        size_t n = (size_t)(colon - line);
+        char ifname[64];
+        if (n >= sizeof ifname) n = sizeof ifname - 1;
+        memcpy(ifname, line, n);
+        ifname[n] = 0;
+        g_strstrip(ifname);
+        if (!strcmp(ifname, "lo")) continue;
+        unsigned long long rx = 0, tx = 0;
+        /* 格式:  rx_bytes packets errs drop fifo frame compressed multicast  tx_bytes ...
+         * 中间 7 个字段用 %*u 跳过（数值可能超过 32 位，但跳过时溢出不影响消费整个 token） */
+        if (sscanf(colon + 1, "%llu %*u %*u %*u %*u %*u %*u %*u %llu",
+                   &rx, &tx) >= 1)
+            total += rx + tx;
+    }
+    fclose(f);
+    return total;
+}
+
+/* 每秒采样一次：差分算出速率，写入 60 点历史，更新标签并重绘曲线 */
+static gboolean rate_tick(gpointer ud) {
+    (void)ud;
+    guint64 now_bytes = read_net_total();
+    gint64 now_time = g_get_monotonic_time();
+    double rate = 0.0;
+    if (have_prev && now_time > prev_time) {
+        double dt = (now_time - prev_time) / 1e6;   /* 秒 */
+        if (dt > 0) {
+            if (now_bytes >= prev_bytes)
+                rate = (double)(now_bytes - prev_bytes) / dt;
+            else
+                rate = 0.0;   /* 网卡重启/计数器复位：按 0 处理 */
+        }
+    }
+    prev_bytes = now_bytes;
+    prev_time = now_time;
+    have_prev = TRUE;
+
+    rate_hist[rate_pos] = rate;
+    rate_pos = (rate_pos + 1) % RATE_HISTORY;
+    if (rate_count < RATE_HISTORY) rate_count++;
+
+    if (rate_label) {
+        gchar *txt = g_strdup_printf(TR("当前速率: %.0f KB/s"), rate / 1024.0);
+        gtk_label_set_text(GTK_LABEL(rate_label), txt);
+        g_free(txt);
+    }
+    if (graph) gtk_widget_queue_draw(graph);
+    return G_SOURCE_CONTINUE;
+}
+
+/* 曲线绘制：深蓝底 #101826，橙线 #FF5C1A（下行段用绿色） */
+static gboolean graph_draw(GtkWidget *w, cairo_t *cr, gpointer ud) {
+    (void)ud;
+    GtkAllocation a;
+    gtk_widget_get_allocation(w, &a);
+    int W = a.width, H = a.height;
+
+    /* 深蓝底 */
+    cairo_set_source_rgb(cr, 0x10 / 255.0, 0x18 / 255.0, 0x26 / 255.0);  /* #101826 */
+    cairo_paint(cr);
+    if (W < 10 || H < 10) return FALSE;
+
+    /* 横向网格线 */
+    cairo_set_source_rgba(cr, 1, 1, 1, 0.06);
+    cairo_set_line_width(cr, 1);
+    for (int i = 1; i < 4; i++) {
+        double y = H * i / 4.0;
+        cairo_move_to(cr, 0, y);
+        cairo_line_to(cr, W, y);
+        cairo_stroke(cr);
+    }
+    /* 基线 */
+    cairo_move_to(cr, 0, H - 1);
+    cairo_line_to(cr, W, H - 1);
+    cairo_stroke(cr);
+
+    /* 最大值（至少 1，避免除零） */
+    double maxv = 1.0;
+    for (int i = 0; i < rate_count; i++)
+        if (rate_hist[i] > maxv) maxv = rate_hist[i];
+    if (maxv <= 0) maxv = 1.0;
+
+    int n = rate_count;
+    if (n < 2) n = 2;
+    double prev_x = 0, prev_y = 0, prev_v = 0;
+    gboolean started = FALSE;
+    for (int i = 0; i < n; i++) {
+        int idx = (rate_pos - n + i + RATE_HISTORY) % RATE_HISTORY;  /* 最旧 → 最新 */
+        double v = rate_hist[idx];
+        double x = (n > 1) ? (double)i / (n - 1) * W : 0;
+        double y = H - 6 - (v / maxv) * (H - 16);
+        if (!started) {
+            started = TRUE;
+            prev_x = x; prev_y = y; prev_v = v;
+            continue;
+        }
+        /* 下行（当前样本低于前一样本）用绿色，否则品牌橙 #FF5C1A */
+        if (v < prev_v)
+            cairo_set_source_rgb(cr, 0.20, 0.85, 0.35);    /* 绿色下行 */
+        else
+            cairo_set_source_rgb(cr, 1.0, 0x5C / 255.0, 0x1A / 255.0);  /* #FF5C1A */
+        cairo_set_line_width(cr, 1.8);
+        cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+        cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+        cairo_move_to(cr, prev_x, prev_y);
+        cairo_line_to(cr, x, y);
+        cairo_stroke(cr);
+        prev_x = x; prev_y = y; prev_v = v;
+    }
+    return FALSE;
+}
+
 /* 读取指定接口的 IPv4 地址（多个用空格分隔） */
 static void read_ip(char *buf, size_t n, const char *ifname) {
     buf[0] = 0;
@@ -235,7 +370,7 @@ int main(int argc, char **argv) {
 
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(win), TR("澜岫网络管理器"));
-    gtk_window_set_default_size(GTK_WINDOW(win), 620, 360);
+    gtk_window_set_default_size(GTK_WINDOW(win), 620, 500);
     g_signal_connect(win, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
@@ -278,8 +413,23 @@ int main(int argc, char **argv) {
     gtk_box_pack_start(GTK_BOX(vbox), hb, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), status_label, FALSE, FALSE, 0);
 
+    /* 实时流量曲线 */
+    rate_label = gtk_label_new(TR("当前速率: 0 KB/s"));
+    qy_add_class(rate_label, "qy-mon-info");
+    gtk_widget_set_name(rate_label, "qynet-rate");
+    gtk_widget_set_halign(rate_label, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(vbox), rate_label, FALSE, FALSE, 0);
+
+    graph = gtk_drawing_area_new();
+    gtk_widget_set_name(graph, "qynet-graph");
+    gtk_widget_set_size_request(graph, -1, 120);
+    g_signal_connect(graph, "draw", G_CALLBACK(graph_draw), NULL);
+    gtk_box_pack_start(GTK_BOX(vbox), graph, FALSE, FALSE, 0);
+
     gtk_widget_show_all(win);
     refresh_list();
+    rate_tick(NULL);                        /* 立即采样一次 */
+    g_timeout_add_seconds(1, rate_tick, NULL);
 
     /* 自动化: QYNET_CONNECT=eth0 自动连接 */
     const char *qc = g_getenv("QYNET_CONNECT");

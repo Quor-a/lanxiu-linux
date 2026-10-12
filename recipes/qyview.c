@@ -32,6 +32,31 @@ static GtkWidget *g_da = NULL;          /* 绘图区（幻灯片定时器回调�
 static guint slide_timer = 0;           /* 幻灯片定时器 id */
 static gboolean slide_on = FALSE;      /* 幻灯片是否运行 */
 
+/* ---------- 幻灯片淡入淡出（GtkStack 双绘图区交替） ---------- */
+static GtkWidget *g_stack = NULL;     /* GtkStack（CROSSFADE 过渡） */
+static GtkWidget *g_view_a = NULL;     /* 子绘图区 A */
+static GtkWidget *g_view_b = NULL;    /* 子绘图区 B */
+static int g_view_cur = 0;             /* 当前可见子区索引（0=A, 1=B） */
+
+/* 设置某个子绘图区要显示的 pixbuf（持有引用，替换时释放旧图） */
+static void view_set_pixbuf(GtkWidget *view, GdkPixbuf *pb) {
+    if (pb) g_object_ref(pb);
+    g_object_set_data_full(G_OBJECT(view), "qy-view-pixbuf", pb,
+                           (GDestroyNotify)g_object_unref);
+    gtk_widget_queue_draw(view);
+}
+
+/* 取子绘图区当前要绘制的 pixbuf（无数据时返回 NULL，绘制黑色背景） */
+static GdkPixbuf *view_get_pixbuf(GtkWidget *view) {
+    return g_object_get_data(G_OBJECT(view), "qy-view-pixbuf");
+}
+
+/* 重绘两个子绘图区（缩放/平移变化时保证可见区刷新） */
+static void queue_all_views(void) {
+    if (g_view_a) gtk_widget_queue_draw(g_view_a);
+    if (g_view_b) gtk_widget_queue_draw(g_view_b);
+}
+
 /* 另存为 / 批量转换 */
 static GtkWidget *save_fmt_combo = NULL; /* 另存为目标格式下拉（PNG/JPEG/BMP） */
 
@@ -179,6 +204,13 @@ static void load_by_index(GtkWidget *da, int idx) {
     gchar *full = g_build_filename(cur_dir, (gchar*)dir_files->pdata[idx], NULL);
     if (load_path(full)) {
         dir_idx = idx;
+        /* 幻灯片淡入淡出：把新图放到当前隐藏的子绘图区，再切换可见子区触发 CROSSFADE */
+        if (g_stack && g_view_a && g_view_b) {
+            GtkWidget *next = (g_view_cur == 0) ? g_view_b : g_view_a;
+            view_set_pixbuf(next, pix);
+            gtk_stack_set_visible_child(GTK_STACK(g_stack), next);
+            g_view_cur = 1 - g_view_cur;
+        }
         /* 窗口标题: 文件名 (n/N) */
         if (g_win) {
             gchar *ttl = g_strdup_printf("%s (%d/%d)",
@@ -194,7 +226,7 @@ static void load_by_index(GtkWidget *da, int idx) {
         }
         if (file_label)
             gtk_label_set_text(GTK_LABEL(file_label), (gchar*)dir_files->pdata[idx]);
-        gtk_widget_queue_draw(da);
+        queue_all_views();
     }
     g_free(full);
 }
@@ -212,30 +244,31 @@ static void on_next(GtkButton *b, gpointer ud) {
 }
 
 static void on_fit(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
     zoom = 1.0; pan_x = pan_y = 0;
     update_zoom();
-    gtk_widget_queue_draw(GTK_WIDGET(ud));
+    queue_all_views();
 }
 
 static void on_zoomin(GtkButton *b, gpointer ud) {
-    (void)b;
+    (void)b; (void)ud;
     zoom *= 1.15;
     if (zoom > 20) zoom = 20;
     update_zoom();
-    gtk_widget_queue_draw(GTK_WIDGET(ud));
+    queue_all_views();
 }
 
 static void on_zoomout(GtkButton *b, gpointer ud) {
-    (void)b;
+    (void)b; (void)ud;
     zoom /= 1.15;
     if (zoom < 0.05) zoom = 0.05;
     update_zoom();
-    gtk_widget_queue_draw(GTK_WIDGET(ud));
+    queue_all_views();
 }
 
 /* 顺时针旋转 90°（QYVIEW_ROTATE=1 可在启动时自动旋转一次，便于自动化验证） */
 static void on_rotate(GtkButton *b, gpointer ud) {
-    (void)b;
+    (void)b; (void)ud;
     if (!pix) return;
     GdkPixbuf *r = gdk_pixbuf_rotate_simple(pix, GDK_PIXBUF_ROTATE_CLOCKWISE);
     if (r) {
@@ -243,7 +276,10 @@ static void on_rotate(GtkButton *b, gpointer ud) {
         pix = r;
         zoom = 1.0; pan_x = pan_y = 0;
         update_zoom();
-        gtk_widget_queue_draw(GTK_WIDGET(ud));
+        /* 两个子绘图区都同步到旋转后的图 */
+        if (g_view_a) view_set_pixbuf(g_view_a, pix);
+        if (g_view_b) view_set_pixbuf(g_view_b, pix);
+        queue_all_views();
     }
 }
 
@@ -599,8 +635,9 @@ static gboolean on_draw(GtkWidget *da, cairo_t *cr, gpointer ud) {
     GtkAllocation a; gtk_widget_get_allocation(da, &a);
     cairo_set_source_rgb(cr, 0.1, 0.1, 0.12);
     cairo_paint(cr);
-    if (!pix) return FALSE;
-    int iw = gdk_pixbuf_get_width(pix), ih = gdk_pixbuf_get_height(pix);
+    GdkPixbuf *pb = view_get_pixbuf(da);
+    if (!pb) return FALSE;
+    int iw = gdk_pixbuf_get_width(pb), ih = gdk_pixbuf_get_height(pb);
     double fit = 1.0;
     /* 打开大图时自动缩小适应窗口（小图保持原始尺寸） */
     if (iw && ih) {
@@ -620,19 +657,20 @@ static gboolean on_draw(GtkWidget *da, cairo_t *cr, gpointer ud) {
     cairo_save(cr);
     cairo_translate(cr, ox, oy);
     cairo_scale(cr, z, z);
-    gdk_cairo_set_source_pixbuf(cr, pix, 0, 0);
+    gdk_cairo_set_source_pixbuf(cr, pb, 0, 0);
     cairo_paint(cr);
     cairo_restore(cr);
     return FALSE;
 }
 
 static gboolean on_scroll(GtkWidget *w, GdkEventScroll *ev, gpointer ud) {
+    (void)w; (void)ud;
     if (ev->direction == GDK_SCROLL_UP) zoom *= 1.15;
     else if (ev->direction == GDK_SCROLL_DOWN) zoom /= 1.15;
     if (zoom < 0.05) zoom = 0.05;
     if (zoom > 20) zoom = 20;
     update_zoom();
-    gtk_widget_queue_draw(w);
+    queue_all_views();
     return TRUE;
 }
 
@@ -660,14 +698,15 @@ static gboolean on_key(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
         int n = (dir_idx - 1 + (int)dir_files->len) % (int)dir_files->len;
         load_by_index(GTK_WIDGET(ud), n);
     } else if (ev->keyval == GDK_KEY_0) {
-        zoom = 1.0; pan_x = pan_y = 0; gtk_widget_queue_draw(w);
+        zoom = 1.0; pan_x = pan_y = 0;
+        queue_all_views();
         update_zoom();
     } else if (ev->keyval == GDK_KEY_plus || ev->keyval == GDK_KEY_equal) {
         /* + 或 = 放大 */
-        zoom *= 1.15; gtk_widget_queue_draw(w); update_zoom();
+        zoom *= 1.15; queue_all_views(); update_zoom();
     } else if (ev->keyval == GDK_KEY_minus) {
         /* - 缩小 */
-        zoom /= 1.15; gtk_widget_queue_draw(w); update_zoom();
+        zoom /= 1.15; queue_all_views(); update_zoom();
     } else if (ev->keyval == GDK_KEY_Delete) {
         /* Delete: 当前图片移到回收站 */
         const char *path = g_ptr_array_index(dir_files, dir_idx);
@@ -680,7 +719,8 @@ static gboolean on_key(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
                 if (dir_idx >= (int)dir_files->len) dir_idx = 0;
                 load_by_index(GTK_WIDGET(ud), dir_idx);
             } else {
-                zoom = 1.0; pan_x = pan_y = 0; gtk_widget_queue_draw(w);
+                zoom = 1.0; pan_x = pan_y = 0;
+                queue_all_views();
             }
         } else {
             g_printerr("QYVIEWDBG: trash fail %s\n", err ? err->message : "?");
@@ -693,7 +733,8 @@ static gboolean on_key(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
 static gboolean on_button(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
     /* 双击还原 */
     if (ev->type == GDK_2BUTTON_PRESS && ev->button == 1) {
-        zoom = 1.0; pan_x = pan_y = 0; gtk_widget_queue_draw(w);
+        zoom = 1.0; pan_x = pan_y = 0;
+        queue_all_views();
     }
     return FALSE;
 }
@@ -743,17 +784,41 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(vbox), hbox, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), overlay, TRUE, TRUE, 0);
 
-    /* 图片绘制区 */
+    /* 图片绘制区：GtkStack 双绘图区，幻灯片切换时 CROSSFADE 淡入淡出 */
+    GtkWidget *stack = gtk_stack_new();
+    gtk_stack_set_transition_type(GTK_STACK(stack), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
+    gtk_stack_set_transition_duration(GTK_STACK(stack), 300);
+    gtk_stack_set_homogeneous(GTK_STACK(stack), TRUE);
+    g_stack = stack;
+
     GtkWidget *da = gtk_drawing_area_new();
     qy_add_class(da, "qy-app-surface");
+    g_view_a = da;
+    GtkWidget *da2 = gtk_drawing_area_new();
+    qy_add_class(da2, "qy-app-surface");
+    g_view_b = da2;
+
+    gtk_container_add(GTK_CONTAINER(stack), da);
+    gtk_container_add(GTK_CONTAINER(stack), da2);
+    gtk_stack_set_visible_child(GTK_STACK(stack), da);
+    g_view_cur = 0;
+
     g_da = da;
-    gtk_container_add(GTK_CONTAINER(overlay), da);
+    gtk_container_add(GTK_CONTAINER(overlay), stack);
+
+    /* 两个子绘图区共用同一套事件处理 */
     g_signal_connect(da, "draw", G_CALLBACK(on_draw), NULL);
     g_signal_connect(da, "scroll-event", G_CALLBACK(on_scroll), NULL);
     g_signal_connect(da, "key-press-event", G_CALLBACK(on_key), da);
     g_signal_connect(da, "button-press-event", G_CALLBACK(on_button), NULL);
+    g_signal_connect(da2, "draw", G_CALLBACK(on_draw), NULL);
+    g_signal_connect(da2, "scroll-event", G_CALLBACK(on_scroll), NULL);
+    g_signal_connect(da2, "key-press-event", G_CALLBACK(on_key), da);
+    g_signal_connect(da2, "button-press-event", G_CALLBACK(on_button), NULL);
     gtk_widget_add_events(da, GDK_SCROLL_MASK | GDK_BUTTON_PRESS_MASK | GDK_KEY_PRESS_MASK);
+    gtk_widget_add_events(da2, GDK_SCROLL_MASK | GDK_BUTTON_PRESS_MASK | GDK_KEY_PRESS_MASK);
     gtk_widget_set_can_focus(da, TRUE);
+    gtk_widget_set_can_focus(da2, TRUE);
 
     /* 底部悬浮工具条 (GtkOverlay 子层) */
     GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);

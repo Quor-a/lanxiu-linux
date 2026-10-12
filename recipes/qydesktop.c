@@ -1308,9 +1308,10 @@ static void on_notif_clear_history(GtkButton *b, gpointer ud) {
     }
 }
 
-/* 点击通知图标：弹出通知中心（快捷开关行 + 历史列表） */
+/* 点击通知图标（左键）：弹出通知中心（快捷开关行 + 历史列表） */
 static gboolean on_notif_clicked(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
     (void)w; (void)ev; (void)ud;
+    if (ev && ev->button != 1) return FALSE;   /* 右键由 on_notif_right_press 处理 */
     if (notif_pop) gtk_widget_destroy(notif_pop);
 
     GtkWidget *pop = gtk_popover_new(w);
@@ -1427,7 +1428,7 @@ static void on_tray_clicked(GtkWidget *w, gpointer ud) {
     tray_launch((const char *)ud);
 }
 /* ---------- 托盘统一 qyicon 线稿图标（替代 emoji，去 AI 感） ---------- */
-enum { TRAY_NET, TRAY_DRV, TRAY_VOL, TRAY_CLIP, TRAY_SHOT, TRAY_LOCK, TRAY_PWR };
+enum { TRAY_NET, TRAY_DRV, TRAY_VOL, TRAY_CLIP, TRAY_SHOT, TRAY_LOCK, TRAY_PWR, TRAY_BAT };
 
 static QyIconId tray_icon_id(int t) {
     switch (t) {
@@ -1438,6 +1439,7 @@ static QyIconId tray_icon_id(int t) {
     case TRAY_SHOT: return QY_ICON_SHOT;
     case TRAY_LOCK: return QY_ICON_LOCK;
     case TRAY_PWR:  return QY_ICON_POWER;
+    case TRAY_BAT:  return QY_ICON_POWER;
     default:        return QY_ICON_SETTINGS;
     }
 }
@@ -1560,6 +1562,136 @@ static gboolean auto_set_volume(gpointer p) {
     return G_SOURCE_REMOVE;
 }
 
+/* ---------- 托盘图标右键菜单 ---------- */
+/* 简单提示对话框（amixer 缺失等场景） */
+static void show_info_dialog(const char *title, const char *msg) {
+    GtkWidget *dlg = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL,
+                                            GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
+                                            "%s", msg);
+    gtk_window_set_title(GTK_WINDOW(dlg), title);
+    gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+}
+
+/* 菜单项通用启动器 */
+static void tray_menu_launch(GtkMenuItem *mi, gpointer ud) {
+    (void)mi;
+    launch_cmd((const char *)ud);
+}
+
+/* 检测是否存在电池（/sys/class/power_supply/BAT*） */
+static gboolean has_battery(void) {
+    GDir *d = g_dir_open("/sys/class/power_supply", 0, NULL);
+    if (!d) return FALSE;
+    const char *n;
+    gboolean found = FALSE;
+    while ((n = g_dir_read_name(d))) {
+        if (g_str_has_prefix(n, "BAT") || g_str_has_prefix(n, "bat")) {
+            found = TRUE;
+            break;
+        }
+    }
+    g_dir_close(d);
+    return found;
+}
+
+/* 音量右键：打开 qyaudio / 静音切换（amixer set Master toggle，无 amixer 则提示） */
+static void on_vol_open_audio(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    launch_cmd("qyaudio");
+}
+
+static void on_vol_mute(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    if (!g_find_program_in_path("amixer")) {
+        show_info_dialog(TR("静音"), TR("未找到 amixer，无法调节音量"));
+        return;
+    }
+    g_spawn_command_line_async("amixer -q set Master toggle 2>/dev/null", NULL);
+    g_printerr("QYDESKTOPDBG: amixer Master toggle\n");
+}
+
+static gboolean on_vol_right_press(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->button != 3) return FALSE;
+    GtkWidget *menu = gtk_menu_new();
+    GtkWidget *mi = gtk_menu_item_new_with_label(TR("打开音频管理器"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_vol_open_audio), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    mi = gtk_menu_item_new_with_label(TR("静音切换"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_vol_mute), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    gtk_widget_show_all(menu);
+    gtk_menu_attach_to_widget(GTK_MENU(menu), w, NULL);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)ev);
+    return TRUE;
+}
+
+/* 网络右键：打开 qynet */
+static gboolean on_net_right_press(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->button != 3) return FALSE;
+    GtkWidget *menu = gtk_menu_new();
+    GtkWidget *mi = gtk_menu_item_new_with_label(TR("打开网络管理器"));
+    g_signal_connect(mi, "activate", G_CALLBACK(tray_menu_launch), (gpointer)"qynet");
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    gtk_widget_show_all(menu);
+    gtk_menu_attach_to_widget(GTK_MENU(menu), w, NULL);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)ev);
+    return TRUE;
+}
+
+/* 通知铃铛右键：勿扰开关 / 清空历史 */
+static void on_notif_dnd_toggle(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    gboolean on = conf_read_num("/etc/qynotifd.conf", "dnd");
+    conf_write_num("/etc/qynotifd.conf", "dnd", !on);
+    g_printerr("QYDESKTOPDBG: dnd -> %d\n", !on);
+    /* 重启 qynotifd 应用免打扰（写 conf 已触发其 /etc 监视，重启兜底） */
+    g_spawn_command_line_async(
+        "sh -c 'pkill -x qynotifd 2>/dev/null; sleep 0.1; qynotifd 2>/dev/null &'", NULL);
+}
+
+static void on_notif_clear_menu(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    on_notif_clear_history(NULL, NULL);
+}
+
+static gboolean on_notif_right_press(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->button != 3) return FALSE;
+    GtkWidget *menu = gtk_menu_new();
+    GtkWidget *mi = gtk_menu_item_new_with_label(TR("免打扰开关"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_notif_dnd_toggle), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    mi = gtk_menu_item_new_with_label(TR("清空历史"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_notif_clear_menu), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    gtk_widget_show_all(menu);
+    gtk_menu_attach_to_widget(GTK_MENU(menu), w, NULL);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)ev);
+    return TRUE;
+}
+
+/* 电池右键：打开 qypower（左键同样打开 qypower） */
+static void on_bat_clicked(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    launch_cmd("qypower");
+}
+
+static gboolean on_bat_right_press(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->button != 3) return FALSE;
+    GtkWidget *menu = gtk_menu_new();
+    GtkWidget *mi = gtk_menu_item_new_with_label(TR("打开电源管理"));
+    g_signal_connect(mi, "activate", G_CALLBACK(tray_menu_launch), (gpointer)"qypower");
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    gtk_widget_show_all(menu);
+    gtk_menu_attach_to_widget(GTK_MENU(menu), w, NULL);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)ev);
+    return TRUE;
+}
+
 /* 品牌 logo：玻璃 tile + 澜岫星线稿（cairo，禁字符） */
 static gboolean app_logo_draw_cb(GtkWidget *w, cairo_t *cr, gpointer ud) {
     (void)ud;
@@ -1658,7 +1790,8 @@ static void build_bar(void) {
     add_class(notif_eb, "qy-status-btn");
     gtk_widget_add_events(notif_eb, GDK_BUTTON_PRESS_MASK);
     g_signal_connect(notif_eb, "button-press-event", G_CALLBACK(on_notif_clicked), NULL);
-    gtk_widget_set_tooltip_text(notif_eb, TR("查看通知"));
+    g_signal_connect(notif_eb, "button-press-event", G_CALLBACK(on_notif_right_press), NULL);
+    gtk_widget_set_tooltip_text(notif_eb, TR("查看通知（右键菜单）"));
     /* 铃铛 cairo 线稿 + 通知标题 label（有通知时显示标题）
      * 未读徽标：GtkOverlay 叠加在铃铛图标右上角（外缘 2px） */
     GtkWidget *notif_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
@@ -1686,15 +1819,24 @@ static void build_bar(void) {
     gtk_container_add(GTK_CONTAINER(notif_eb), notif_box);
     gtk_box_pack_start(GTK_BOX(st), notif_eb, FALSE, FALSE, 0);
 
-    /* 系统托盘: 网络/声音/剪贴板/截图/锁屏（cairo 线稿图标） */
+    /* 系统托盘: 网络/声音/剪贴板/截图/锁屏（cairo 线稿图标，右键菜单） */
     GtkWidget *tray_hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
-    gtk_box_pack_start(GTK_BOX(tray_hb), make_tray_icon_btn(TRAY_NET, TR("网络"), "qynet"), FALSE, FALSE, 0);
+    GtkWidget *net_btn = make_tray_icon_btn(TRAY_NET, TR("网络"), "qynet");
+    g_signal_connect(net_btn, "button-press-event", G_CALLBACK(on_net_right_press), NULL);
+    gtk_box_pack_start(GTK_BOX(tray_hb), net_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(tray_hb), make_tray_icon_btn(TRAY_DRV, TR("驱动"), "qydriver"), FALSE, FALSE, 0);
     GtkWidget *vol_btn = make_tray_icon_btn_cb(TRAY_VOL, TR("声音"), G_CALLBACK(on_vol_btn_clicked), NULL);
+    g_signal_connect(vol_btn, "button-press-event", G_CALLBACK(on_vol_right_press), NULL);
     gtk_box_pack_start(GTK_BOX(tray_hb), vol_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(tray_hb), make_tray_icon_btn(TRAY_CLIP, TR("剪贴板"), "qyclip"), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(tray_hb), make_tray_icon_btn(TRAY_SHOT, TR("截图"), "qyshot"), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(tray_hb), make_tray_icon_btn(TRAY_LOCK, TR("锁屏"), "qylock"), FALSE, FALSE, 0);
+    /* 电池（系统存在电池时显示） */
+    if (has_battery()) {
+        GtkWidget *bat_btn = make_tray_icon_btn_cb(TRAY_BAT, TR("电池"), G_CALLBACK(on_bat_clicked), NULL);
+        g_signal_connect(bat_btn, "button-press-event", G_CALLBACK(on_bat_right_press), NULL);
+        gtk_box_pack_start(GTK_BOX(tray_hb), bat_btn, FALSE, FALSE, 0);
+    }
     power_btn = make_tray_icon_btn_cb(TRAY_PWR, TR("电源"), G_CALLBACK(on_power_btn_clicked), NULL);
     gtk_box_pack_start(GTK_BOX(tray_hb), power_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(st), tray_hb, FALSE, FALSE, 4);

@@ -6,6 +6,7 @@
  */
 #include <gtk/gtk.h>
 #include <gdk/gdk.h>
+#include <gdk/gdkkeysyms.h>
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
@@ -18,6 +19,7 @@ static GdkPixbuf *shot_pixbuf = NULL;
 static GtkWidget *status_label = NULL;
 static GtkWidget *win = NULL;           /* 主窗口（保存对话框父窗口） */
 static GtkWidget *cap_btn = NULL;       /* 全屏截图按钮（倒计时文字） */
+static GtkWidget *region_btn = NULL;    /* 区域截图按钮 */
 static GtkWidget *delay_combo = NULL;   /* 延时选择 */
 static GtkWidget *format_combo = NULL; /* 保存格式选择 */
 static char last_path[512] = "";
@@ -322,6 +324,215 @@ static void on_copy(GtkWidget *w, gpointer ud) {
     gtk_label_set_text(GTK_LABEL(status_label), TR("已复制到剪贴板"));
 }
 
+/* ---------- 区域截图（X11） ----------
+ * X11：全屏抓取根窗口为 pixbuf，弹出全屏无边框选择窗口，鼠标拖选矩形，
+ *      松开后裁剪选中区域并进入现有保存流程。
+ * Wayland（或非 X11 构建）：按钮禁用并提示。
+ */
+#ifdef GDK_WINDOWING_X11
+typedef struct {
+    GdkPixbuf *shot;      /* 全屏截图 */
+    GtkWidget *win;       /* 选择窗口 */
+    GtkWidget *da;        /* 绘图区 */
+    int iw, ih;           /* 截图尺寸 */
+    gboolean dragging;    /* 是否正在拖选 */
+    int x0, y0, x1, y1;   /* 选择矩形（窗口坐标） */
+} RegionSel;
+
+static gboolean region_draw_cb(GtkWidget *w, cairo_t *cr, gpointer ud) {
+    RegionSel *rs = (RegionSel *)ud;
+    GtkAllocation a;
+    gtk_widget_get_allocation(w, &a);
+    cairo_set_source_rgb(cr, 0, 0, 0);
+    cairo_paint(cr);
+    if (!rs->shot || a.width < 1 || a.height < 1) return FALSE;
+    /* 截图铺满窗口 */
+    double sx = (double)a.width / rs->iw;
+    double sy = (double)a.height / rs->ih;
+    cairo_save(cr);
+    cairo_scale(cr, sx, sy);
+    gdk_cairo_set_source_pixbuf(cr, rs->shot, 0, 0);
+    cairo_paint(cr);
+    cairo_restore(cr);
+    /* 拖选时：选区外暗化 + 橙色虚线框 */
+    if (rs->dragging) {
+        int x0 = MIN(rs->x0, rs->x1), y0 = MIN(rs->y0, rs->y1);
+        int x1 = MAX(rs->x0, rs->x1), y1 = MAX(rs->y0, rs->y1);
+        cairo_set_source_rgba(cr, 0, 0, 0, 0.45);
+        cairo_rectangle(cr, 0, 0, a.width, y0); cairo_fill(cr);
+        cairo_rectangle(cr, 0, y1, a.width, a.height - y1); cairo_fill(cr);
+        cairo_rectangle(cr, 0, y0, x0, y1 - y0); cairo_fill(cr);
+        cairo_rectangle(cr, x1, y0, a.width - x1, y1 - y0); cairo_fill(cr);
+        cairo_set_source_rgb(cr, 1.0, 0x5C / 255.0, 0x1A / 255.0);   /* #FF5C1A */
+        cairo_set_line_width(cr, 1.5);
+        double dashes[] = {4, 4};
+        cairo_set_dash(cr, dashes, 2, 0);
+        cairo_rectangle(cr, x0, y0, x1 - x0, y1 - y0);
+        cairo_stroke(cr);
+        cairo_set_dash(cr, NULL, 0, 0);
+    }
+    return FALSE;
+}
+
+static gboolean region_button_cb(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    RegionSel *rs = (RegionSel *)ud;
+    if (ev->button == 1) {
+        rs->dragging = TRUE;
+        rs->x0 = rs->x1 = (int)ev->x;
+        rs->y0 = rs->y1 = (int)ev->y;
+        gtk_widget_queue_draw(w);
+        return TRUE;
+    }
+    if (ev->button == 3) {
+        /* 右键取消选择 */
+        gtk_widget_destroy(rs->win);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static gboolean region_motion_cb(GtkWidget *w, GdkEventMotion *ev, gpointer ud) {
+    RegionSel *rs = (RegionSel *)ud;
+    if (rs->dragging) {
+        rs->x1 = (int)ev->x;
+        rs->y1 = (int)ev->y;
+        gtk_widget_queue_draw(w);
+    }
+    return TRUE;
+}
+
+static gboolean region_release_cb(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    RegionSel *rs = (RegionSel *)ud;
+    if (ev->button != 1 || !rs->dragging) return TRUE;
+    rs->dragging = FALSE;
+    int x0 = MIN(rs->x0, rs->x1), y0 = MIN(rs->y0, rs->y1);
+    int x1 = MAX(rs->x0, rs->x1), y1 = MAX(rs->y0, rs->y1);
+    int aw = gtk_widget_get_allocated_width(w);
+    int ah = gtk_widget_get_allocated_height(w);
+    /* 窗口坐标 → 截图坐标 */
+    double sx = aw > 0 ? (double)rs->iw / aw : 1.0;
+    double sy = ah > 0 ? (double)rs->ih / ah : 1.0;
+    int ix0 = (int)(x0 * sx), iy0 = (int)(y0 * sy);
+    int ix1 = (int)(x1 * sx), iy1 = (int)(y1 * sy);
+    int cw = ix1 - ix0, ch = iy1 - iy0;
+    if (cw > 0 && ch > 0 && rs->shot) {
+        GdkPixbuf *crop = gdk_pixbuf_new(GDK_COLORSPACE_RGB,
+                                         gdk_pixbuf_get_has_alpha(rs->shot), 8, cw, ch);
+        if (crop) {
+            gdk_pixbuf_copy_area(rs->shot, ix0, iy0, cw, ch, crop, 0, 0);
+            if (shot_pixbuf) g_object_unref(shot_pixbuf);
+            shot_pixbuf = crop;
+            update_preview();
+            gchar *st = g_strdup_printf("%d×%d %s", cw, ch, TR("区域截图完成"));
+            gtk_label_set_text(GTK_LABEL(status_label), st);
+            g_free(st);
+        }
+    }
+    gtk_widget_destroy(rs->win);
+    /* 进入现有保存流程 */
+    if (!g_getenv("QYSHOT_AUTO"))
+        on_save(NULL, NULL);
+    return TRUE;
+}
+
+static gboolean region_key_cb(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
+    (void)ud;
+    if (ev->keyval == GDK_KEY_Escape) {
+        gtk_widget_destroy(w);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* 选择窗口销毁：释放截图并释放状态结构 */
+static void region_sel_destroy(GtkWidget *w, gpointer ud) {
+    (void)w;
+    RegionSel *rs = (RegionSel *)ud;
+    if (rs->shot) g_object_unref(rs->shot);
+    g_free(rs);
+}
+#endif /* GDK_WINDOWING_X11 */
+
+/* 判断区域截图是否可用（X11 且非 Wayland 会话） */
+static gboolean region_screenshot_supported(void) {
+#ifdef GDK_WINDOWING_X11
+    if (g_getenv("WAYLAND_DISPLAY")) return FALSE;
+    return TRUE;
+#else
+    return FALSE;
+#endif
+}
+
+/* 区域截图入口 */
+static void on_region_clicked(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (g_getenv("WAYLAND_DISPLAY")) {
+        gtk_label_set_text(GTK_LABEL(status_label), TR("Wayland 不支持区域截图"));
+        return;
+    }
+#ifdef GDK_WINDOWING_X11
+    GdkWindow *root = gdk_get_default_root_window();
+    if (!root) {
+        gtk_label_set_text(GTK_LABEL(status_label), TR("截图失败：无法访问屏幕"));
+        return;
+    }
+    int sw = gdk_screen_width(), sh = gdk_screen_height();
+    GdkPixbuf *shot = gdk_pixbuf_get_from_window(root, 0, 0, sw, sh);
+    if (!shot) {
+        gtk_label_set_text(GTK_LABEL(status_label), TR("截图失败：无法访问屏幕"));
+        return;
+    }
+    RegionSel *rs = g_new0(RegionSel, 1);
+    rs->shot = shot;
+    rs->iw = gdk_pixbuf_get_width(shot);
+    rs->ih = gdk_pixbuf_get_height(shot);
+
+    rs->win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_decorated(GTK_WINDOW(rs->win), FALSE);
+    gtk_window_set_keep_above(GTK_WINDOW(rs->win), TRUE);
+    gtk_window_set_default_size(GTK_WINDOW(rs->win), sw, sh);
+    gtk_window_move(GTK_WINDOW(rs->win), 0, 0);
+    gtk_window_fullscreen(GTK_WINDOW(rs->win));
+
+    rs->da = gtk_drawing_area_new();
+    gtk_widget_add_events(rs->da, GDK_BUTTON_PRESS_MASK | GDK_BUTTON1_MOTION_MASK |
+                                  GDK_BUTTON_RELEASE_MASK | GDK_KEY_PRESS_MASK);
+    gtk_widget_set_can_focus(rs->da, TRUE);
+    gtk_container_add(GTK_CONTAINER(rs->win), rs->da);
+    g_signal_connect(rs->da, "draw", G_CALLBACK(region_draw_cb), rs);
+    g_signal_connect(rs->da, "button-press-event", G_CALLBACK(region_button_cb), rs);
+    g_signal_connect(rs->da, "motion-notify-event", G_CALLBACK(region_motion_cb), rs);
+    g_signal_connect(rs->da, "button-release-event", G_CALLBACK(region_release_cb), rs);
+    g_signal_connect(rs->win, "key-press-event", G_CALLBACK(region_key_cb), NULL);
+    g_signal_connect(rs->win, "destroy", G_CALLBACK(region_sel_destroy), rs);
+
+    gtk_widget_show_all(rs->win);
+    gtk_window_present(GTK_WINDOW(rs->win));
+    gtk_widget_grab_focus(rs->da);
+    /* 十字光标（顶层窗口与绘图区都设置，X11 下层窗口默认继承父光标） */
+    GdkDisplay *dpy = gdk_display_get_default();
+    GdkCursor *cur = gdk_cursor_new_for_display(dpy, GDK_CROSSHAIR);
+    if (cur) {
+        GdkWindow *gdkw = gtk_widget_get_window(rs->win);
+        if (gdkw) gdk_window_set_cursor(gdkw, cur);
+        GdkWindow *daw = gtk_widget_get_window(rs->da);
+        if (daw) gdk_window_set_cursor(daw, cur);
+        g_object_unref(cur);
+    }
+#else
+    gtk_label_set_text(GTK_LABEL(status_label), TR("Wayland 不支持区域截图"));
+#endif
+}
+
+/* 根据构建/运行环境刷新区域截图按钮可用性 */
+static void update_region_button_state(void) {
+    if (!region_btn) return;
+    gboolean ok = region_screenshot_supported();
+    gtk_widget_set_sensitive(region_btn, ok);
+    gtk_widget_set_tooltip_text(region_btn,
+        ok ? TR("区域截图") : TR("Wayland 不支持区域截图"));
+}
+
 /* 自动化: QYSHOT_AUTO=保存路径 启动后自动截图保存退出 */
 static gboolean auto_shot(gpointer p) {
     (void)p;
@@ -390,12 +601,16 @@ static void activate(GtkApplication *app, gpointer ud) {
     GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     cap_btn = gtk_button_new_with_label(TR("全屏截图"));
     qy_add_class(cap_btn, "qy-shot-btn");
+    region_btn = gtk_button_new_with_label(TR("区域截图"));
+    qy_add_class(region_btn, "qy-shot-btn");
     GtkWidget *b_save = qy_icon_button(QY_ICON_SAVE, 18, TR("保存"), NULL);
     GtkWidget *b_copy = qy_icon_button(QY_ICON_COPY, 18, TR("复制到剪贴板"), NULL);
     g_signal_connect(cap_btn, "clicked", G_CALLBACK(on_capture_clicked), NULL);
+    g_signal_connect(region_btn, "clicked", G_CALLBACK(on_region_clicked), NULL);
     g_signal_connect(b_save, "clicked", G_CALLBACK(on_save), NULL);
     g_signal_connect(b_copy, "clicked", G_CALLBACK(on_copy), NULL);
     gtk_box_pack_start(GTK_BOX(bar), cap_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), region_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), b_save, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), b_copy, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), bar, FALSE, FALSE, 0);
@@ -410,6 +625,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     if (auto_path)
         g_timeout_add(800, auto_shot, NULL);
 
+    update_region_button_state();
     gtk_widget_show_all(win);
     /* 启动后自动截一帧（X11 后端需窗口就绪后） */
     g_timeout_add(400, (GSourceFunc)on_capture_wrap, NULL);
