@@ -22,6 +22,18 @@ static GtkWidget *cap_btn = NULL;       /* 全屏截图按钮（倒计时文字�
 static GtkWidget *region_btn = NULL;    /* 区域截图按钮 */
 static GtkWidget *delay_combo = NULL;   /* 延时选择 */
 static GtkWidget *format_combo = NULL; /* 保存格式选择 */
+
+static void on_fmt_changed(GtkComboBox *combo, gpointer ud) {
+    (void)ud;
+    const char *id = gtk_combo_box_get_active_id(combo);
+    if (!id) return;
+    gchar *dir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    g_free(dir);
+    gchar *path = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qyshot-fmt", NULL);
+    g_file_set_contents(path, id, -1, NULL);
+    g_free(path);
+}
 static char last_path[512] = "";
 
 static guint countdown_id = 0;          /* 倒计时定时器 id */
@@ -593,7 +605,17 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(format_combo), "png",  "PNG");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(format_combo), "jpeg", "JPEG");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(format_combo), "bmp",  "BMP");
-    gtk_combo_box_set_active(GTK_COMBO_BOX(format_combo), 0);
+    /* 记忆上次格式（release 269） */
+    gchar *fmt_path = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qyshot-fmt", NULL);
+    gchar *fmt_old = NULL;
+    if (g_file_get_contents(fmt_path, &fmt_old, NULL, NULL)) {
+        gchar *id = g_strstrip(fmt_old);
+        if (gtk_combo_box_has_id(GTK_COMBO_BOX(format_combo), id))
+            gtk_combo_box_set_active_id(GTK_COMBO_BOX(format_combo), id);
+        g_free(fmt_old);
+    }
+    g_free(fmt_path);
+    g_signal_connect(format_combo, "changed", G_CALLBACK(on_fmt_changed), NULL);
     gtk_box_pack_start(GTK_BOX(ctl), format_combo, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), ctl, FALSE, FALSE, 0);
 
