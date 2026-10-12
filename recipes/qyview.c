@@ -32,6 +32,16 @@ static GtkWidget *g_da = NULL;          /* 绘图区（幻灯片定时器回调�
 static guint slide_timer = 0;           /* 幻灯片定时器 id */
 static gboolean slide_on = FALSE;      /* 幻灯片是否运行 */
 
+/* 右侧属性/EXIF 侧栏（定义在 load_path 之后，先声明原型） */
+static void update_info_sidebar(void);
+
+/* ---------- 右侧属性/EXIF 侧栏 ---------- */
+static GtkWidget *info_revealer = NULL; /* GtkRevealer 容器 */
+static GtkWidget *info_name = NULL;     /* 文件名 */
+static GtkWidget *info_dim  = NULL;    /* 尺寸(像素) */
+static GtkWidget *info_size = NULL;    /* 文件大小 */
+static GtkWidget *info_exif = NULL;   /* EXIF 摘要 */
+
 /* 刷新底部缩放百分比显示 */
 static void update_zoom(void) {
     if (zoom_label) {
@@ -99,7 +109,66 @@ static gboolean load_path(const char *path) {
         gtk_label_set_text(GTK_LABEL(image_info), info);
         g_free(info);
     }
+    update_info_sidebar();
     return TRUE;
+}
+
+/* ---------- 右侧属性/EXIF 侧栏 ---------- */
+static void format_size(char *buf, size_t n, gint64 sz) {
+    if (sz < 1024)
+        g_snprintf(buf, n, "%ld B", (long)sz);
+    else if (sz < 1024 * 1024)
+        g_snprintf(buf, n, "%.1f KB", sz / 1024.0);
+    else
+        g_snprintf(buf, n, "%.2f MB", sz / (1024.0 * 1024.0));
+}
+
+static void update_info_sidebar(void) {
+    if (!info_name || !pix || !current_path) return;
+
+    gchar *base = g_path_get_basename(current_path);
+    gtk_label_set_text(GTK_LABEL(info_name), base);
+    g_free(base);
+
+    int iw = gdk_pixbuf_get_width(pix), ih = gdk_pixbuf_get_height(pix);
+    gchar *dim = g_strdup_printf("%d × %d px", iw, ih);
+    gtk_label_set_text(GTK_LABEL(info_dim), dim);
+    g_free(dim);
+
+    struct stat st;
+    if (stat(current_path, &st) == 0) {
+        char buf[48];
+        format_size(buf, sizeof buf, (gint64)st.st_size);
+        gtk_label_set_text(GTK_LABEL(info_size), buf);
+    } else {
+        gtk_label_set_text(GTK_LABEL(info_size), "—");
+    }
+
+    const char *make = gdk_pixbuf_get_option(pix, "exif-ifd0-Make");
+    const char *model = gdk_pixbuf_get_option(pix, "exif-ifd0-Model");
+    const char *dt    = gdk_pixbuf_get_option(pix, "exif-photo-DateTimeOriginal");
+    if (make || model || dt) {
+        GString *s = g_string_new(NULL);
+        if (make)  g_string_append_printf(s, "%s: %s\n", TR("厂商"), make);
+        if (model) g_string_append_printf(s, "%s: %s\n", TR("型号"), model);
+        if (dt)    g_string_append_printf(s, "%s: %s", TR("拍摄时间"), dt);
+        gtk_label_set_text(GTK_LABEL(info_exif), s->str);
+        g_string_free(s, TRUE);
+    } else {
+        gtk_label_set_text(GTK_LABEL(info_exif), TR("无 EXIF 数据"));
+    }
+}
+
+static void toggle_info_sidebar(void) {
+    if (!info_revealer) return;
+    gboolean show = !gtk_revealer_get_reveal_child(GTK_REVEALER(info_revealer));
+    if (show) update_info_sidebar();
+    gtk_revealer_set_reveal_child(GTK_REVEALER(info_revealer), show);
+}
+
+static void on_info(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    toggle_info_sidebar();
 }
 
 static void load_by_index(GtkWidget *da, int idx) {
@@ -317,6 +386,11 @@ static gboolean on_key(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
         toggle_slideshow();
         return TRUE;
     }
+    /* i: 切换右侧属性/EXIF 侧栏 */
+    if (ev->keyval == GDK_KEY_i || ev->keyval == GDK_KEY_I) {
+        toggle_info_sidebar();
+        return TRUE;
+    }
     if (!dir_files || dir_files->len == 0) return FALSE;
     if (ev->keyval == GDK_KEY_Right) {
         int n = (dir_idx + 1) % (int)dir_files->len;
@@ -371,7 +445,9 @@ static void activate(GtkApplication *app, gpointer ud) {
     qy_window_setup(GTK_WINDOW(win), 700, 500, 480, 360, FALSE);
 
     GtkWidget *overlay = gtk_overlay_new();
-    gtk_container_add(GTK_CONTAINER(win), overlay);
+    GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_container_add(GTK_CONTAINER(win), hbox);
+    gtk_box_pack_start(GTK_BOX(hbox), overlay, TRUE, TRUE, 0);
 
     /* 图片绘制区 */
     GtkWidget *da = gtk_drawing_area_new();
@@ -404,6 +480,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     GtkWidget *b_fit = qy_icon_button(QY_ICON_FIT, 18, TR("适应窗口"), "qy-view-bar-btn");
     GtkWidget *b_rot = qy_icon_button(QY_ICON_ROTATE, 18, TR("旋转"), "qy-view-bar-btn");
     GtkWidget *b_save = qy_icon_button(QY_ICON_SAVE, 18, TR("保存"), "qy-view-bar-btn");
+    GtkWidget *b_info = qy_icon_button(QY_ICON_LIST, 18, TR("信息 (i)"), "qy-view-bar-btn");
     GtkWidget *b_full = qy_icon_button(QY_ICON_MAX, 18, TR("全屏 (F11)"), "qy-view-bar-btn");
 
     zoom_label = gtk_label_new("");
@@ -422,6 +499,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(bar), b_fit, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), b_rot, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), b_save, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), b_info, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), b_full, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), zoom_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), save_status, FALSE, FALSE, 0);
@@ -435,6 +513,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     g_signal_connect(b_fit, "clicked", G_CALLBACK(on_fit), da);
     g_signal_connect(b_rot, "clicked", G_CALLBACK(on_rotate), da);
     g_signal_connect(b_save, "clicked", G_CALLBACK(on_save), da);
+    g_signal_connect(b_info, "clicked", G_CALLBACK(on_info), NULL);
     g_signal_connect(b_full, "clicked", G_CALLBACK(on_fullscreen), NULL);
 
     gtk_overlay_add_overlay(GTK_OVERLAY(overlay), bar);
@@ -456,6 +535,75 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_widget_set_margin_bottom(page_label, 14);
     gtk_overlay_add_overlay(GTK_OVERLAY(overlay), page_label);
 
+    /* ---------- 右侧属性/EXIF 侧栏 ---------- */
+    info_revealer = gtk_revealer_new();
+    gtk_revealer_set_transition_type(GTK_REVEALER(info_revealer),
+                                      GTK_REVEALER_TRANSITION_TYPE_SLIDE_LEFT);
+    gtk_revealer_set_transition_duration(GTK_REVEALER(info_revealer), 180);
+    gtk_revealer_set_reveal_child(GTK_REVEALER(info_revealer), FALSE);
+
+    GtkWidget *panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_widget_set_name(panel, "qy-view-info-panel");
+    gtk_widget_set_size_request(panel, 220, -1);
+    gtk_container_set_border_width(GTK_CONTAINER(panel), 14);
+
+    GtkWidget *title = gtk_label_new(TR("信息"));
+    gtk_widget_set_halign(title, GTK_ALIGN_START);
+    qy_add_class(title, "qy-view-info-title");
+    gtk_box_pack_start(GTK_BOX(panel), title, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(panel), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL),
+                       FALSE, FALSE, 4);
+
+    GtkWidget *cap, *val;
+    cap = gtk_label_new(TR("文件名"));
+    gtk_widget_set_halign(cap, GTK_ALIGN_START);
+    qy_add_class(cap, "qy-view-info-cap");
+    gtk_box_pack_start(GTK_BOX(panel), cap, FALSE, FALSE, 0);
+    val = gtk_label_new("—");
+    gtk_widget_set_halign(val, GTK_ALIGN_START);
+    gtk_label_set_xalign(GTK_LABEL(val), 0);
+    gtk_label_set_line_wrap(GTK_LABEL(val), TRUE);
+    qy_add_class(val, "qy-view-info-val");
+    gtk_box_pack_start(GTK_BOX(panel), val, FALSE, FALSE, 0);
+    info_name = val;
+
+    cap = gtk_label_new(TR("尺寸"));
+    gtk_widget_set_halign(cap, GTK_ALIGN_START);
+    qy_add_class(cap, "qy-view-info-cap");
+    gtk_box_pack_start(GTK_BOX(panel), cap, FALSE, FALSE, 0);
+    val = gtk_label_new("—");
+    gtk_widget_set_halign(val, GTK_ALIGN_START);
+    gtk_label_set_xalign(GTK_LABEL(val), 0);
+    qy_add_class(val, "qy-view-info-val");
+    gtk_box_pack_start(GTK_BOX(panel), val, FALSE, FALSE, 0);
+    info_dim = val;
+
+    cap = gtk_label_new(TR("文件大小"));
+    gtk_widget_set_halign(cap, GTK_ALIGN_START);
+    qy_add_class(cap, "qy-view-info-cap");
+    gtk_box_pack_start(GTK_BOX(panel), cap, FALSE, FALSE, 0);
+    val = gtk_label_new("—");
+    gtk_widget_set_halign(val, GTK_ALIGN_START);
+    gtk_label_set_xalign(GTK_LABEL(val), 0);
+    qy_add_class(val, "qy-view-info-val");
+    gtk_box_pack_start(GTK_BOX(panel), val, FALSE, FALSE, 0);
+    info_size = val;
+
+    cap = gtk_label_new("EXIF");
+    gtk_widget_set_halign(cap, GTK_ALIGN_START);
+    qy_add_class(cap, "qy-view-info-cap");
+    gtk_box_pack_start(GTK_BOX(panel), cap, FALSE, FALSE, 0);
+    val = gtk_label_new("—");
+    gtk_widget_set_halign(val, GTK_ALIGN_START);
+    gtk_label_set_xalign(GTK_LABEL(val), 0);
+    gtk_label_set_line_wrap(GTK_LABEL(val), TRUE);
+    qy_add_class(val, "qy-view-info-val");
+    gtk_box_pack_start(GTK_BOX(panel), val, FALSE, FALSE, 0);
+    info_exif = val;
+
+    gtk_container_add(GTK_CONTAINER(info_revealer), panel);
+    gtk_box_pack_start(GTK_BOX(hbox), info_revealer, FALSE, FALSE, 0);
+
     /* ---------- 快捷键 ---------- */
     GtkAccelGroup *accel = gtk_accel_group_new();
     gtk_window_add_accel_group(GTK_WINDOW(win), accel);
@@ -463,7 +611,8 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_widget_add_accelerator(b_next, "clicked", accel, GDK_KEY_Page_Down, 0, GTK_ACCEL_VISIBLE);   /* PgDn 下一张 */
     gtk_widget_add_accelerator(b_rot, "clicked", accel, GDK_KEY_r, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE); /* Ctrl+R 旋转 */
     gtk_widget_add_accelerator(b_save, "clicked", accel, GDK_KEY_s, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE); /* Ctrl+S 另存 */
-    g_printerr("QYVIEWDBG: accel 4 keys\n");
+    gtk_widget_add_accelerator(b_info, "clicked", accel, GDK_KEY_i, 0, GTK_ACCEL_VISIBLE);            /* i 信息侧栏 */
+    g_printerr("QYVIEWDBG: accel 5 keys\n");
 
     gtk_widget_show_all(win);
 

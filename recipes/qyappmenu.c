@@ -45,6 +45,7 @@ static AppEntry apps[] = {
     { "磁盘分析", "qydisk",        0, "工具" },
     { "音量控制", "qyaudio",       0, "工具" },
     { "欢迎", "qywelcome",      0, "系统" },
+    { "默认程序", "qymime",       0, "系统" },
     { "电源管理", "qypower",       0, "系统" },
 };
 #define NAPPS ((int)(sizeof apps / sizeof apps[0]))
