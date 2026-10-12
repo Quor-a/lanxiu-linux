@@ -126,9 +126,9 @@ static void on_equal_clicked(GtkButton *b, gpointer ud) {
     (void)b; (void)ud;
     double result = 0;
     if (expr_buf[0] && eval_expr(expr_buf, &result) == 0) {
-        char out[64];
+        char out[96];
         if (result == (double)(long)result)
-            g_snprintf(out, sizeof out, "= %ld", (long)result);
+            g_snprintf(out, sizeof out, "= %ld  0x%lx", (long)result, (unsigned long)(long)result);
         else
             g_snprintf(out, sizeof out, "= %g", result);
         gtk_label_set_text(GTK_LABEL(result_label), out);
@@ -370,9 +370,9 @@ static gboolean auto_calc(gpointer p) {
     update_display();
     double result = 0;
     if (eval_expr(expr_buf, &result) == 0) {
-        char out[64];
+        char out[96];
         if (result == (double)(long)result)
-            g_snprintf(out, sizeof out, "= %ld", (long)result);
+            g_snprintf(out, sizeof out, "= %ld  0x%lx", (long)result, (unsigned long)(long)result);
         else
             g_snprintf(out, sizeof out, "= %g", result);
         gtk_label_set_text(GTK_LABEL(result_label), out);
