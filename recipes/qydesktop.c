@@ -2400,6 +2400,14 @@ static void build_bar(void) {
     /* 电池（系统存在电池时显示） */
     if (has_battery()) {
         GtkWidget *bat_btn = make_tray_icon_btn_cb(TRAY_BAT, TR("电池"), G_CALLBACK(on_bat_clicked), NULL);
+        /* 电池百分比 tooltip（release 268） */
+        gchar *bat_cap = NULL;
+        if (g_file_get_contents("/sys/class/power_supply/BAT0/capacity", &bat_cap, NULL, NULL)) {
+            gchar *tip = g_strdup_printf(TR("电池 %s%%"), g_strstrip(bat_cap));
+            gtk_widget_set_tooltip_text(bat_btn, tip);
+            g_free(tip);
+            g_free(bat_cap);
+        }
         g_signal_connect(bat_btn, "button-press-event", G_CALLBACK(on_bat_right_press), NULL);
         gtk_box_pack_start(GTK_BOX(tray_hb), bat_btn, FALSE, FALSE, 0);
     }
