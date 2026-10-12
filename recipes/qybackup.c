@@ -159,24 +159,19 @@ static void refresh_backup_list(void) {
     g_free(dir);
 }
 
-/* ---------- 立即备份 ---------- */
-static void on_backup_clicked(GtkWidget *w, gpointer ud) {
-    (void)w; (void)ud;
-    if (busy) return;
+/* 构造备份命令（与「立即备份」完全一致）。
+ * 源/目标/名称不完整时返回 NULL；is_tar_out 非空时写入是否使用 tar 回退。 */
+static gchar *build_backup_command(gboolean *is_tar_out) {
     gchar *src = source_dir();
     gchar *dst = target_dir();
     const char *name = gtk_entry_get_text(GTK_ENTRY(name_entry));
     if (!src || !src[0] || !dst || !dst[0] || !name || !name[0]) {
-        set_status(TR("请先选择源目录、目标目录并填写备份名称"));
-        g_free(src); g_free(dst);
-        return;
+        g_free(src);
+        g_free(dst);
+        return NULL;
     }
-    g_mkdir_with_parents(dst, 0755);
-
     gboolean use_rsync = has_program("rsync");
-    BackupJob *job = g_new0(BackupJob, 1);
-    job->label = g_strdup(name);
-    job->is_tar = !use_rsync;
+    if (is_tar_out) *is_tar_out = !use_rsync;
 
     gchar *qsrc = g_shell_quote(src);
     gchar *cmd = NULL;
@@ -185,17 +180,44 @@ static void on_backup_clicked(GtkWidget *w, gpointer ud) {
         gchar *dest_dir = g_build_filename(dst, name, NULL);
         gchar *qdest = g_shell_quote(dest_dir);
         cmd = g_strdup_printf("rsync -a --delete %s/ %s/", qsrc, qdest);
-        g_free(dest_dir); g_free(qdest);
+        g_free(dest_dir);
+        g_free(qdest);
     } else {
         /* 回退: tar czf <目标>/<名称>.tar.gz -C <源> . */
         gchar *archive = g_build_filename(dst, name, NULL);
         gchar *qarchive = g_shell_quote(archive);
         cmd = g_strdup_printf("tar czf %s -C %s .", qarchive, qsrc);
-        g_free(archive); g_free(qarchive);
+        g_free(archive);
+        g_free(qarchive);
     }
     g_free(qsrc);
     g_free(src);
     g_free(dst);
+    return cmd;
+}
+
+/* ---------- 立即备份 ---------- */
+static void on_backup_clicked(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (busy) return;
+    gchar *dst = target_dir();
+    if (!dst || !dst[0]) {
+        set_status(TR("请先选择目标目录"));
+        g_free(dst);
+        return;
+    }
+    g_mkdir_with_parents(dst, 0755);
+    g_free(dst);
+
+    gboolean is_tar = FALSE;
+    gchar *cmd = build_backup_command(&is_tar);
+    if (!cmd) {
+        set_status(TR("请先选择源目录、目标目录并填写备份名称"));
+        return;
+    }
+    BackupJob *job = g_new0(BackupJob, 1);
+    job->label = g_strdup(gtk_entry_get_text(GTK_ENTRY(name_entry)));
+    job->is_tar = is_tar;
 
     busy = TRUE;
     gtk_widget_set_sensitive(backup_btn, FALSE);
@@ -313,6 +335,162 @@ static gboolean auto_backup(gpointer p) {
     return G_SOURCE_REMOVE;
 }
 
+/* ---------- 计划备份（crontab） ---------- */
+#define SCHED_MARKER "# lanxiu-scheduled-backup"
+
+static GtkWidget *sched_freq_combo   = NULL;  /* 频率下拉: 每日/每周/每月 */
+static GtkWidget *sched_time_entry  = NULL;  /* 时间输入 HH:MM */
+static GtkWidget *sched_status_label = NULL;
+
+static gboolean has_crontab(void) {
+    return has_program("crontab");
+}
+
+/* 读取当前用户 crontab（无 crontab 命令或无内容时返回空字符串） */
+static gchar *read_crontab(void) {
+    if (!has_crontab()) return g_strdup("");
+    gchar *out = NULL, *err = NULL;
+    gint status = 0;
+    if (!g_spawn_command_line_sync("crontab -l", &out, &err, &status, NULL)) {
+        g_free(out);
+        g_free(err);
+        return g_strdup("");
+    }
+    /* crontab -l 无任务时退出码非 0（stderr 提示 no crontab），视为空 */
+    if (status != 0 || !out) {
+        g_free(out);
+        g_free(err);
+        return g_strdup("");
+    }
+    g_free(err);
+    return g_strdup(out);
+}
+
+/* 写回 crontab：临时文件 + crontab <tmpfile>（避免 stdin 管道复杂性） */
+static void write_crontab(const char *content) {
+    if (!has_crontab()) return;
+    gchar *tmp = g_build_filename(g_get_tmp_dir(), "lanxiu-crontab-XXXXXX", NULL);
+    gint fd = g_mkstemp(tmp);
+    if (fd < 0) { g_free(tmp); return; }
+    GError *err = NULL;
+    g_file_set_contents(tmp, content, -1, &err);
+    if (err) {
+        g_clear_error(&err);
+        close(fd);
+        g_unlink(tmp);
+        g_free(tmp);
+        return;
+    }
+    close(fd);
+    gchar *q = g_shell_quote(tmp);
+    gchar *cmd = g_strdup_printf("crontab %s", q);
+    gchar *out = NULL, *errout = NULL;
+    gint status = 0;
+    g_spawn_command_line_sync(cmd, &out, &errout, &status, NULL);
+    g_free(q);
+    g_free(cmd);
+    g_free(out);
+    g_free(errout);
+    g_unlink(tmp);
+    g_free(tmp);
+}
+
+/* 从 crontab 文本中移除计划备份行（含标记的行） */
+static gchar *crontab_without_schedule(const char *content) {
+    GString *out = g_string_new(NULL);
+    gchar **lines = g_strsplit(content ? content : "", "\n", 0);
+    for (int i = 0; lines[i]; i++) {
+        if (strstr(lines[i], SCHED_MARKER))
+            continue;
+        g_string_append(out, lines[i]);
+        g_string_append_c(out, '\n');
+    }
+    g_strfreev(lines);
+    return g_string_free(out, FALSE);
+}
+
+/* 启用计划备份：合并当前 crontab 并追加一行计划任务 */
+static void on_sched_enable(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (busy) return;
+    if (!has_crontab()) {
+        set_status(TR("系统无 crontab"));
+        return;
+    }
+    gchar *cmd = build_backup_command(NULL);
+    if (!cmd) {
+        set_status(TR("请先选择源目录、目标目录并填写备份名称"));
+        return;
+    }
+    const char *time_text = gtk_entry_get_text(GTK_ENTRY(sched_time_entry));
+    int hh = -1, mm = -1;
+    if (sscanf(time_text, "%d:%d", &hh, &mm) != 2 ||
+        hh < 0 || hh > 23 || mm < 0 || mm > 59) {
+        set_status(TR("时间格式应为 HH:MM"));
+        g_free(cmd);
+        return;
+    }
+    int freq = gtk_combo_box_get_active(GTK_COMBO_BOX(sched_freq_combo));
+    if (freq < 0) freq = 0;
+    gchar *line = NULL;
+    if (freq == 1)            /* 每周 */
+        line = g_strdup_printf("%d %d * * 0 %s %s", mm, hh, cmd, SCHED_MARKER);
+    else if (freq == 2)       /* 每月 */
+        line = g_strdup_printf("%d %d 1 * * %s %s", mm, hh, cmd, SCHED_MARKER);
+    else                      /* 每日 */
+        line = g_strdup_printf("%d %d * * * %s %s", mm, hh, cmd, SCHED_MARKER);
+    g_free(cmd);
+
+    gchar *existing = read_crontab();
+    gchar *clean = crontab_without_schedule(existing);
+    g_free(existing);
+    GString *newtab = g_string_new(clean);
+    g_free(clean);
+    if (newtab->len && newtab->str[newtab->len - 1] != '\n')
+        g_string_append_c(newtab, '\n');
+    g_string_append(newtab, line);
+    g_string_append_c(newtab, '\n');
+    write_crontab(newtab->str);
+    g_free(line);
+    g_string_free(newtab, TRUE);
+
+    set_status(TR("已启用计划备份"));
+    if (sched_status_label) {
+        gchar *s = g_strdup_printf(TR("计划: %s %s"), TR("已启用"), time_text);
+        gtk_label_set_text(GTK_LABEL(sched_status_label), s);
+        g_free(s);
+    }
+}
+
+/* 停用计划备份：从 crontab 中移除计划行 */
+static void on_sched_disable(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (busy) return;
+    if (!has_crontab()) {
+        set_status(TR("系统无 crontab"));
+        return;
+    }
+    gchar *existing = read_crontab();
+    gchar *clean = crontab_without_schedule(existing);
+    g_free(existing);
+    write_crontab(clean);
+    g_free(clean);
+
+    set_status(TR("已停用计划备份"));
+    if (sched_status_label)
+        gtk_label_set_text(GTK_LABEL(sched_status_label), TR("计划: 未启用"));
+}
+
+/* 启动时刷新计划状态 */
+static void refresh_schedule_status(void) {
+    if (!sched_status_label) return;
+    gchar *ct = read_crontab();
+    gboolean enabled = ct && strstr(ct, SCHED_MARKER) != NULL;
+    gtk_label_set_text(GTK_LABEL(sched_status_label),
+                       enabled ? TR("计划: 已启用") : TR("计划: 未启用"));
+    g_free(ct);
+}
+
 /* ---------- UI ---------- */
 static void activate(GtkApplication *app, gpointer ud) {
     (void)ud;
@@ -385,6 +563,47 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_widget_set_halign(status_label, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(vbox), status_label, FALSE, FALSE, 0);
 
+    /* ---------- 计划备份（crontab） ---------- */
+    GtkWidget *sched_sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_box_pack_start(GTK_BOX(vbox), sched_sep, FALSE, FALSE, 0);
+
+    GtkWidget *sched_title = gtk_label_new(TR("计划备份"));
+    gtk_widget_set_halign(sched_title, GTK_ALIGN_START);
+    qy_add_class(sched_title, "qy-settings-group");
+    gtk_box_pack_start(GTK_BOX(vbox), sched_title, FALSE, FALSE, 0);
+
+    GtkWidget *sched_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *sched_l = gtk_label_new(TR("频率"));
+    gtk_box_pack_start(GTK_BOX(sched_row), sched_l, FALSE, FALSE, 0);
+    sched_freq_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(sched_freq_combo), TR("每日"));
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(sched_freq_combo), TR("每周"));
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(sched_freq_combo), TR("每月"));
+    gtk_combo_box_set_active(GTK_COMBO_BOX(sched_freq_combo), 0);
+    gtk_box_pack_start(GTK_BOX(sched_row), sched_freq_combo, FALSE, FALSE, 0);
+
+    GtkWidget *time_lb = gtk_label_new(TR("时间"));
+    gtk_box_pack_start(GTK_BOX(sched_row), time_lb, FALSE, FALSE, 0);
+    sched_time_entry = gtk_entry_new();
+    gtk_entry_set_width_chars(GTK_ENTRY(sched_time_entry), 6);
+    gtk_entry_set_text(GTK_ENTRY(sched_time_entry), "02:00");
+    gtk_box_pack_start(GTK_BOX(sched_row), sched_time_entry, FALSE, FALSE, 0);
+
+    GtkWidget *sched_enable_btn = gtk_button_new_with_label(TR("启用"));
+    qy_add_class(sched_enable_btn, "qy-btn");
+    g_signal_connect(sched_enable_btn, "clicked", G_CALLBACK(on_sched_enable), NULL);
+    gtk_box_pack_start(GTK_BOX(sched_row), sched_enable_btn, FALSE, FALSE, 0);
+
+    GtkWidget *sched_disable_btn = gtk_button_new_with_label(TR("停用计划"));
+    qy_add_class(sched_disable_btn, "qy-btn");
+    g_signal_connect(sched_disable_btn, "clicked", G_CALLBACK(on_sched_disable), NULL);
+    gtk_box_pack_start(GTK_BOX(sched_row), sched_disable_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), sched_row, FALSE, FALSE, 0);
+
+    sched_status_label = gtk_label_new(TR("计划: 未启用"));
+    gtk_widget_set_halign(sched_status_label, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(vbox), sched_status_label, FALSE, FALSE, 0);
+
     /* 备份列表 */
     GtkWidget *list_lb = gtk_label_new(TR("已有备份:"));
     gtk_widget_set_halign(list_lb, GTK_ALIGN_START);
@@ -412,6 +631,7 @@ static void activate(GtkApplication *app, gpointer ud) {
 
     gtk_widget_show_all(win);
     refresh_backup_list();
+    refresh_schedule_status();
 
     if (g_getenv("QYBACKUP_AUTO"))
         g_timeout_add(800, auto_backup, NULL);

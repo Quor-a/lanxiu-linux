@@ -7,6 +7,9 @@
 #include <curl/curl.h>
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
+#include <sys/wait.h>
+#include <glib/gstdio.h>
 #include "qytheme.h"
 #include "qyl10n.h"
 #include "qyicon.h"
@@ -17,6 +20,13 @@ static GtkWidget *status_label = NULL;
 static GtkTextBuffer *buffer = NULL;
 static GtkWidget *back_btn = NULL, *fwd_btn = NULL;   /* 前进/后退 */
 static GtkWidget *dl_spinner = NULL;   /* 下载中加载动画（release 256） */
+
+/* 下载管理（release: 下载历史面板） */
+static GPtrArray *dl_entries = NULL;      /* DownloadEntry 列表 */
+static GtkWidget *dl_revealer = NULL;    /* 底部下载历史面板 */
+static GtkWidget *dl_listbox = NULL;      /* 下载历史 GtkListBox */
+static GtkWidget *dl_url_entry = NULL;    /* 面板内下载地址输入 */
+static GtkWidget *dl_toggle_btn = NULL;   /* 工具栏「下载」切换按钮 */
 
 /* 浏览历史栈 */
 static GPtrArray *hist = NULL;
@@ -496,6 +506,288 @@ static gboolean on_view_button_press(GtkWidget *w, GdkEventButton *ev, gpointer 
     return TRUE;
 }
 
+/* ---------- 下载管理（底部 GtkRevealer 历史面板） ----------
+ * 历史存 ~/.config/lanxiu/downloads.txt，每行: 路径|状态|时间
+ * 状态: downloading | done | failed。 */
+typedef struct {
+    gchar *path;       /* 完整路径 */
+    gchar *status;     /* downloading | done | failed */
+    gint64  ts;        /* Unix 时间戳 */
+    GPid    pid;       /* 子进程 pid（downloading 时有效） */
+    GtkWidget *row;
+    GtkWidget *status_lbl;
+} DownloadEntry;
+
+static void dl_entry_free(gpointer p) {
+    DownloadEntry *e = (DownloadEntry *)p;
+    g_free(e->path);
+    g_free(e->status);
+    g_free(e);
+}
+
+static gchar *dl_history_path(void) {
+    gchar *dir = g_build_filename(g_get_user_config_dir(), "lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    gchar *p = g_build_filename(dir, "downloads.txt", NULL);
+    g_free(dir);
+    return p;
+}
+
+static void dl_save(void) {
+    if (!dl_entries) return;
+    gchar *path = dl_history_path();
+    GString *out = g_string_new(NULL);
+    for (guint i = 0; i < dl_entries->len; i++) {
+        DownloadEntry *e = (DownloadEntry *)g_ptr_array_index(dl_entries, i);
+        g_string_append_printf(out, "%s|%s|%" G_GINT64_FORMAT "\n",
+                               e->path, e->status, e->ts);
+    }
+    g_file_set_contents(path, out->str, out->len, NULL);
+    g_string_free(out, TRUE);
+    g_free(path);
+}
+
+/* 状态文字: 进行中 / 完成(含大小) / 失败 */
+static gchar *dl_status_text(DownloadEntry *e) {
+    if (!strcmp(e->status, "downloading")) return g_strdup(TR("进行中"));
+    if (!strcmp(e->status, "failed")) return g_strdup(TR("失败"));
+    GStatBuf st;
+    if (g_stat(e->path, &st) == 0 && st.st_size > 0) {
+        if (st.st_size >= 1024 * 1024)
+            return g_strdup_printf(TR("完成 %d MB"), (int)(st.st_size / (1024 * 1024)));
+        if (st.st_size >= 1024)
+            return g_strdup_printf(TR("完成 %d KB"), (int)(st.st_size / 1024));
+        return g_strdup_printf(TR("完成 %d B"), (int)st.st_size);
+    }
+    return g_strdup(TR("完成"));
+}
+
+/* 创建历史行: 文件名 + 状态 */
+static GtkWidget *dl_make_row(DownloadEntry *e) {
+    GtkWidget *row = gtk_list_box_row_new();
+    GtkWidget *h = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_container_set_border_width(GTK_CONTAINER(h), 4);
+    gtk_container_add(GTK_CONTAINER(row), h);
+
+    const gchar *base = g_path_get_basename(e->path);
+    GtkWidget *name_lbl = gtk_label_new(base);
+    g_free((gchar *)base);
+    gtk_widget_set_hexpand(name_lbl, TRUE);
+    gtk_label_set_xalign(GTK_LABEL(name_lbl), 0.0);
+    gtk_label_set_ellipsize(GTK_LABEL(name_lbl), PANGO_ELLIPSIZE_END);
+    gtk_box_pack_start(GTK_BOX(h), name_lbl, TRUE, TRUE, 0);
+
+    GtkWidget *st_lbl = gtk_label_new(NULL);
+    e->status_lbl = st_lbl;
+    gtk_box_pack_start(GTK_BOX(h), st_lbl, FALSE, FALSE, 0);
+    return row;
+}
+
+static void dl_update_row(DownloadEntry *e) {
+    if (e && e->status_lbl) {
+        gchar *s = dl_status_text(e);
+        gtk_label_set_text(GTK_LABEL(e->status_lbl), s);
+        g_free(s);
+    }
+}
+
+/* curl 子进程结束: 更新状态并持久化 */
+static void dl_on_exit(GPid pid, gint status, gpointer ud) {
+    g_spawn_close_pid(pid);
+    DownloadEntry *e = (DownloadEntry *)ud;
+    if (!e) return;
+    e->pid = 0;
+    g_free(e->status);
+    e->status = g_strdup((WIFEXITED(status) && WEXITSTATUS(status) == 0) ? "done" : "failed");
+    dl_update_row(e);
+    dl_save();
+}
+
+/* 打开所在目录（qyfiles，支持目录参数） */
+static void dl_open_dir(DownloadEntry *e) {
+    if (!e || !e->path) return;
+    gchar *dir = g_path_get_dirname(e->path);
+    gchar *cmd = g_strdup_printf("qyfiles %s", g_shell_quote(dir));
+    g_spawn_command_line_async(cmd, NULL);
+    g_free(cmd);
+    g_free(dir);
+}
+
+/* 打开文件: 文本类用 qyedit，图片类用 qyview */
+static void dl_open_file(DownloadEntry *e) {
+    if (!e || !e->path) return;
+    const char *ext = strrchr(e->path, '.');
+    const char *app = "qyview";
+    if (ext) {
+        static const char *text_exts[] = {
+            ".txt", ".html", ".htm", ".c", ".h", ".py", ".sh", ".md",
+            ".json", ".xml", ".log", ".conf", ".css", ".js", ".ini", ".csv", NULL
+        };
+        for (int i = 0; text_exts[i]; i++) {
+            if (g_ascii_strcasecmp(ext, text_exts[i]) == 0) { app = "qyedit"; break; }
+        }
+    }
+    gchar *cmd = g_strdup_printf("%s %s", app, g_shell_quote(e->path));
+    g_spawn_command_line_async(cmd, NULL);
+    g_free(cmd);
+}
+
+static void dl_on_menu_dir(GtkMenuItem *mi, gpointer ud) {
+    (void)mi;
+    dl_open_dir((DownloadEntry *)ud);
+}
+
+static void dl_on_menu_file(GtkMenuItem *mi, gpointer ud) {
+    (void)mi;
+    dl_open_file((DownloadEntry *)ud);
+}
+
+/* 右键历史条目: 打开所在目录 / 打开文件 */
+static gboolean dl_on_button_press(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->type != GDK_BUTTON_PRESS || ev->button != 3) return FALSE;
+    GtkListBoxRow *row = gtk_list_box_get_row_at_y(GTK_LIST_BOX(dl_listbox), (gint)ev->y);
+    if (!row) return FALSE;
+    DownloadEntry *e = (DownloadEntry *)g_object_get_data(G_OBJECT(row), "dl-entry");
+    if (!e) return FALSE;
+
+    GtkWidget *menu = gtk_menu_new();
+    GtkWidget *mi = gtk_menu_item_new_with_label(TR("打开所在目录"));
+    g_signal_connect(mi, "activate", G_CALLBACK(dl_on_menu_dir), e);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    mi = gtk_menu_item_new_with_label(TR("打开文件"));
+    g_signal_connect(mi, "activate", G_CALLBACK(dl_on_menu_file), e);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    gtk_widget_show_all(menu);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (const GdkEvent *)ev);
+    return TRUE;
+}
+
+/* 双击/回车打开文件 */
+static void dl_on_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer ud) {
+    (void)box; (void)ud;
+    DownloadEntry *e = row ? (DownloadEntry *)g_object_get_data(G_OBJECT(row), "dl-entry") : NULL;
+    dl_open_file(e);
+}
+
+/* 启动下载: 用 curl -L -o <目标> <url>，并接入历史状态记录 */
+static void dl_start(const char *url) {
+    if (!url || !url[0] || !dl_listbox) return;
+    const char *dl_dir = g_get_user_special_dir(G_USER_DIRECTORY_DOWNLOAD);
+    gchar *dir = g_strdup(dl_dir && dl_dir[0] ? dl_dir : g_get_home_dir());
+    g_mkdir_with_parents(dir, 0755);
+
+    const char *slash = strrchr(url, '/');
+    gchar *fname = g_strdup(slash ? slash + 1 : url);
+    char *q = strpbrk(fname, "?#");
+    if (q) *q = 0;
+    if (!fname[0]) { g_free(fname); fname = g_strdup("index.html"); }
+    gchar *path = g_build_filename(dir, fname, NULL);
+    g_free(fname);
+    g_free(dir);
+
+    if (!dl_entries) dl_entries = g_ptr_array_new_with_free_func(dl_entry_free);
+    DownloadEntry *e = g_new0(DownloadEntry, 1);
+    e->path = path;
+    e->status = g_strdup("downloading");
+    e->ts = time(NULL);
+    e->row = dl_make_row(e);
+    g_object_set_data_full(G_OBJECT(e->row), "dl-entry", e, NULL);
+    gtk_list_box_insert(GTK_LIST_BOX(dl_listbox), e->row, 0);
+    gtk_widget_show_all(e->row);
+    g_ptr_array_add(dl_entries, e);
+    dl_update_row(e);
+    dl_save();
+
+    gchar *qpath = g_shell_quote(e->path);
+    gchar *qurl = g_shell_quote(url);
+    gchar *cmd = g_strdup_printf("curl -L -o %s %s", qpath, qurl);
+    g_free(qpath);
+    g_free(qurl);
+    GError *err = NULL;
+    gchar **argv = NULL;
+    if (g_shell_parse_argv(cmd, NULL, &argv, &err)) {
+        GPid pid = 0;
+        if (g_spawn_async(NULL, argv, NULL,
+                          G_SPAWN_SEARCH_PATH | G_SPAWN_DO_NOT_REAP_CHILD,
+                          NULL, NULL, &pid, &err)) {
+            e->pid = pid;
+            g_child_watch_add(pid, dl_on_exit, e);
+        } else {
+            g_free(e->status);
+            e->status = g_strdup("failed");
+            dl_update_row(e);
+            dl_save();
+        }
+        g_strfreev(argv);
+    } else {
+        g_free(e->status);
+        e->status = g_strdup("failed");
+        dl_update_row(e);
+        dl_save();
+    }
+    g_clear_error(&err);
+    g_free(cmd);
+}
+
+/* 启动时加载下载历史 */
+static void dl_load(void) {
+    if (!dl_listbox) return;
+    if (!dl_entries) dl_entries = g_ptr_array_new_with_free_func(dl_entry_free);
+    gchar *path = dl_history_path();
+    gchar *content = NULL;
+    if (g_file_get_contents(path, &content, NULL, NULL) && content) {
+        gchar **lines = g_strsplit(content, "\n", 0);
+        for (int i = 0; lines[i]; i++) {
+            gchar *line = g_strstrip(lines[i]);
+            if (!line[0]) continue;
+            gchar **parts = g_strsplit(line, "|", 3);
+            if (parts[0] && parts[0][0] && parts[1] && parts[1][0] && parts[2]) {
+                DownloadEntry *e = g_new0(DownloadEntry, 1);
+                e->path = g_strdup(parts[0]);
+                e->status = g_strdup(parts[1]);
+                e->ts = g_ascii_strtoll(parts[2], NULL, 10);
+                /* 上次会话中断的下载视为失败 */
+                if (!strcmp(e->status, "downloading")) {
+                    g_free(e->status);
+                    e->status = g_strdup("failed");
+                }
+                e->row = dl_make_row(e);
+                g_object_set_data_full(G_OBJECT(e->row), "dl-entry", e, NULL);
+                gtk_list_box_insert(GTK_LIST_BOX(dl_listbox), e->row, 0);
+                gtk_widget_show_all(e->row);
+                dl_update_row(e);
+                g_ptr_array_add(dl_entries, e);
+            }
+            g_strfreev(parts);
+        }
+        g_strfreev(lines);
+    }
+    g_free(content);
+    g_free(path);
+}
+
+static void on_dl_start_clicked(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    const char *u = gtk_entry_get_text(GTK_ENTRY(dl_url_entry));
+    if (!u || !u[0]) u = gtk_entry_get_text(GTK_ENTRY(url_entry));
+    dl_start(u);
+}
+
+/* 工具栏「下载」按钮: 切换底部历史面板 */
+static void on_dl_toggle(GtkWidget *w, gpointer ud) {
+    (void)ud;
+    gboolean active = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
+    if (active && dl_revealer) {
+        gtk_revealer_set_reveal_child(GTK_REVEALER(dl_revealer), TRUE);
+        const char *cur = gtk_entry_get_text(GTK_ENTRY(url_entry));
+        if (dl_url_entry && !gtk_entry_get_text(GTK_ENTRY(dl_url_entry))[0] && cur[0])
+            gtk_entry_set_text(GTK_ENTRY(dl_url_entry), cur);
+    } else if (dl_revealer) {
+        gtk_revealer_set_reveal_child(GTK_REVEALER(dl_revealer), FALSE);
+    }
+}
+
 /* ---------- 主窗口 ---------- */
 static void activate(GtkApplication *app, gpointer ud) {
     (void)ud;
@@ -540,6 +832,11 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(bar), bm_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), bm_list_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), btn2, FALSE, FALSE, 0);
+    /* 下载管理: 工具栏「下载」按钮切换底部历史面板 */
+    dl_toggle_btn = gtk_toggle_button_new_with_label(TR("下载"));
+    qy_add_class(dl_toggle_btn, "qy-btn");
+    g_signal_connect(dl_toggle_btn, "toggled", G_CALLBACK(on_dl_toggle), NULL);
+    gtk_box_pack_start(GTK_BOX(bar), dl_toggle_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), bar, FALSE, FALSE, 0);
 
     /* 正文: 左侧纯文本视图 + 右侧链接面板 */
@@ -569,6 +866,37 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_paned_add2(GTK_PANED(paned), side);
     gtk_paned_set_position(GTK_PANED(paned), 440);
     gtk_box_pack_start(GTK_BOX(vbox), paned, TRUE, TRUE, 0);
+
+    /* 下载历史面板（GtkRevealer，默认收起） */
+    dl_revealer = gtk_revealer_new();
+    gtk_revealer_set_transition_type(GTK_REVEALER(dl_revealer), GTK_REVEALER_TRANSITION_TYPE_SLIDE_UP);
+    gtk_revealer_set_transition_duration(GTK_REVEALER(dl_revealer), 200);
+    GtkWidget *dl_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *dl_header = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *dl_lb = gtk_label_new(TR("下载"));
+    gtk_widget_set_halign(dl_lb, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(dl_header), dl_lb, FALSE, FALSE, 0);
+    dl_url_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(dl_url_entry), "https://...");
+    gtk_widget_set_hexpand(dl_url_entry, TRUE);
+    gtk_box_pack_start(GTK_BOX(dl_header), dl_url_entry, TRUE, TRUE, 0);
+    GtkWidget *dl_start_btn = gtk_button_new_with_label(TR("下载"));
+    qy_add_class(dl_start_btn, "qy-btn");
+    g_signal_connect(dl_start_btn, "clicked", G_CALLBACK(on_dl_start_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(dl_header), dl_start_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(dl_box), dl_header, FALSE, FALSE, 0);
+
+    GtkWidget *dl_sw = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(dl_sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_size_request(dl_sw, -1, 140);
+    dl_listbox = gtk_list_box_new();
+    gtk_widget_add_events(dl_listbox, GDK_BUTTON_PRESS_MASK);
+    g_signal_connect(dl_listbox, "button-press-event", G_CALLBACK(dl_on_button_press), NULL);
+    g_signal_connect(dl_listbox, "row-activated", G_CALLBACK(dl_on_row_activated), NULL);
+    gtk_container_add(GTK_CONTAINER(dl_sw), dl_listbox);
+    gtk_box_pack_start(GTK_BOX(dl_box), dl_sw, TRUE, TRUE, 0);
+    gtk_container_add(GTK_CONTAINER(dl_revealer), dl_box);
+    gtk_box_pack_start(GTK_BOX(vbox), dl_revealer, FALSE, FALSE, 0);
 
     /* 状态栏（含加载动画） */
     GtkWidget *status_hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
@@ -614,6 +942,9 @@ static void activate(GtkApplication *app, gpointer ud) {
     g_printerr("QYBROWSERDBG: accel 5 keys\n");
 
     gtk_widget_show_all(win);
+
+    /* 加载下载历史 */
+    dl_load();
 }
 
 int main(int argc, char **argv) {

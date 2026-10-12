@@ -789,6 +789,83 @@ static gboolean auto_input_apply(gpointer p) {
     return G_SOURCE_REMOVE;
 }
 
+/* ---------- 输入法: 无输入法 / fcitx5 / ibus ----------
+ * 写入 /etc/profile.d/lanxiu-inputmethod.sh（GTK_IM_MODULE/QT_IM_MODULE/XMODIFIERS）。 */
+#define IM_SCRIPT "/etc/profile.d/lanxiu-inputmethod.sh"
+static GtkWidget *g_im_combo = NULL;
+
+static void im_write(const char *im) {
+    /* im: "none" 写空脚本；"fcitx5" 用 fcitx；"ibus" 用 ibus */
+    if (!im || !strcmp(im, "none")) {
+        g_file_set_contents(IM_SCRIPT, "", 0, NULL);
+        return;
+    }
+    const char *module = strcmp(im, "ibus") == 0 ? "ibus" : "fcitx";
+    gchar *content = g_strdup_printf(
+        "#!/bin/sh\n"
+        "export GTK_IM_MODULE=%s\n"
+        "export QT_IM_MODULE=%s\n"
+        "export XMODIFIERS=@im=%s\n",
+        module, module, module);
+    g_file_set_contents(IM_SCRIPT, content, -1, NULL);
+    g_free(content);
+}
+
+/* 从已有脚本推断当前输入法: 0 无 / 1 fcitx5 / 2 ibus / -1 未知 */
+static int im_current_from_file(void) {
+    gchar *content = NULL;
+    if (g_file_get_contents(IM_SCRIPT, &content, NULL, NULL) && content) {
+        if (strstr(content, "GTK_IM_MODULE=ibus")) { g_free(content); return 2; }
+        if (strstr(content, "GTK_IM_MODULE=fcitx")) { g_free(content); return 1; }
+    }
+    g_free(content);
+    return -1;
+}
+
+/* 检测系统中已安装的输入法框架: 0 无 / 1 fcitx5 / 2 ibus */
+static int im_detect_default(void) {
+    gchar *p = g_find_program_in_path("fcitx5");
+    if (p) { g_free(p); return 1; }
+    p = g_find_program_in_path("ibus");
+    if (p) { g_free(p); return 2; }
+    return 0;
+}
+
+static void on_im_apply(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    int act = gtk_combo_box_get_active(GTK_COMBO_BOX(g_im_combo));
+    if (act < 0) act = 0;
+    if (act == 0) im_write("none");
+    else if (act == 1) im_write("fcitx5");
+    else im_write("ibus");
+    GtkWidget *dlg = gtk_message_dialog_new(
+        GTK_WINDOW(gtk_widget_get_toplevel(w)),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
+        "%s", TR("已保存输入法配置，请重启后生效"));
+    gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+}
+
+/* 自动化验证: QY_SETTINGS_IM=none|fcitx5|ibus 启动后写入 */
+static gboolean auto_im_apply(gpointer p) {
+    (void)p;
+    const char *env = g_getenv("QY_SETTINGS_IM");
+    if (env) {
+        if (!strcmp(env, "fcitx5")) {
+            gtk_combo_box_set_active(GTK_COMBO_BOX(g_im_combo), 1);
+            im_write("fcitx5");
+        } else if (!strcmp(env, "ibus")) {
+            gtk_combo_box_set_active(GTK_COMBO_BOX(g_im_combo), 2);
+            im_write("ibus");
+        } else {
+            gtk_combo_box_set_active(GTK_COMBO_BOX(g_im_combo), 0);
+            im_write("none");
+        }
+    }
+    return G_SOURCE_REMOVE;
+}
+
 /* ---------- 按流量计费: 开关 ---------- */
 #define METERED_CONF "/etc/qymetered.conf"
 static int g_metered_loading = 0;
@@ -3735,6 +3812,54 @@ static void activate(GtkApplication *app, gpointer ud) {
         gtk_notebook_append_page(GTK_NOTEBOOK(nb), vin, tab_with_icon(TR("输入"), QY_ICON_KEYBOARD));
         if (env_in)
             g_timeout_add(1750, auto_input_apply, NULL);
+    }
+
+    /* 输入法页: 无输入法 / fcitx5 / ibus（写 /etc/profile.d/lanxiu-inputmethod.sh） */
+    {
+        GtkWidget *vim = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+        gtk_container_set_border_width(GTK_CONTAINER(vim), 14);
+        settings_group(GTK_BOX(vim), TR("输入法设置"));
+        gtk_box_pack_start(GTK_BOX(vim), row(TR("输入法"), TR("fcitx5 / ibus 框架选择")), FALSE, FALSE, 0);
+
+        GtkWidget *im_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        GtkWidget *im_l = gtk_label_new(TR("输入法"));
+        gtk_widget_set_size_request(im_l, 150, -1);
+        gtk_widget_set_halign(im_l, GTK_ALIGN_START);
+        g_im_combo = gtk_combo_box_text_new();
+        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_im_combo), TR("无输入法"));
+        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_im_combo), "fcitx5");
+        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_im_combo), "ibus");
+        int im_cur = im_current_from_file();
+        if (im_cur < 0)
+            im_cur = im_detect_default();
+        gtk_combo_box_set_active(GTK_COMBO_BOX(g_im_combo), im_cur);
+        const char *env_im = g_getenv("QY_SETTINGS_IM");
+        if (env_im) {
+            if (!strcmp(env_im, "fcitx5")) gtk_combo_box_set_active(GTK_COMBO_BOX(g_im_combo), 1);
+            else if (!strcmp(env_im, "ibus")) gtk_combo_box_set_active(GTK_COMBO_BOX(g_im_combo), 2);
+            else gtk_combo_box_set_active(GTK_COMBO_BOX(g_im_combo), 0);
+        }
+        gtk_box_pack_start(GTK_BOX(im_row), im_l, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(im_row), g_im_combo, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(vim), im_row, FALSE, FALSE, 0);
+
+        /* 说明标签 #qysettings-im-hint */
+        GtkWidget *im_hint = gtk_label_new(TR("需安装对应输入法框架并重启后生效"));
+        gtk_widget_set_name(im_hint, "qysettings-im-hint");
+        gtk_widget_set_halign(im_hint, GTK_ALIGN_START);
+        gtk_widget_set_margin_top(im_hint, 4);
+        qy_add_class(im_hint, "qy-exp-hint");
+        gtk_box_pack_start(GTK_BOX(vim), im_hint, FALSE, FALSE, 0);
+
+        /* 应用按钮 #qysettings-im-apply（品牌橙） */
+        GtkWidget *im_btn = gtk_button_new_with_label(TR("应用"));
+        gtk_widget_set_name(im_btn, "qysettings-im-apply");
+        g_signal_connect(im_btn, "clicked", G_CALLBACK(on_im_apply), NULL);
+        gtk_box_pack_start(GTK_BOX(vim), im_btn, FALSE, FALSE, 0);
+
+        gtk_notebook_append_page(GTK_NOTEBOOK(nb), vim, tab_with_icon(TR("输入法"), QY_ICON_KEYBOARD));
+        if (env_im)
+            g_timeout_add(1850, auto_im_apply, NULL);
     }
 
     /* 笔和Ink页: 手写笔开关（写 /etc/qypen.conf） */

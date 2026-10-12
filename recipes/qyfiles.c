@@ -1820,8 +1820,14 @@ static void activate(GtkApplication *app, gpointer ud) {
     g_printerr("QYFILESDBG: accel 13 keys\n");
 
     gtk_widget_show_all(win);
-    /* argv[1]=="--trash" → 启动即进回收站视图 (调试/自证用) */
-    if (g_argc > 1 && !strcmp(g_argv[1], "--trash")) chdir_trash(); else chdir_to(home);
+    /* argv[1]=="--trash" → 启动即进回收站视图 (调试/自证用)；
+     * argv[1] 为目录时直接打开该目录（qybrowser 下载管理「打开所在目录」）。 */
+    if (g_argc > 1 && !strcmp(g_argv[1], "--trash"))
+        chdir_trash();
+    else if (g_argc > 1 && g_file_test(g_argv[1], G_FILE_TEST_IS_DIR))
+        chdir_to(g_argv[1]);
+    else
+        chdir_to(home);
     /* 自动化验证: QYFILES_COPY=<文件名> 启动后自动复制该文件 */
     const char *cp = g_getenv("QYFILES_COPY");
     if (cp && cp[0])

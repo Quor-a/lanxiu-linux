@@ -2028,6 +2028,22 @@ spinner {
 #qysettings-font-apply:active {
     background-color: #d94a0f;
 }
+/* 输入法设置页「应用」按钮（品牌橙） */
+#qysettings-im-apply {
+    background-image: none;
+    background-color: #FF5C1A;
+    border: none;
+    border-radius: 8px;
+    color: #ffffff;
+    padding: 6px 16px;
+    min-height: 28px;
+}
+#qysettings-im-apply:hover {
+    background-color: #ff7a3d;
+}
+#qysettings-im-apply:active {
+    background-color: #d94a0f;
+}
 /* 字体预览卡片 */
 .qy-font-preview {
     background-color: #1b2430;

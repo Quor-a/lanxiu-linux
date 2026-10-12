@@ -33,6 +33,7 @@ static char line_buf[256];
 static long prev_total = 0, prev_idle = 0;
 static unsigned long mem_total_kb = 1;
 static GtkWidget *cpu_label = NULL, *mem_label = NULL, *info_label = NULL;
+static GtkWidget *gpu_label = NULL;   /* GPU 信息 #qymon-gpu */
 static GtkWidget *title_label = NULL;
 static GtkWidget *disk_label = NULL;
 static GtkWidget *proc_label = NULL;   /* 内存占用 TOP 5 进程列表 */
@@ -136,6 +137,53 @@ static double read_cpu_temp(void) {
         }
     }
     return -1;
+}
+
+/* 检查 PATH 中是否存在程序 */
+static gboolean has_program(const char *name) {
+    gchar *p = g_find_program_in_path(name);
+    gboolean ok = (p != NULL);
+    g_free(p);
+    return ok;
+}
+
+/* 读取第一个显卡名称并显示在 #qymon-gpu。
+ * 数据源: lspci | grep -i -E "vga|3d|display"（无 lspci 或未找到则显示未检测到）。 */
+static void read_gpu_info(void) {
+    if (!gpu_label) return;
+    const char *fallback = TR("GPU: 未检测到 GPU");
+    gchar *out = NULL, *err = NULL;
+    gint status = 0;
+    if (!has_program("lspci")) {
+        gtk_label_set_text(GTK_LABEL(gpu_label), fallback);
+        return;
+    }
+    if (!g_spawn_command_line_sync("lspci | grep -i -E 'vga|3d|display'",
+                                   &out, &err, &status, NULL) || !out) {
+        gtk_label_set_text(GTK_LABEL(gpu_label), fallback);
+        g_free(out);
+        g_free(err);
+        return;
+    }
+    char *line = out;
+    char *nl = strchr(line, '\n');
+    if (nl) *nl = 0;
+    gchar *name = NULL;
+    char *colon = strrchr(line, ':');
+    if (colon && colon[1]) {
+        name = g_strdup(colon + 1);
+        g_strstrip(name);
+    }
+    if (name && name[0]) {
+        gchar *txt = g_strdup_printf("GPU: %s", name);
+        gtk_label_set_text(GTK_LABEL(gpu_label), txt);
+        g_free(txt);
+        g_free(name);
+    } else {
+        gtk_label_set_text(GTK_LABEL(gpu_label), fallback);
+    }
+    g_free(out);
+    g_free(err);
 }
 
 /* 读取首个非 lo 接口的收发速率 (KB/s), 与上次调用差分 */
@@ -722,9 +770,19 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_widget_set_halign(info_label, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(vbox), info_label, FALSE, FALSE, 0);
 
+    /* GPU 信息行（#qymon-gpu） */
+    gpu_label = gtk_label_new(TR("GPU: 未检测到 GPU"));
+    gtk_widget_set_name(gpu_label, "qymon-gpu");
+    add_class(gpu_label, "qy-mon-info");
+    gtk_widget_set_halign(gpu_label, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(vbox), gpu_label, FALSE, FALSE, 0);
+
     /* 默认按内存降序 */
     gtk_tree_sortable_set_sort_column_id(GTK_TREE_SORTABLE(proc_store), P_MEM, GTK_SORT_DESCENDING);
     refresh_proc_list();
+
+    /* 读取 GPU 信息（无 lspci / 未找到显卡时显示「未检测到 GPU」） */
+    read_gpu_info();
 
     gtk_widget_show_all(win);
     g_timeout_add_seconds(1, tick, da);
