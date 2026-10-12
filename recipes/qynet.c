@@ -496,6 +496,13 @@ static void wifi_connect(const char *ssid, const char *psk) {
         "udhcpc -i %s >/dev/null 2>&1 &", ifname, ifname);
     g_spawn_command_line_async(cmd, NULL);
     g_free(cmd);
+    /* 记住最近连接（release 269） */
+    gchar *wdir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+    g_mkdir_with_parents(wdir, 0755);
+    gchar *wpath = g_build_filename(wdir, "qynet-wifi.conf", NULL);
+    gchar *wdata = g_strdup_printf("%s|%s", ssid, psk ? psk : "");
+    g_file_set_contents(wpath, wdata, -1, NULL);
+    g_free(wdata); g_free(wpath); g_free(wdir);
     if (status_label) {
         gchar *s = g_strdup_printf(TR("正在连接 WiFi %s（%s）..."), ssid, ifname);
         gtk_label_set_text(GTK_LABEL(status_label), s);
@@ -660,6 +667,14 @@ int main(int argc, char **argv) {
     const char *qw = g_getenv("QYNET_WIFI");
     if (qw && qw[0])
         g_timeout_add(800, auto_wifi, g_strdup(qw));
+    /* 记住的 WiFi 自动重连（release 269） */
+    if (!(qw && qw[0])) {
+        gchar *wpath = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qynet-wifi.conf", NULL);
+        gchar *wdata = NULL;
+        if (g_file_get_contents(wpath, &wdata, NULL, NULL) && wdata && wdata[0])
+            g_timeout_add(900, auto_wifi, g_strstrip(wdata));
+        g_free(wdata); g_free(wpath);
+    }
 
     gtk_main();
     return 0;
