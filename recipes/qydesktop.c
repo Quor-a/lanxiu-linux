@@ -1837,6 +1837,12 @@ static gchar *notif_history_text(void) {
     return g_string_free(out, FALSE);
 }
 
+/* 「全部已读」：隐藏未读徽标，历史保留（release 267） */
+static void on_notif_read_all(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    notif_badge_hide();
+}
+
 /* 「清空历史」：删除持久化通知文件并清空内存历史 */
 static void on_notif_clear_history(GtkButton *b, gpointer ud) {
     (void)b; (void)ud;
@@ -1919,6 +1925,10 @@ static gboolean on_notif_clicked(GtkWidget *w, GdkEventButton *ev, gpointer ud) 
     gtk_label_set_xalign(GTK_LABEL(hist_hdr), 0.0);
     gtk_widget_set_hexpand(hist_hdr, TRUE);
     gtk_box_pack_start(GTK_BOX(hist_hdr_box), hist_hdr, TRUE, TRUE, 0);
+    GtkWidget *readall_btn = gtk_button_new_with_label(TR("全部已读"));
+    add_class(readall_btn, "qy-btn");
+    g_signal_connect(readall_btn, "clicked", G_CALLBACK(on_notif_read_all), NULL);
+    gtk_box_pack_start(GTK_BOX(hist_hdr_box), readall_btn, FALSE, FALSE, 0);
     GtkWidget *clear_btn = gtk_button_new_with_label(TR("清空历史"));
     add_class(clear_btn, "qy-btn");
     g_signal_connect(clear_btn, "clicked", G_CALLBACK(on_notif_clear_history), NULL);
