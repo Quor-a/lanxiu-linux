@@ -2168,3 +2168,72 @@ spinner {
     background-color: #0f1622;
     color: #c9cdd4;
 }
+
+/* ---------- 顶栏工作区指示器（qydesktop） ---------- */
+.qy-ws-btn {
+    background-image: none;
+    background-color: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 0;
+    min-width: 22px;
+    min-height: 22px;
+    color: #c9cdd4;
+    font-size: 14px;
+    font-weight: bold;
+    transition: background-color 150ms ease, color 150ms ease;
+}
+.qy-ws-btn:hover {
+    background-color: rgba(255, 255, 255, 0.10);
+    color: #ffffff;
+}
+.qy-ws-btn:active {
+    background-color: rgba(255, 255, 255, 0.16);
+}
+#qy-ws-ind {
+    color: #e6e9ef;
+    font-size: 13px;
+    font-weight: bold;
+    letter-spacing: 0.5px;
+    min-width: 30px;
+}
+
+/* ---------- 取色器（qycolor） ---------- */
+#qy-color-win {
+    background-color: #0f1622;
+}
+#qy-color-preview {
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background-color: #E95420;
+}
+#qy-color-hex {
+    font-family: monospace;
+    font-size: 22px;
+    font-weight: bold;
+    color: #e8ecf4;
+    letter-spacing: 1px;
+}
+.qy-color-btn {
+    background-image: none;
+    background-color: #E95420;
+    border: 1px solid #E95420;
+    border-radius: 8px;
+    color: #ffffff;
+    padding: 6px 14px;
+    font-weight: bold;
+    transition: background-color 150ms ease, border-color 150ms ease;
+}
+.qy-color-btn:hover {
+    background-image: none;
+    background-color: #FF5C1A;
+    border-color: #FF5C1A;
+}
+.qy-color-btn:active {
+    background-image: none;
+    background-color: #C7410E;
+    border-color: #C7410E;
+}
+.qy-color-scale {
+    font-size: 13px;
+}

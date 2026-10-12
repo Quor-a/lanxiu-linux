@@ -85,6 +85,66 @@ static GtkWidget *mon_label    = NULL;  /* 顶栏 CPU/内存小部件 */
 static GtkWidget *mon_draw     = NULL;  /* 顶栏 CPU/内存迷你条 (cairo) */
 static double    mon_cpu = 0.0, mon_mem = 0.0;  /* 当前使用率 0~1 */
 static GtkWidget *desktop_fixed = NULL;
+static GtkWidget *ws_label = NULL;   /* 顶栏工作区指示标签 #qy-ws-ind */
+
+/* ---------- 工作区指示器（顶栏右侧，时钟左侧） ---------- */
+#define WORKSPACE_MAX  4
+#define QY_WS_CONF     "/etc/qyworkspaces.conf"
+static int g_workspace = 1;
+
+static void ws_save_conf(void) {
+    FILE *f = fopen(QY_WS_CONF, "w");
+    if (f) {
+        fprintf(f, "count=%d\ncurrent=%d\n", WORKSPACE_MAX, g_workspace);
+        fclose(f);
+    }
+}
+
+static void ws_apply(void) {
+    gchar *cmd = g_strdup_printf("weston --workspace=%d 2>/dev/null", g_workspace);
+    g_spawn_command_line_async(cmd, NULL);
+    g_free(cmd);
+}
+
+static void ws_update_label(void) {
+    if (!ws_label) return;
+    gchar *mk = g_strdup_printf("<span foreground=\"#E95420\">%d</span>/%d",
+                                g_workspace, WORKSPACE_MAX);
+    gtk_label_set_markup(GTK_LABEL(ws_label), mk);
+    g_free(mk);
+    g_printerr("QYDESKTOPDBG: workspace=%d\n", g_workspace);
+}
+
+static void ws_goto(int n) {
+    if (n < 1) n = 1;
+    if (n > WORKSPACE_MAX) n = WORKSPACE_MAX;
+    if (n == g_workspace) return;
+    g_workspace = n;
+    ws_save_conf();
+    ws_apply();
+    ws_update_label();
+}
+
+static void ws_prev_clicked(GtkWidget *w, gpointer ud) { (void)w; (void)ud; ws_goto(g_workspace - 1); }
+static void ws_next_clicked(GtkWidget *w, gpointer ud) { (void)w; (void)ud; ws_goto(g_workspace + 1); }
+
+/* 启动时读取 /etc/qyworkspaces.conf 的 current=N */
+static void ws_load(void) {
+    gchar *content = NULL;
+    if (g_file_get_contents(QY_WS_CONF, &content, NULL, NULL) && content) {
+        char *line = content;
+        while (line && *line) {
+            if (strncmp(line, "current=", 8) == 0) {
+                int n = atoi(line + 8);
+                if (n >= 1 && n <= WORKSPACE_MAX) g_workspace = n;
+                break;
+            }
+            char *nl = strchr(line, '\n');
+            line = nl ? nl + 1 : NULL;
+        }
+        g_free(content);
+    }
+}
 
 /* ---------- 工具 ---------- */
 static void launch_cmd(const char *cmd) {
@@ -1493,8 +1553,29 @@ static void build_bar(void) {
     taskbar_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_box_pack_start(GTK_BOX(hbox), taskbar_box, TRUE, TRUE, 0);
 
-    /* 右区（状态）：时钟并入最左，资源监视 + 通知 + 托盘 */
+    /* 右区（状态）：工作区指示器 + 时钟 + 资源监视 + 通知 + 托盘 */
     GtkWidget *st = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+
+    /* 工作区指示器：‹ 1/4 ›（顶栏右侧、时钟左侧） */
+    ws_load();
+    GtkWidget *ws_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+    GtkWidget *ws_prev = gtk_button_new_with_label("‹");
+    add_class(ws_prev, "qy-ws-btn");
+    gtk_widget_set_tooltip_text(ws_prev, TR("上一个工作区"));
+    g_signal_connect(ws_prev, "clicked", G_CALLBACK(ws_prev_clicked), NULL);
+    ws_label = gtk_label_new(NULL);
+    gtk_widget_set_name(ws_label, "qy-ws-ind");
+    add_class(ws_label, "qy-ws-ind");
+    GtkWidget *ws_next = gtk_button_new_with_label("›");
+    add_class(ws_next, "qy-ws-btn");
+    gtk_widget_set_tooltip_text(ws_next, TR("下一个工作区"));
+    g_signal_connect(ws_next, "clicked", G_CALLBACK(ws_next_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(ws_box), ws_prev, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(ws_box), ws_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(ws_box), ws_next, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(st), ws_box, FALSE, FALSE, 2);
+    ws_update_label();
+
     clock_btn = gtk_button_new();
     gtk_button_set_relief(GTK_BUTTON(clock_btn), GTK_RELIEF_NONE);
     add_class(clock_btn, "qy-clock");

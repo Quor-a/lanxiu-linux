@@ -47,6 +47,7 @@ static AppEntry apps[] = {
     { "欢迎", "qywelcome",      0, "系统" },
     { "默认程序", "qymime",       0, "系统" },
     { "电源管理", "qypower",       0, "系统" },
+    { "取色器", "qycolor",      0, "工具" },
 };
 #define NAPPS ((int)(sizeof apps / sizeof apps[0]))
 
@@ -162,6 +163,7 @@ static QyIconId app_icon_id(const AppEntry *a) {
     if (strstr(n, "换算")) return QY_ICON_CALC;
     if (strstr(n, "帮助")) return QY_ICON_DOC;
     if (strstr(n, "磁盘")) return QY_ICON_DRIVE;
+    if (strstr(n, "取色") || strstr(n, "颜色") || strstr(n, "色彩")) return QY_ICON_COLOR;
     return QY_ICON_FILES;
 }
 

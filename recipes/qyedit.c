@@ -298,6 +298,81 @@ static gboolean auto_find(gpointer p) {
     return G_SOURCE_REMOVE;
 }
 
+/* ---------- 正文右键菜单：剪切/复制/粘贴/全选/查找 ---------- */
+static GtkWidget *edit_menu = NULL;
+static GtkWidget *mi_cut  = NULL;
+static GtkWidget *mi_copy = NULL;
+
+static void do_cut(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    GtkTextBuffer *b = gtk_text_view_get_buffer(GTK_TEXT_VIEW(text_view));
+    gtk_text_buffer_cut_clipboard(b, gtk_clipboard_get(GDK_SELECTION_CLIPBOARD), TRUE);
+}
+
+static void do_copy(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    GtkTextBuffer *b = gtk_text_view_get_buffer(GTK_TEXT_VIEW(text_view));
+    gtk_text_buffer_copy_clipboard(b, gtk_clipboard_get(GDK_SELECTION_CLIPBOARD));
+}
+
+static void do_paste(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    GtkTextBuffer *b = gtk_text_view_get_buffer(GTK_TEXT_VIEW(text_view));
+    GtkTextIter cursor;
+    gtk_text_buffer_get_iter_at_mark(b, &cursor, gtk_text_buffer_get_insert(b));
+    gtk_text_buffer_paste_clipboard(b, gtk_clipboard_get(GDK_SELECTION_CLIPBOARD),
+                                   &cursor, TRUE);
+}
+
+static void do_select_all(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    GtkTextBuffer *b = gtk_text_view_get_buffer(GTK_TEXT_VIEW(text_view));
+    GtkTextIter start, end;
+    gtk_text_buffer_get_bounds(b, &start, &end);
+    gtk_text_buffer_select_range(b, &start, &end);
+}
+
+static void build_edit_menu(void) {
+    edit_menu = gtk_menu_new();
+    mi_cut = gtk_menu_item_new_with_label(TR("剪切"));
+    g_signal_connect(mi_cut, "activate", G_CALLBACK(do_cut), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(edit_menu), mi_cut);
+    mi_copy = gtk_menu_item_new_with_label(TR("复制"));
+    g_signal_connect(mi_copy, "activate", G_CALLBACK(do_copy), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(edit_menu), mi_copy);
+    GtkWidget *mi_paste = gtk_menu_item_new_with_label(TR("粘贴"));
+    g_signal_connect(mi_paste, "activate", G_CALLBACK(do_paste), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(edit_menu), mi_paste);
+    gtk_menu_shell_append(GTK_MENU_SHELL(edit_menu), gtk_separator_menu_item_new());
+    GtkWidget *mi_selall = gtk_menu_item_new_with_label(TR("全选"));
+    g_signal_connect(mi_selall, "activate", G_CALLBACK(do_select_all), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(edit_menu), mi_selall);
+    gtk_menu_shell_append(GTK_MENU_SHELL(edit_menu), gtk_separator_menu_item_new());
+    GtkWidget *mi_find = gtk_menu_item_new_with_label(TR("查找"));
+    g_signal_connect(mi_find, "activate", G_CALLBACK(on_find_toggle), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(edit_menu), mi_find);
+    gtk_widget_show_all(edit_menu);
+}
+
+static void edit_menu_update_sensitivity(void) {
+    if (!mi_cut || !mi_copy) return;
+    GtkTextBuffer *b = gtk_text_view_get_buffer(GTK_TEXT_VIEW(text_view));
+    gboolean has_sel = gtk_text_buffer_get_selection_bounds(b, NULL, NULL);
+    gtk_widget_set_sensitive(mi_cut, has_sel);
+    gtk_widget_set_sensitive(mi_copy, has_sel);
+}
+
+static gboolean on_editor_button_press(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->button == 3 && ev->type == GDK_BUTTON_PRESS) {
+        if (!edit_menu) build_edit_menu();
+        edit_menu_update_sensitivity();
+        gtk_menu_popup_at_pointer(GTK_MENU(edit_menu), (GdkEvent *)ev);
+        return TRUE;
+    }
+    return FALSE;
+}
+
 /* ---------- 状态栏: 行 / 列 / 字符数 ---------- */
 static void update_status(GtkTextBuffer *b) {
     GtkTextIter it;
@@ -440,6 +515,8 @@ int main(int argc, char **argv) {
     gtk_text_view_set_top_margin(GTK_TEXT_VIEW(text_view), 4);
     gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(text_view), 4);
     g_signal_connect_after(text_view, "draw", G_CALLBACK(on_editor_draw), NULL);
+    /* 右键菜单（剪切/复制/粘贴/全选/查找） */
+    g_signal_connect(text_view, "button-press-event", G_CALLBACK(on_editor_button_press), NULL);
     /* 支持环境变量 QYEDIT_FONT_SIZE 调整正文字号（自动化验证用） */
     {
         const char *fs = getenv("QYEDIT_FONT_SIZE");

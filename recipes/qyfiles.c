@@ -1806,6 +1806,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_widget_add_accelerator(b_ref, "clicked", accel, GDK_KEY_F5, 0, GTK_ACCEL_VISIBLE);                 /* F5 刷新 */
     gtk_widget_add_accelerator(search_entry, "grab-focus", accel, GDK_KEY_f, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE); /* Ctrl+F 搜索 */
     gtk_widget_add_accelerator(path_entry, "grab-focus", accel, GDK_KEY_l, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE); /* Ctrl+L 地址栏 */
+    gtk_widget_add_accelerator(b_new_tab, "clicked", accel, GDK_KEY_t, GDK_CONTROL_MASK | GDK_SHIFT_MASK, GTK_ACCEL_VISIBLE); /* Ctrl+Shift+T 新标签 */
     /* Ctrl+A 全选（多选模式已启用） */
     GClosure *selcl = g_cclosure_new(G_CALLBACK(on_select_all), NULL, NULL);
     gtk_accel_group_connect(accel, GDK_KEY_a, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE, selcl);
@@ -1816,7 +1817,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     g_signal_connect(b_paste, "clicked", G_CALLBACK(do_paste), NULL);
     gtk_widget_add_accelerator(b_cut, "clicked", accel, GDK_KEY_x, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);   /* Ctrl+X 剪切 */
     gtk_widget_add_accelerator(b_paste, "clicked", accel, GDK_KEY_v, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE); /* Ctrl+V 粘贴 */
-    g_printerr("QYFILESDBG: accel 12 keys\n");
+    g_printerr("QYFILESDBG: accel 13 keys\n");
 
     gtk_widget_show_all(win);
     /* argv[1]=="--trash" → 启动即进回收站视图 (调试/自证用) */

@@ -6,7 +6,7 @@
 
 name = "qydesktop"
 version = "0.1.0"
-release = 255
+release = 256
 summary = "澜岫桌面 shell（GTK3 单窗口 + 主题）"
 license = "MIT"
 
@@ -61,6 +61,7 @@ RECIPE_POWER_C = Path(__file__).parent / "qypower.c"
 RECIPE_REC_C = Path(__file__).parent / "qyrec.c"
 RECIPE_BACKUP_C = Path(__file__).parent / "qybackup.c"
 RECIPE_MIME_C = Path(__file__).parent / "qymime.c"
+RECIPE_COLOR_C = Path(__file__).parent / "qycolor.c"
 RECIPE_QYICON_C = Path(__file__).parent / "qyicon.c"
 RECIPE_QYICON_H = Path(__file__).parent / "qyicon.h"
 
@@ -108,6 +109,7 @@ def build(ctx):
     shutil.copy(RECIPE_REC_C, Path(ctx.srcdir) / "qyrec.c")
     shutil.copy(RECIPE_BACKUP_C, Path(ctx.srcdir) / "qybackup.c")
     shutil.copy(RECIPE_MIME_C, Path(ctx.srcdir) / "qymime.c")
+    shutil.copy(RECIPE_COLOR_C, Path(ctx.srcdir) / "qycolor.c")
     shutil.copy(Path(__file__).parent / "qystore.desktop", Path(ctx.srcdir) / "qystore.desktop")
     shutil.copy(Path(__file__).parent / "qynet.unit", Path(ctx.srcdir) / "qynet.unit")
     shutil.copy(Path(__file__).parent / "start-qynet.sh", Path(ctx.srcdir) / "start-qynet.sh")
@@ -176,6 +178,8 @@ def build(ctx):
         "$CC qyrec.c qyicon.c qytheme.c qyl10n.c -o qyrec $(pkg-config --cflags --libs gtk+-3.0) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
         "$CC qybackup.c qyicon.c qytheme.c qyl10n.c -o qybackup $(pkg-config --cflags --libs gtk+-3.0) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
         "$CC qymime.c qyicon.c qytheme.c qyl10n.c -o qymime $(pkg-config --cflags --libs gtk+-3.0) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
+        # release 256: 新增取色器应用，随 qydesktop 编译安装
+        "$CC qycolor.c qyicon.c qytheme.c qyl10n.c -o qycolor $(pkg-config --cflags --libs gtk+-3.0) -O2 -ljpeg -lmount -Wl,-rpath-link,/home/agentuser/qiyuan-work/qiyuan-linux/var/sysroot-target/usr/lib $(pkg-config --libs epoxy wayland-client xkbcommon wayland-cursor wayland-egl fribidi pangoft2 gio-unix-2.0 pixman-1 freetype2 libpng zlib harfbuzz gmodule-2.0 libpcre2-8 mount blkid libffi fontconfig) && "
         "$CC qypkg-inst.c -o qypkg-inst -O2".format(ctx.sysroot)
     )
 
@@ -218,6 +222,7 @@ def package(ctx):
     ctx.run("cp qyrec {}/usr/bin/qyrec".format(ctx.destdir))
     ctx.run("cp qybackup {}/usr/bin/qybackup".format(ctx.destdir))
     ctx.run("cp qymime {}/usr/bin/qymime".format(ctx.destdir))
+    ctx.run("cp qycolor {}/usr/bin/qycolor".format(ctx.destdir))
     ctx.run("mkdir -p {}/usr/lib/git-core {}/usr/share/git-core".format(ctx.destdir, ctx.destdir))
     if getattr(ctx, "target_arch", None) is None:
         ctx.run("cp git-bundle/git {}/usr/bin/git && chmod 0755 {}/usr/bin/git".format(ctx.destdir, ctx.destdir))

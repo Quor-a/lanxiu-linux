@@ -28,6 +28,7 @@ static const SearchApp apps[] = {
     { "剪贴板",    "qyclip",      QY_ICON_CLIPBOARD },
     { "锁屏",      "qylock",      QY_ICON_LOCK      },
     { "系统安装",  "qysetup",     QY_ICON_SETUP     },
+    { "取色器",    "qycolor",     QY_ICON_COLOR     },
 };
 #define NAPPS ((int)(sizeof apps / sizeof apps[0]))
 
@@ -36,8 +37,11 @@ static GtkWidget *status_label = NULL;
 static GtkWidget *search_entry = NULL;
 
 static void on_result_clicked(GtkWidget *w, gpointer ud);
+static gboolean on_row_button_press(GtkWidget *row, GdkEventButton *ev, gpointer ud);
 
-static void add_result_row(QyIconId icon, const char *text, const char *cmd) {
+/* 结果行：cmd 为点击执行命令；path 为完整文件路径（非文件结果传 NULL，
+ * 供右键菜单「复制路径 / 打开所在目录」使用）。 */
+static void add_result_row(QyIconId icon, const char *text, const char *cmd, const char *path) {
     GtkWidget *row = gtk_button_new();
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_set_margin_start(hbox, 8);
@@ -55,6 +59,11 @@ static void add_result_row(QyIconId icon, const char *text, const char *cmd) {
     gtk_widget_set_halign(row, GTK_ALIGN_FILL);
     gtk_widget_set_tooltip_text(row, cmd);
     g_signal_connect(row, "clicked", G_CALLBACK(on_result_clicked), g_strdup(cmd));
+    /* 右键菜单：复制路径 / 打开所在目录 */
+    g_signal_connect(row, "button-press-event", G_CALLBACK(on_row_button_press), NULL);
+    g_object_set_data_full(G_OBJECT(row), "result-cmd", g_strdup(cmd), g_free);
+    if (path)
+        g_object_set_data_full(G_OBJECT(row), "result-path", g_strdup(path), g_free);
     gtk_list_box_insert(GTK_LIST_BOX(listbox), row, -1);
 }
 
@@ -65,6 +74,51 @@ static void on_result_clicked(GtkWidget *w, gpointer ud) {
     g_spawn_command_line_async(s, NULL);
     g_free(s);
     g_free(ud);
+}
+
+/* ---------- 结果列表右键菜单：复制路径 / 打开所在目录（qyfiles） ---------- */
+static void on_copy_path(GtkWidget *w, gpointer ud) {
+    (void)w;
+    const char *path = (const char *)ud;
+    if (path && path[0]) {
+        GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+        gtk_clipboard_set_text(cb, path, -1);
+        g_printerr("QYSEARCHDBG: copied path %s\n", path);
+    }
+    g_free(ud);
+}
+
+static void on_open_dir(GtkWidget *w, gpointer ud) {
+    (void)w;
+    const char *path = (const char *)ud;
+    if (path && path[0]) {
+        gchar *dir = g_path_get_dirname(path);
+        gchar *cmd = g_strdup_printf("qyfiles %s", dir);
+        g_spawn_command_line_async(cmd, NULL);
+        g_printerr("QYSEARCHDBG: open dir %s\n", dir);
+        g_free(cmd);
+        g_free(dir);
+    }
+    g_free(ud);
+}
+
+static gboolean on_row_button_press(GtkWidget *row, GdkEventButton *ev, gpointer ud) {
+    (void)ud;
+    if (ev->button == 3 && ev->type == GDK_BUTTON_PRESS) {
+        const char *path = g_object_get_data(G_OBJECT(row), "result-path");
+        if (!path) return FALSE;   /* 非文件结果不显示路径菜单 */
+        GtkWidget *menu = gtk_menu_new();
+        GtkWidget *mi = gtk_menu_item_new_with_label(TR("复制路径"));
+        g_signal_connect(mi, "activate", G_CALLBACK(on_copy_path), g_strdup(path));
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+        mi = gtk_menu_item_new_with_label(TR("打开所在目录"));
+        g_signal_connect(mi, "activate", G_CALLBACK(on_open_dir), g_strdup(path));
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+        gtk_widget_show_all(menu);
+        gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)ev);
+        return TRUE;
+    }
+    return FALSE;
 }
 
 /* 清空结果 */
@@ -84,7 +138,7 @@ static void do_search(const char *q) {
     for (int i = 0; i < NAPPS; i++) {
         const char *name = TR(apps[i].name);
         if (strcasestr(name, q) || strcasestr(apps[i].cmd, q)) {
-            add_result_row(apps[i].icon, name, apps[i].cmd);
+            add_result_row(apps[i].icon, name, apps[i].cmd, NULL);
             n++;
         }
     }
@@ -97,7 +151,9 @@ static void do_search(const char *q) {
             while ((e = readdir(d)) != NULL && fn < 25) {
                 if (e->d_name[0] == '.') continue;
                 if (strcasestr(e->d_name, q)) {
-                    add_result_row(QY_ICON_TERM, e->d_name, e->d_name);
+                    gchar *path = g_strdup_printf("/usr/bin/%s", e->d_name);
+                    add_result_row(QY_ICON_TERM, e->d_name, e->d_name, path);
+                    g_free(path);
                     n++; fn++;
                 }
             }
@@ -117,7 +173,9 @@ static void do_search(const char *q) {
                 if (e->d_name[0] == '.') continue;
                 if (strcasestr(e->d_name, q)) {
                     gchar *cmd = g_strdup_printf("qyfiles %s", dirs[di]);
-                    add_result_row(QY_ICON_FILE, e->d_name, cmd);
+                    gchar *path = g_strdup_printf("%s/%s", dirs[di], e->d_name);
+                    add_result_row(QY_ICON_FILE, e->d_name, cmd, path);
+                    g_free(path);
                     g_free(cmd);
                     n++; fn++;
                 }
