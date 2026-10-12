@@ -186,6 +186,131 @@ static void read_gpu_info(void) {
     g_free(err);
 }
 
+/* ---------- hwmon 硬件传感器（风扇 / 附加温度） ---------- */
+static GtkWidget *fan_label = NULL;    /* 风扇转速 #qymon-fan */
+static GtkWidget *hwmon_label = NULL;  /* 附加温度 #qymon-hwmon */
+
+/* 将 hwmon 名称映射为友好显示名（尽力而为） */
+static char *hwmon_display_name(const char *name) {
+    if (!name || !name[0]) return g_strdup(TR("传感器"));
+    if (!g_ascii_strcasecmp(name, "nvme")) return g_strdup("NVMe");
+    if (!g_ascii_strcasecmp(name, "coretemp")) return g_strdup("CPU");
+    if (!g_ascii_strcasecmp(name, "k10temp")) return g_strdup("CPU");
+    if (!g_ascii_strcasecmp(name, "zenpower")) return g_strdup("CPU");
+    if (!g_ascii_strcasecmp(name, "cpu_thermal")) return g_strdup("CPU");
+    if (!g_ascii_strcasecmp(name, "acpitz")) return g_strdup("ACPI");
+    if (!g_ascii_strcasecmp(name, "thinkpad")) return g_strdup("ThinkPad");
+    if (!g_ascii_strcasecmp(name, "radeon")) return g_strdup("GPU");
+    if (!g_ascii_strcasecmp(name, "amdgpu")) return g_strdup("GPU");
+    char *s = g_ascii_strdown(name, -1);
+    if (s[0]) s[0] = g_ascii_toupper((guchar)s[0]);
+    return s;
+}
+
+/* 扫描 /sys/class/hwmon 下各 hwmon 子目录的 fan*_input（RPM）与 temp*_input（°C）。
+ * 尽力而为：只显示存在的传感器；无传感器时隐藏标签。 */
+static void read_hwmon(void) {
+    if (!fan_label && !hwmon_label) return;
+    GDir *dir = g_dir_open("/sys/class/hwmon", 0, NULL);
+    GString *fans = g_string_new(NULL);
+    GString *temps = g_string_new(NULL);
+    if (dir) {
+        const char *hw;
+        while ((hw = g_dir_read_name(dir)) != NULL) {
+            gchar *hwpath = g_strdup_printf("/sys/class/hwmon/%s", hw);
+            gchar *name = NULL;
+            gchar *namef = g_strdup_printf("%s/name", hwpath);
+            if (g_file_get_contents(namef, &name, NULL, NULL) && name)
+                g_strstrip(name);
+            if (!name || !name[0]) { g_free(name); name = g_strdup(hw); }
+            g_free(namef);
+
+            GDir *hdir = g_dir_open(hwpath, 0, NULL);
+            if (hdir) {
+                const char *f;
+                int fan_idx = 0;
+                while ((f = g_dir_read_name(hdir)) != NULL) {
+                    /* 风扇: fan*_input → RPM */
+                    if (g_str_has_prefix(f, "fan") && g_str_has_suffix(f, "_input")) {
+                        gchar *fp = g_strdup_printf("%s/%s", hwpath, f);
+                        gchar *val = NULL;
+                        if (g_file_get_contents(fp, &val, NULL, NULL) && val) {
+                            long rpm = atol(val);
+                            if (rpm > 0) {
+                                fan_idx++;
+                                if (fans->len) g_string_append(fans, " · ");
+                                g_string_append_printf(fans, "%s%d: %ld RPM",
+                                                       TR("风扇"), fan_idx, rpm);
+                            }
+                        }
+                        g_free(fp); g_free(val);
+                    }
+                    /* 附加温度: temp*_input → 摄氏度 */
+                    if (g_str_has_prefix(f, "temp") && g_str_has_suffix(f, "_input")) {
+                        gchar *tp = g_strdup_printf("%s/%s", hwpath, f);
+                        gchar *val = NULL;
+                        if (g_file_get_contents(tp, &val, NULL, NULL) && val) {
+                            long milli = atol(val);
+                            if (milli > 0) {
+                                double c = milli / 1000.0;
+                                /* 优先 temp*_label，其次 hwmon 名称 */
+                                gchar *label = NULL;
+                                char base[64];
+                                g_strlcpy(base, f, sizeof base);
+                                char *in = strstr(base, "_input");
+                                if (in) strcpy(in, "_label");
+                                gchar *lp = g_strdup_printf("%s/%s", hwpath, base);
+                                g_file_get_contents(lp, &label, NULL, NULL);
+                                if (label) g_strstrip(label);
+                                if (!label || !label[0]) {
+                                    g_free(label);
+                                    label = hwmon_display_name(name);
+                                }
+                                if (temps->len) g_string_append(temps, " · ");
+                                g_string_append_printf(temps, "%s: %d°C",
+                                                       label, (int)(c + 0.5));
+                                g_free(label);
+                                g_free(lp);
+                            }
+                        }
+                        g_free(tp); g_free(val);
+                    }
+                }
+                g_dir_close(hdir);
+            }
+            g_free(name);
+            g_free(hwpath);
+        }
+        g_dir_close(dir);
+    }
+
+    gboolean has_fan = fans->len > 0;
+    gboolean has_temp = temps->len > 0;
+    if (has_fan && fan_label) {
+        gtk_label_set_text(GTK_LABEL(fan_label), fans->str);
+        gtk_widget_set_visible(fan_label, TRUE);
+    } else if (fan_label) {
+        gtk_widget_set_visible(fan_label, FALSE);
+    }
+    if (has_temp && hwmon_label) {
+        gtk_label_set_text(GTK_LABEL(hwmon_label), temps->str);
+        gtk_widget_set_visible(hwmon_label, TRUE);
+    } else if (hwmon_label) {
+        gtk_widget_set_visible(hwmon_label, FALSE);
+    }
+    g_printerr("QYMONDBG: hwmon fans=[%s] temps=[%s]\n",
+                 has_fan ? fans->str : "-", has_temp ? temps->str : "-");
+    g_string_free(fans, TRUE);
+    g_string_free(temps, TRUE);
+}
+
+/* 每 2s 刷新 hwmon 传感器 */
+static gboolean hwmon_tick(gpointer ud) {
+    (void)ud;
+    read_hwmon();
+    return G_SOURCE_CONTINUE;
+}
+
 /* 读取首个非 lo 接口的收发速率 (KB/s), 与上次调用差分 */
 static gboolean read_net_speed(double *rx_kbs, double *tx_kbs) {
     FILE *f = fopen("/proc/net/dev", "r");
@@ -777,12 +902,33 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_widget_set_halign(gpu_label, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(vbox), gpu_label, FALSE, FALSE, 0);
 
+    /* hwmon 传感器信息区（#qymon-fan 风扇转速 / #qymon-hwmon 附加温度；无传感器时隐藏） */
+    fan_label = gtk_label_new(NULL);
+    gtk_widget_set_name(fan_label, "qymon-fan");
+    add_class(fan_label, "qy-mon-info");
+    gtk_widget_set_halign(fan_label, GTK_ALIGN_START);
+    gtk_widget_set_no_show_all(fan_label, TRUE);
+    gtk_widget_hide(fan_label);
+    gtk_box_pack_start(GTK_BOX(vbox), fan_label, FALSE, FALSE, 0);
+
+    hwmon_label = gtk_label_new(NULL);
+    gtk_widget_set_name(hwmon_label, "qymon-hwmon");
+    add_class(hwmon_label, "qy-mon-info");
+    gtk_widget_set_halign(hwmon_label, GTK_ALIGN_START);
+    gtk_widget_set_no_show_all(hwmon_label, TRUE);
+    gtk_widget_hide(hwmon_label);
+    gtk_box_pack_start(GTK_BOX(vbox), hwmon_label, FALSE, FALSE, 0);
+
     /* 默认按内存降序 */
     gtk_tree_sortable_set_sort_column_id(GTK_TREE_SORTABLE(proc_store), P_MEM, GTK_SORT_DESCENDING);
     refresh_proc_list();
 
     /* 读取 GPU 信息（无 lspci / 未找到显卡时显示「未检测到 GPU」） */
     read_gpu_info();
+
+    /* hwmon 传感器: 启动立即读取，之后每 2s 刷新 */
+    read_hwmon();
+    g_timeout_add_seconds(2, hwmon_tick, NULL);
 
     gtk_widget_show_all(win);
     g_timeout_add_seconds(1, tick, da);

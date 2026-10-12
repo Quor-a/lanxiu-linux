@@ -139,6 +139,173 @@ static void on_equal_clicked(GtkButton *b, gpointer ud) {
     }
 }
 
+/* ---------- 科学模式 ---------- */
+static int sci_mode = 0;             /* 0=角度制 DEG, 1=弧度制 RAD */
+static GtkWidget *sci_grid = NULL;   /* 可展开的科学按钮区 */
+static GtkWidget *sci_toggle_btn = NULL;
+static GtkWidget *sci_mode_btn = NULL;
+
+/* 读取当前显示值（求值表达式；失败返回 FALSE） */
+static gboolean current_value(double *out) {
+    if (expr_buf[0] && eval_expr(expr_buf, out) == 0) return TRUE;
+    *out = 0;
+    return FALSE;
+}
+
+/* 用结果替换当前表达式并刷新显示 */
+static void set_result_value(double v) {
+    g_snprintf(expr_buf, sizeof expr_buf, "%g", v);
+    update_display();
+    char out[64];
+    if (v == (double)(long)v)
+        g_snprintf(out, sizeof out, "= %ld", (long)v);
+    else
+        g_snprintf(out, sizeof out, "= %g", v);
+    gtk_label_set_text(GTK_LABEL(result_label), out);
+    g_printerr("QYCALCDBG: sci expr=%s result=%g\n", expr_buf, v);
+}
+
+/* 显示错误结果 */
+static void sci_error(void) {
+    gtk_label_set_text(GTK_LABEL(result_label), TR("= 错误"));
+}
+
+/* 一元函数（角度制下 sin/cos/tan 先转弧度）。
+ * 数学函数用纯 C 实现，避免链接 -lm（编译命令不含 -lm）。 */
+static void sci_unary(double (*fn)(double), gboolean is_trig) {
+    double v = 0;
+    if (!current_value(&v)) { sci_error(); return; }
+    if (is_trig && sci_mode == 0) v = v * 3.141592653589793 / 180.0;
+    double r = fn(v);
+    /* 检查 NaN / 无穷（不依赖 libm 的 isnan/isinf） */
+    if (r != r || r > 1e308 || r < -1e308) { sci_error(); return; }
+    set_result_value(r);
+}
+
+/* ---------- 纯 C 数学函数（不链接 libm） ---------- */
+static double sci_sin(double x) {
+    /* 归约到 [-π, π] */
+    const double pi = 3.141592653589793, two_pi = 6.283185307179586;
+    while (x > pi) x -= two_pi;
+    while (x < -pi) x += two_pi;
+    /* sin(x) = x - x^3/3! + x^5/5! - x^7/7! + ... */
+    double x2 = x * x, term = x, sum = x;
+    for (int i = 1; i <= 14; i++) {
+        term *= -x2 / ((2.0 * i) * (2.0 * i + 1.0));
+        sum += term;
+        if (term < 1e-16 && term > -1e-16) break;
+    }
+    return sum;
+}
+
+static double sci_cos(double x) {
+    const double pi = 3.141592653589793, two_pi = 6.283185307179586;
+    while (x > pi) x -= two_pi;
+    while (x < -pi) x += two_pi;
+    /* cos(x) = 1 - x^2/2! + x^4/4! - ... */
+    double x2 = x * x, term = 1.0, sum = 1.0;
+    for (int i = 1; i <= 14; i++) {
+        term *= -x2 / ((2.0 * i - 1.0) * (2.0 * i));
+        sum += term;
+        if (term < 1e-16 && term > -1e-16) break;
+    }
+    return sum;
+}
+
+static double sci_tan(double x) {
+    double c = sci_cos(x);
+    if (c == 0) return 0.0 / 0.0;   /* NaN */
+    return sci_sin(x) / c;
+}
+
+static double sci_sqrt(double x) {
+    if (x < 0) return 0.0 / 0.0;    /* NaN */
+    if (x == 0) return 0;
+    double g = x;
+    for (int i = 0; i < 64; i++) {
+        double ng = 0.5 * (g + x / g);
+        if (ng == g) break;
+        g = ng;
+    }
+    return g;
+}
+
+static double sci_ln(double x) {
+    if (x <= 0) return 0.0 / 0.0; /* NaN */
+    /* 归一化到 [0.5, 2): x = m * 2^e */
+    int e = 0;
+    while (x >= 2.0) { x *= 0.5; e++; }
+    while (x < 0.5)  { x *= 2.0; e--; }
+    /* ln(m) = 2*(y + y^3/3 + y^5/5 + ...), y = (m-1)/(m+1) */
+    double y = (x - 1.0) / (x + 1.0);
+    double y2 = y * y, term = y, sum = y;
+    for (int i = 1; i <= 200; i++) {
+        term *= y2;
+        double add = term / (2.0 * i + 1.0);
+        sum += add;
+        if (add < 1e-16 && add > -1e-16) break;
+    }
+    return 2.0 * sum + e * 0.6931471805599453;
+}
+
+static double sci_log10(double x) {
+    if (x <= 0) return 0.0 / 0.0;   /* NaN */
+    return sci_ln(x) / 2.302585092994046;
+}
+
+static double sci_sq_fn(double v) { return v * v; }
+static double sci_inv_fn(double v) { return v == 0 ? 0.0 / 0.0 : 1.0 / v; }
+
+static void on_sin_clicked(GtkButton *b, gpointer ud) { (void)b; (void)ud; sci_unary(sci_sin, TRUE); }
+static void on_cos_clicked(GtkButton *b, gpointer ud) { (void)b; (void)ud; sci_unary(sci_cos, TRUE); }
+static void on_tan_clicked(GtkButton *b, gpointer ud) { (void)b; (void)ud; sci_unary(sci_tan, TRUE); }
+static void on_sqrt_clicked(GtkButton *b, gpointer ud) { (void)b; (void)ud; sci_unary(sci_sqrt, FALSE); }
+static void on_log_clicked(GtkButton *b, gpointer ud)  { (void)b; (void)ud; sci_unary(sci_log10, FALSE); }
+static void on_ln_clicked(GtkButton *b, gpointer ud)   { (void)b; (void)ud; sci_unary(sci_ln, FALSE); }
+static void on_sq_clicked(GtkButton *b, gpointer ud)   { (void)b; (void)ud; sci_unary(sci_sq_fn, FALSE); }
+static void on_inv_clicked(GtkButton *b, gpointer ud)  { (void)b; (void)ud; sci_unary(sci_inv_fn, FALSE); }
+
+/* π：把常量插入表达式（运算符/括号后直接拼接，数字后自动补乘号） */
+static void on_pi_clicked(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    const char *pi = "3.141592653589793";
+    size_t n = strlen(expr_buf);
+    if (n == 0 || strchr("+-*/(", expr_buf[n - 1]))
+        g_strlcat(expr_buf, pi, sizeof expr_buf);
+    else {
+        g_strlcat(expr_buf, "*", sizeof expr_buf);
+        g_strlcat(expr_buf, pi, sizeof expr_buf);
+    }
+    update_display();
+}
+
+/* 角度制 / 弧度制切换按钮（同时也是模式提示） */
+static void on_mode_clicked(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    sci_mode = !sci_mode;
+    gtk_button_set_label(GTK_BUTTON(sci_mode_btn), sci_mode ? "RAD" : "DEG");
+    gtk_widget_set_tooltip_text(sci_mode_btn, sci_mode ? TR("弧度制") : TR("角度制"));
+}
+
+/* 展开/收起科学模式按钮区 */
+static void on_sci_toggle(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    gboolean show = !gtk_widget_get_visible(sci_grid);
+    gtk_widget_set_visible(sci_grid, show);
+    gtk_button_set_label(GTK_BUTTON(sci_toggle_btn), show ? TR("标准模式") : TR("科学模式"));
+    GtkWidget *top = gtk_widget_get_toplevel(GTK_WIDGET(sci_toggle_btn));
+    if (GTK_IS_WINDOW(top))
+        gtk_window_resize(GTK_WINDOW(top), 280, show ? 520 : 380);
+}
+
+/* 科学区按钮 */
+static GtkWidget *sci_button(const char *label, GCallback cb) {
+    GtkWidget *b = gtk_button_new_with_label(label);
+    qy_add_class(b, "qy-btn");
+    g_signal_connect(b, "clicked", cb, NULL);
+    return b;
+}
+
 /* ---------- 键盘输入：数字/运算符/回车/退格 ---------- */
 static gboolean on_key_press(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
     (void)w; (void)ud;
@@ -223,7 +390,7 @@ int main(int argc, char **argv) {
     win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(win), TR("计算器"));
     gtk_window_set_default_size(GTK_WINDOW(win), 280, 380);
-    gtk_window_set_resizable(GTK_WINDOW(win), FALSE);
+    gtk_window_set_resizable(GTK_WINDOW(win), TRUE);
     g_signal_connect(win, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
@@ -274,6 +441,38 @@ int main(int argc, char **argv) {
     qy_add_class(eq, "qy-btn qy-btn-accent");
     g_signal_connect(eq, "clicked", G_CALLBACK(on_equal_clicked), NULL);
     gtk_grid_attach(GTK_GRID(grid), eq, 2, 4, 2, 1);
+
+    /* 科学模式按钮区（默认隐藏，点「科学模式」展开） */
+    sci_grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(sci_grid), 6);
+    gtk_grid_set_column_spacing(GTK_GRID(sci_grid), 6);
+    /* 行 0: sin cos tan x² */
+    gtk_grid_attach(GTK_GRID(sci_grid), sci_button("sin", G_CALLBACK(on_sin_clicked)), 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(sci_grid), sci_button("cos", G_CALLBACK(on_cos_clicked)), 1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(sci_grid), sci_button("tan", G_CALLBACK(on_tan_clicked)), 2, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(sci_grid), sci_button("x²", G_CALLBACK(on_sq_clicked)), 3, 0, 1, 1);
+    /* 行 1: sqrt log ln 1/x */
+    gtk_grid_attach(GTK_GRID(sci_grid), sci_button("√", G_CALLBACK(on_sqrt_clicked)), 0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(sci_grid), sci_button("log", G_CALLBACK(on_log_clicked)), 1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(sci_grid), sci_button("ln", G_CALLBACK(on_ln_clicked)), 2, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(sci_grid), sci_button("1/x", G_CALLBACK(on_inv_clicked)), 3, 1, 1, 1);
+    /* 行 2: ( ) π [DEG/RAD] */
+    gtk_grid_attach(GTK_GRID(sci_grid), calc_button("(", "(", G_CALLBACK(on_op_clicked)), 0, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(sci_grid), calc_button(")", ")", G_CALLBACK(on_op_clicked)), 1, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(sci_grid), sci_button("π", G_CALLBACK(on_pi_clicked)), 2, 2, 1, 1);
+    sci_mode_btn = sci_button("DEG", G_CALLBACK(on_mode_clicked));
+    gtk_widget_set_tooltip_text(sci_mode_btn, TR("角度制"));
+    gtk_grid_attach(GTK_GRID(sci_grid), sci_mode_btn, 3, 2, 1, 1);
+    gtk_widget_set_no_show_all(sci_grid, TRUE);
+    gtk_widget_hide(sci_grid);
+    gtk_box_pack_start(GTK_BOX(vbox), sci_grid, FALSE, FALSE, 0);
+
+    /* 科学模式切换按钮 */
+    sci_toggle_btn = gtk_button_new_with_label(TR("科学模式"));
+    qy_add_class(sci_toggle_btn, "qy-btn");
+    gtk_widget_set_name(sci_toggle_btn, "qycalc-sci-toggle");
+    g_signal_connect(sci_toggle_btn, "clicked", G_CALLBACK(on_sci_toggle), NULL);
+    gtk_box_pack_start(GTK_BOX(vbox), sci_toggle_btn, FALSE, FALSE, 0);
 
     gtk_widget_show_all(win);
 

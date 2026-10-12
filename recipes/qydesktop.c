@@ -90,6 +90,64 @@ static double    mon_cpu = 0.0, mon_mem = 0.0;  /* 当前使用率 0~1 */
 static GtkWidget *desktop_fixed = NULL;
 static GtkWidget *ws_label = NULL;   /* 顶栏工作区指示标签 #qy-ws-ind */
 
+/* ---------- 夜间模式（22:00-6:00 暖色遮罩） ---------- */
+static GtkWidget *night_overlay = NULL;   /* 顶层 RGBA 暖色遮罩 */
+static gboolean night_visible = FALSE;
+
+/* 读取夜间模式开关: 用户 ~/.config/lanxiu/night-mode.conf (enabled=1) 优先，
+ * 其次兼容 /etc/qysettings.conf 的 night_mode=1（设置页开关写这里）。 */
+static gboolean night_read_enabled(void) {
+    gchar *user = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "night-mode.conf", NULL);
+    gchar *content = NULL;
+    if (g_file_get_contents(user, &content, NULL, NULL) && content) {
+        if (strstr(content, "enabled=1")) {
+            g_free(content);
+            g_free(user);
+            return TRUE;
+        }
+        g_free(content);
+    }
+    g_free(user);
+    if (g_file_get_contents("/etc/qysettings.conf", &content, NULL, NULL) && content) {
+        gboolean on = strstr(content, "night_mode=1") != NULL;
+        g_free(content);
+        if (on) return TRUE;
+    }
+    return FALSE;
+}
+
+/* 暖色遮罩绘制: rgba(255,150,60,0.08) */
+static gboolean night_draw(GtkWidget *w, cairo_t *cr, gpointer ud) {
+    (void)w; (void)ud;
+    cairo_set_source_rgba(cr, 1.0, 150.0 / 255.0, 60.0 / 255.0, 0.08);
+    cairo_paint(cr);
+    return FALSE;
+}
+
+/* 检查时间并更新遮罩显隐（22:00-6:00 且配置开启时显示） */
+static void night_update(void) {
+    if (!night_overlay) return;
+    time_t t = time(NULL);
+    struct tm tm_;
+    localtime_r(&t, &tm_);
+    gboolean night_time = (tm_.tm_hour >= 22 || tm_.tm_hour < 6);
+    gboolean enabled = night_read_enabled();
+    gboolean show = enabled && night_time;
+    if (show != night_visible) {
+        night_visible = show;
+        gtk_widget_set_visible(night_overlay, show);
+        g_printerr("QYDESKTOPDBG: night-mode %s (enabled=%d hour=%d)\n",
+                   show ? "on" : "off", enabled, tm_.tm_hour);
+    }
+}
+
+/* 每 60s 检查一次夜间模式 */
+static gboolean night_tick(gpointer ud) {
+    (void)ud;
+    night_update();
+    return G_SOURCE_CONTINUE;
+}
+
 /* ---------- 工作区指示器（顶栏右侧，时钟左侧） ---------- */
 #define WORKSPACE_MAX  4
 #define QY_WS_CONF     "/etc/qyworkspaces.conf"
@@ -2399,7 +2457,20 @@ static void build_desktop(void) {
     gtk_window_set_keep_below(GTK_WINDOW(win), TRUE);
 
     desktop_fixed = gtk_fixed_new();
-    gtk_container_add(GTK_CONTAINER(win), desktop_fixed);
+    /* 顶层用 GtkOverlay 承载壁纸/桌面与夜间模式暖色遮罩 */
+    GtkWidget *overlay = gtk_overlay_new();
+    gtk_container_add(GTK_CONTAINER(win), overlay);
+    gtk_container_add(GTK_CONTAINER(overlay), desktop_fixed);
+
+    night_overlay = gtk_drawing_area_new();
+    gtk_widget_set_halign(night_overlay, GTK_ALIGN_FILL);
+    gtk_widget_set_valign(night_overlay, GTK_ALIGN_FILL);
+    gtk_widget_set_size_request(night_overlay, SCREEN_W, SCREEN_H);
+    g_signal_connect(night_overlay, "draw", G_CALLBACK(night_draw), NULL);
+    gtk_widget_set_no_show_all(night_overlay, TRUE);
+    gtk_widget_hide(night_overlay);
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), night_overlay);
+    gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(overlay), night_overlay, TRUE);
 
     GtkWidget *darea = gtk_drawing_area_new();
     gtk_widget_set_size_request(darea, SCREEN_W, SCREEN_H);
@@ -2431,6 +2502,10 @@ static void build_desktop(void) {
      * release 242：不再调用 gtk_window_activate_focus —— 它会激活默认聚焦的
      * 桌面图标（“主文件夹”），导致 qyfiles 随桌面自启动覆盖顶栏/左侧 Dock。 */
     gtk_window_present(GTK_WINDOW(win));
+
+    /* 夜间模式: 启动时立即检查，之后每 60s 检查时间窗口 */
+    night_update();
+    g_timeout_add_seconds(60, night_tick, NULL);
 }
 
 /* ---------- 入口 ---------- */

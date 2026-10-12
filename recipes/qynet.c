@@ -16,6 +16,8 @@ enum { C_IF, C_STATE, C_IP, C_MAC, N_COLS };
 static GtkListStore *store = NULL;
 static GtkWidget *count_label = NULL;
 static GtkWidget *status_label = NULL;
+static GtkListBox *wifi_list = NULL;        /* #qynet-wifi-list */
+static GtkWidget *wifi_status_label = NULL; /* 「未检测到无线网卡」等提示 */
 
 /* ---------- 实时流量曲线 ---------- */
 #define RATE_HISTORY 60
@@ -299,6 +301,182 @@ static const char *find_wlan_iface(void) {
     return buf;
 }
 
+/* ---------- WiFi 扫描显示 ---------- */
+static gboolean has_program(const char *name) {
+    gchar *p = g_find_program_in_path(name);
+    gboolean ok = (p != NULL);
+    g_free(p);
+    return ok;
+}
+
+/* 检测系统是否存在无线网卡（接口名以 wlan/wl/wifi 开头） */
+static gboolean has_wlan_iface(void) {
+    GtkTreeIter it;
+    if (gtk_tree_model_get_iter_first(GTK_TREE_MODEL(store), &it)) {
+        do {
+            gchar *name = NULL;
+            gtk_tree_model_get(GTK_TREE_MODEL(store), &it, C_IF, &name, -1);
+            gboolean w = name && (strncmp(name, "wlan", 4) == 0 ||
+                                  strncmp(name, "wl", 2) == 0 ||
+                                  strncmp(name, "wifi", 4) == 0);
+            g_free(name);
+            if (w) return TRUE;
+        } while (gtk_tree_model_iter_next(GTK_TREE_MODEL(store), &it));
+    }
+    return FALSE;
+}
+
+/* 清空 WiFi 列表 */
+static void wifi_list_clear(void) {
+    if (!wifi_list) return;
+    GList *children = gtk_container_get_children(GTK_CONTAINER(wifi_list));
+    for (GList *l = children; l; l = l->next)
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(children);
+}
+
+/* 添加一行 WiFi: SSID + 信号强度（%）+ 文本信号条（▂▄▆█ 块字符，非 emoji） */
+static void wifi_list_add(const char *ssid, int sig) {
+    if (!ssid || !ssid[0]) return;
+    if (sig < 0) sig = 0;
+    if (sig > 100) sig = 100;
+    GtkWidget *row = gtk_list_box_row_new();
+    GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_margin_start(hbox, 8);
+    gtk_widget_set_margin_end(hbox, 8);
+    gtk_widget_set_margin_top(hbox, 3);
+    gtk_widget_set_margin_bottom(hbox, 3);
+    GtkWidget *ssid_lbl = gtk_label_new(ssid);
+    gtk_widget_set_halign(ssid_lbl, GTK_ALIGN_START);
+    gtk_widget_set_hexpand(ssid_lbl, TRUE);
+    gtk_box_pack_start(GTK_BOX(hbox), ssid_lbl, TRUE, TRUE, 0);
+    const char *bars = "▂";
+    if (sig >= 75) bars = "▂▄▆█";
+    else if (sig >= 50) bars = "▂▄▆";
+    else if (sig >= 25) bars = "▂▄";
+    gchar *sig_txt = g_strdup_printf("%s %d%%", bars, sig);
+    GtkWidget *sig_lbl = gtk_label_new(sig_txt);
+    gtk_widget_set_halign(sig_lbl, GTK_ALIGN_END);
+    gtk_box_pack_end(GTK_BOX(hbox), sig_lbl, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(row), hbox);
+    g_object_set_data_full(G_OBJECT(row), "ssid", g_strdup(ssid), g_free);
+    gtk_list_box_insert(wifi_list, row, -1);
+    gtk_widget_show_all(row);
+}
+
+/* 显示/隐藏扫描状态提示 */
+static void wifi_show_status(const char *msg) {
+    if (!wifi_status_label) return;
+    gtk_label_set_text(GTK_LABEL(wifi_status_label), msg);
+    gtk_widget_set_no_show_all(wifi_status_label, FALSE);
+    gtk_widget_show(wifi_status_label);
+}
+static void wifi_hide_status(void) {
+    if (!wifi_status_label) return;
+    gtk_widget_set_no_show_all(wifi_status_label, TRUE);
+    gtk_widget_hide(wifi_status_label);
+}
+
+/* 扫描并显示周围 WiFi（优先 nmcli，回退 iw dev <wlan> scan）。
+ * 无无线网卡时显示「未检测到无线网卡」，不崩溃。 */
+static void wifi_scan(void) {
+    wifi_list_clear();
+    wifi_hide_status();
+    if (!has_wlan_iface()) {
+        g_printerr("QYNETWIFI: no wireless interface, hiding scan\n");
+        wifi_show_status(TR("未检测到无线网卡"));
+        return;
+    }
+    gboolean any = FALSE;
+
+    /* 优先 nmcli: 信号强度直接是百分比 */
+    if (has_program("nmcli")) {
+        gchar *out = NULL, *err = NULL;
+        gint status = 0;
+        if (g_spawn_command_line_sync("nmcli -t -f SSID,SIGNAL dev wifi list",
+                                      &out, &err, &status, NULL) && out) {
+            char *line = out;
+            while (line && *line) {
+                char *nl = strchr(line, '\n');
+                if (nl) *nl = 0;
+                char *last_colon = strrchr(line, ':');
+                if (last_colon && last_colon != line) {
+                    char *ssid = g_strndup(line, last_colon - line);
+                    int sig = atoi(last_colon + 1);
+                    /* nmcli 用 \: 转义冒号，还原为 : */
+                    gchar *esc = strstr(ssid, "\\:");
+                    while (esc) {
+                        memmove(esc, esc + 1, strlen(esc));
+                        esc = strstr(ssid, "\\:");
+                    }
+                    if (ssid[0] && ssid[0] != ':') {
+                        wifi_list_add(ssid, sig);
+                        any = TRUE;
+                    }
+                    g_free(ssid);
+                }
+                line = nl ? nl + 1 : NULL;
+            }
+        }
+        g_free(out);
+        g_free(err);
+    }
+
+    /* 回退 iw dev <wlan> scan: 信号 dBm → %（-100dBm=0%，-50dBm=100%） */
+    if (!any && has_program("iw")) {
+        const char *iface = find_wlan_iface();
+        gchar *cmd = g_strdup_printf("iw dev %s scan 2>/dev/null", iface);
+        gchar *out = NULL, *err = NULL;
+        gint status = 0;
+        if (g_spawn_command_line_sync(cmd, &out, &err, &status, NULL) && out) {
+            char *line = out;
+            char *cur_ssid = NULL;
+            double cur_signal = 0;
+            gboolean have_signal = FALSE;
+            while (line && *line) {
+                char *nl = strchr(line, '\n');
+                if (nl) *nl = 0;
+                if (strncmp(line, "BSS ", 4) == 0) {
+                    /* 新 BSS: 提交上一个 */
+                    if (cur_ssid) {
+                        int pct = have_signal ? (int)((cur_signal + 100.0) * 2.0) : 0;
+                        if (pct < 0) pct = 0;
+                        if (pct > 100) pct = 100;
+                        wifi_list_add(cur_ssid, pct);
+                        any = TRUE;
+                        g_free(cur_ssid);
+                        cur_ssid = NULL;
+                        have_signal = FALSE;
+                    }
+                } else if (strncmp(line, "\tSSID:", 6) == 0) {
+                    g_free(cur_ssid);
+                    cur_ssid = g_strstrip(g_strdup(line + 6));
+                } else if (strncmp(line, "\tsignal:", 8) == 0) {
+                    cur_signal = atof(line + 8);
+                    have_signal = TRUE;
+                }
+                line = nl ? nl + 1 : NULL;
+            }
+            /* 提交最后一个 */
+            if (cur_ssid) {
+                int pct = have_signal ? (int)((cur_signal + 100.0) * 2.0) : 0;
+                if (pct < 0) pct = 0;
+                if (pct > 100) pct = 100;
+                wifi_list_add(cur_ssid, pct);
+                any = TRUE;
+                g_free(cur_ssid);
+            }
+        }
+        g_free(cmd);
+        g_free(out);
+        g_free(err);
+    }
+
+    if (!any)
+        wifi_show_status(TR("未检测到无线网卡"));
+    g_printerr("QYNETWIFI: scan done ssids=%d\n", any ? 1 : 0);
+}
+
 static void wifi_connect(const char *ssid, const char *psk) {
     if (!ssid || !ssid[0]) return;
     const char *ifname = find_wlan_iface();
@@ -327,13 +505,16 @@ static void wifi_connect(const char *ssid, const char *psk) {
 }
 
 static void on_wifi_clicked(GtkWidget *w, gpointer ud) {
-    (void)w; (void)ud;
+    (void)w;
+    const char *preset_ssid = ud ? (const char *)ud : NULL;
     GtkWidget *dlg = gtk_dialog_new_with_buttons(TR("连接 WiFi"), NULL,
         GTK_DIALOG_MODAL, TR("连接"), GTK_RESPONSE_OK,
         TR("取消"), GTK_RESPONSE_CANCEL, NULL);
     GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
     GtkWidget *ssid_e = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(ssid_e), TR("WiFi 名称 (SSID)"));
+    if (preset_ssid && preset_ssid[0])
+        gtk_entry_set_text(GTK_ENTRY(ssid_e), preset_ssid);
     GtkWidget *psk_e = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(psk_e), TR("密码（开放网络留空）"));
     gtk_entry_set_visibility(GTK_ENTRY(psk_e), FALSE);
@@ -346,6 +527,14 @@ static void on_wifi_clicked(GtkWidget *w, gpointer ud) {
         wifi_connect(ssid, psk);
     }
     gtk_widget_destroy(dlg);
+}
+
+/* 点击扫描列表中的 WiFi 行: 沿用现有连接逻辑（预填 SSID 的对话框） */
+static void on_wifi_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer ud) {
+    (void)box; (void)ud;
+    const char *ssid = g_object_get_data(G_OBJECT(row), "ssid");
+    if (ssid && ssid[0])
+        on_wifi_clicked(NULL, (gpointer)ssid);
 }
 
 /* 自动化: QYNET_WIFI=SSID|密码 */
@@ -370,12 +559,43 @@ int main(int argc, char **argv) {
 
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(win), TR("澜岫网络管理器"));
-    gtk_window_set_default_size(GTK_WINDOW(win), 620, 500);
+    gtk_window_set_default_size(GTK_WINDOW(win), 620, 660);
     g_signal_connect(win, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 8);
     gtk_container_add(GTK_CONTAINER(win), vbox);
+
+    /* WiFi 扫描区 (#qynet-wifi-list): 扫描按钮 + 状态 + 列表 */
+    {
+        GtkWidget *wifi_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        GtkWidget *wifi_hdr = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        GtkWidget *wifi_title = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(wifi_title), TR("<b>WiFi 网络</b>"));
+        gtk_widget_set_halign(wifi_title, GTK_ALIGN_START);
+        GtkWidget *b_scan = gtk_button_new_with_label(TR("扫描 WiFi"));
+        qy_add_class(b_scan, "qy-btn");
+        g_signal_connect(b_scan, "clicked", G_CALLBACK(wifi_scan), NULL);
+        gtk_box_pack_start(GTK_BOX(wifi_hdr), wifi_title, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(wifi_hdr), b_scan, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(wifi_box), wifi_hdr, FALSE, FALSE, 0);
+
+        wifi_status_label = gtk_label_new(TR("未检测到无线网卡"));
+        gtk_widget_set_halign(wifi_status_label, GTK_ALIGN_START);
+        gtk_widget_set_no_show_all(wifi_status_label, TRUE);
+        gtk_widget_hide(wifi_status_label);
+        gtk_box_pack_start(GTK_BOX(wifi_box), wifi_status_label, FALSE, FALSE, 0);
+
+        wifi_list = GTK_LIST_BOX(gtk_list_box_new());
+        gtk_widget_set_name(GTK_WIDGET(wifi_list), "qynet-wifi-list");
+        g_signal_connect(wifi_list, "row-activated", G_CALLBACK(on_wifi_row_activated), NULL);
+        GtkWidget *wifi_sw = gtk_scrolled_window_new(NULL, NULL);
+        gtk_widget_set_size_request(wifi_sw, -1, 150);
+        gtk_container_add(GTK_CONTAINER(wifi_sw), GTK_WIDGET(wifi_list));
+        gtk_box_pack_start(GTK_BOX(wifi_box), wifi_sw, FALSE, FALSE, 0);
+
+        gtk_box_pack_start(GTK_BOX(vbox), wifi_box, FALSE, FALSE, 0);
+    }
 
     /* 列表 */
     store = gtk_list_store_new(N_COLS, G_TYPE_STRING, G_TYPE_STRING,
@@ -428,7 +648,8 @@ int main(int argc, char **argv) {
 
     gtk_widget_show_all(win);
     refresh_list();
-    rate_tick(NULL);                        /* 立即采样一次 */
+    wifi_scan();                          /* 启动时扫描一次 WiFi */
+    rate_tick(NULL);                      /* 立即采样一次 */
     g_timeout_add_seconds(1, rate_tick, NULL);
 
     /* 自动化: QYNET_CONNECT=eth0 自动连接 */

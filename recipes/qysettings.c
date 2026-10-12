@@ -335,6 +335,56 @@ static gboolean auto_ntp_set(gpointer p) {
     return G_SOURCE_REMOVE;
 }
 
+/* ---------- 夜间模式（显示页开关 → /etc/qysettings.conf night_mode=1/0） ---------- */
+static GtkWidget *night_sw = NULL;
+
+/* 在 /etc/qysettings.conf 中合并写入 key=value（保留其它键，避免覆盖 NTP 等设置） */
+static gboolean qysettings_conf_write_key(const char *key, const char *value) {
+    const char *path = "/etc/qysettings.conf";
+    gchar *content = NULL;
+    if (!g_file_get_contents(path, &content, NULL, NULL))
+        content = g_strdup("");
+    GString *out = g_string_new(NULL);
+    char *line = content;
+    size_t klen = strlen(key);
+    gboolean replaced = FALSE;
+    while (line && *line) {
+        char *nl = strchr(line, '\n');
+        size_t len = nl ? (size_t)(nl - line) : strlen(line);
+        if (strncmp(line, key, klen) == 0) {
+            g_string_append_printf(out, "%s%s\n", key, value);
+            replaced = TRUE;
+        } else {
+            g_string_append_len(out, line, len);
+            if (nl) g_string_append_c(out, '\n');
+        }
+        line = nl ? nl + 1 : NULL;
+    }
+    if (!replaced)
+        g_string_append_printf(out, "%s%s\n", key, value);
+    gboolean ok = g_file_set_contents(path, out->str, (gssize)out->len, NULL);
+    g_string_free(out, TRUE);
+    g_free(content);
+    return ok;
+}
+
+/* 夜间模式开关回调: 写 /etc/qysettings.conf night_mode=1/0 */
+static gboolean on_night_state_set(GtkSwitch *sw, gboolean state, gpointer ud) {
+    (void)sw; (void)ud;
+    gboolean auto_mode = g_getenv("QY_SETTINGS_NIGHT") != NULL;
+    gboolean ok = qysettings_conf_write_key("night_mode=", state ? "1" : "0");
+    if (!ok && !auto_mode)
+        show_info_dialog(TR("夜间模式设置失败，无法写入 /etc/qysettings.conf。"));
+    return !ok;
+}
+
+/* 自动化验证: QY_SETTINGS_NIGHT=1/0 启动后自动切换夜间模式 */
+static gboolean auto_night_set(gpointer p) {
+    gboolean want = GPOINTER_TO_INT(p) != 0;
+    gtk_switch_set_active(GTK_SWITCH(night_sw), want);
+    return G_SOURCE_REMOVE;
+}
+
 /* ---------- 电源: 熄屏时间 ---------- */
 static const int idle_secs[] = { 0, 60, 300, 600, 1800, 3600 };
 
@@ -2314,6 +2364,43 @@ static void activate(GtkApplication *app, gpointer ud) {
         /* 自动化验证: 启动后自动应用所选分辨率 */
         if (env_res)
             g_timeout_add(600, auto_res_apply, res_combo);
+    }
+
+    /* 夜间模式开关: 写 /etc/qysettings.conf night_mode=1/0（qydesktop 22:00-6:00 叠加暖色遮罩） */
+    {
+        GtkWidget *night_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        GtkWidget *nl = gtk_label_new(TR("夜间模式"));
+        gtk_widget_set_size_request(nl, 150, -1);
+        gtk_widget_set_halign(nl, GTK_ALIGN_START);
+        night_sw = gtk_switch_new();
+        gtk_widget_set_halign(night_sw, GTK_ALIGN_START);
+        g_signal_connect(night_sw, "state-set", G_CALLBACK(on_night_state_set), NULL);
+        gtk_box_pack_start(GTK_BOX(night_row), nl, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(night_row), night_sw, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(v2), night_row, FALSE, FALSE, 0);
+        /* 说明文字 */
+        GtkWidget *night_desc = gtk_label_new(TR("22:00-6:00 自动启用暖色护眼"));
+        gtk_widget_set_halign(night_desc, GTK_ALIGN_START);
+        gtk_box_pack_start(GTK_BOX(v2), night_desc, FALSE, FALSE, 0);
+
+        /* 当前状态: /etc/qysettings.conf night_mode=1 */
+        gchar *content = NULL;
+        gboolean night_on = FALSE;
+        if (g_file_get_contents("/etc/qysettings.conf", &content, NULL, NULL)) {
+            night_on = strstr(content, "night_mode=1") != NULL;
+            g_free(content);
+        }
+        g_signal_handlers_block_by_func(night_sw, on_night_state_set, NULL);
+        gtk_switch_set_active(GTK_SWITCH(night_sw), night_on);
+        g_signal_handlers_unblock_by_func(night_sw, on_night_state_set, NULL);
+
+        /* 自动化验证: QY_SETTINGS_NIGHT=1/0 启动后自动切换夜间模式 */
+        const char *env_night = g_getenv("QY_SETTINGS_NIGHT");
+        if (env_night && (g_strcmp0(env_night, "1") == 0 || g_strcmp0(env_night, "0") == 0)) {
+            gboolean want = g_strcmp0(env_night, "1") == 0;
+            if (want != night_on)
+                g_timeout_add(800, auto_night_set, GINT_TO_POINTER(want));
+        }
     }
     gtk_notebook_append_page(GTK_NOTEBOOK(nb), v2, tab_with_icon(TR("显示"), QY_ICON_MONITOR));
 
