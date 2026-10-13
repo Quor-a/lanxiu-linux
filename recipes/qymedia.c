@@ -29,6 +29,7 @@ static GtkWidget *cover_empty = NULL;   /* 无封面时 qy_draw_empty_state(kind
 
 /* ---------- 均衡器（占位：6 段滑杆，写 /etc/qymedia-eq.conf，无真实音频后端） ---------- */
 static GtkWidget *eq_scales[6] = { NULL, NULL, NULL, NULL, NULL, NULL };
+static void eq_save(void);   /* 前向声明（on_eq_preset 提前引用） */
 static const char *eq_band_names[6] = { "63Hz", "250Hz", "1kHz", "4kHz", "8kHz", "16kHz" };
 static double g_play_speed = 1.0;   /* 播放速度（release 267） */
 static GtkWidget *speed_combo = NULL;
