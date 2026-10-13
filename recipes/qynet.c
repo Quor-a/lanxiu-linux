@@ -384,6 +384,9 @@ static void wifi_list_add(const char *ssid, int sig, gboolean enc) {
     gtk_widget_set_halign(sig_lbl, GTK_ALIGN_END);
     gtk_box_pack_end(GTK_BOX(hbox), sig_lbl, FALSE, FALSE, 0);
     gtk_container_add(GTK_CONTAINER(row), hbox);
+    gchar *tip = g_strdup_printf("%s — %d%%", ssid, sig);
+    gtk_widget_set_tooltip_text(row, tip);
+    g_free(tip);
     g_object_set_data_full(G_OBJECT(row), "ssid", g_strdup(ssid), g_free);
     gtk_list_box_insert(wifi_list, row, -1);
     gtk_widget_show_all(row);
