@@ -86,6 +86,7 @@ static GtkWidget *clock_btn   = NULL;  /* 顶栏时钟按钮（点击弹出日�
 static gboolean clock_24h = TRUE;     /* 12/24 小时制（release 272） */
 static GtkWidget *power_btn   = NULL;  /* 顶栏电源按钮（关机/重启/注销） */
 static void on_clock_clicked(GtkWidget *w, gpointer ud);   /* 前向声明 */
+static gboolean on_clock_right_press(GtkWidget *w, GdkEventButton *ev, gpointer ud);   /* 前向声明 */
 static GtkWidget *mon_label    = NULL;  /* 顶栏 CPU/内存小部件 */
 static GtkWidget *mon_draw     = NULL;  /* 顶栏 CPU/内存迷你条 (cairo) */
 static double    mon_cpu = 0.0, mon_mem = 0.0;  /* 当前使用率 0~1 */
