@@ -475,6 +475,21 @@ static void on_lyric_font_changed(GtkComboBox *combo, gpointer ud) {
     g_free(s); g_free(cp); g_free(cdir);
 }
 
+/* 歌词视图 Ctrl+滚轮调节字号（release 278） */
+static gboolean on_lyric_scroll(GtkWidget *w, GdkEventScroll *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (!(ev->state & GDK_CONTROL_MASK)) return FALSE;
+    if (ev->direction == GDK_SCROLL_UP) {
+        if (lyric_font_size < 30) { lyric_font_size++; lyric_font_apply(); }
+        return TRUE;
+    }
+    if (ev->direction == GDK_SCROLL_DOWN) {
+        if (lyric_font_size > 10) { lyric_font_size--; lyric_font_apply(); }
+        return TRUE;
+    }
+    return FALSE;
+}
+
 /* 媒体快捷键：空格播放/暂停，←/→ 上一首/下一首（release 278） */
 static gboolean on_win_key_press(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
     (void)w; (void)ud;
@@ -1127,6 +1142,7 @@ static void build_ui(void) {
     gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(lyric_view), FALSE);
     lyric_buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(lyric_view));
     gtk_text_buffer_set_text(lyric_buf, TR("无歌词文件"), -1);
+    g_signal_connect(lyric_view, "scroll-event", G_CALLBACK(on_lyric_scroll), NULL);
     gtk_container_add(GTK_CONTAINER(lyric_sw), lyric_view);
     gtk_box_pack_start(GTK_BOX(right_vbox), lyric_sw, TRUE, TRUE, 0);
 
