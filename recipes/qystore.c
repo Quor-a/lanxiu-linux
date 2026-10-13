@@ -365,6 +365,16 @@ static void append_log(const char *msg) {
     gtk_label_set_text(GTK_LABEL(info_label), txt);
 }
 
+static void on_open_clicked(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (g_status[0] != 'i') return;
+    GError *err = NULL;
+    if (!g_spawn_command_line_async(g_name, &err) && err) {
+        g_printerr("qystore: 启动 %s 失败: %s\n", g_name, err->message);
+        g_clear_error(&err);
+    }
+}
+
 static void on_act(GtkWidget *w, gpointer ud) {
     (void)w; (void)ud;
     if (!g_file[0]) return;
@@ -527,6 +537,11 @@ int main(int argc, char **argv) {
     gtk_widget_set_margin_end(GTK_WIDGET(card), 2);
     gtk_container_add(GTK_CONTAINER(card), info_label);
     gtk_box_pack_start(GTK_BOX(vbox), card, FALSE, FALSE, 0);
+
+    /* 打开按钮（release 270）：已安装时启动应用 */
+    GtkWidget *b_open = gtk_button_new_with_label(TR("打开"));
+    g_signal_connect(b_open, "clicked", G_CALLBACK(on_open_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(vbox), b_open, FALSE, FALSE, 0);
 
     btn_act = gtk_button_new_with_label(TR("安装"));
     g_signal_connect(btn_act, "clicked", G_CALLBACK(on_act), NULL);
