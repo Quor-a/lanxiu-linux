@@ -747,6 +747,26 @@ static gboolean on_win_delete(GtkWidget *w, GdkEventAny *ev, gpointer ud) {
 /* ---------- 封面显示 ---------- */
 
 /* 无封面时的空状态插图（qy_draw_empty_state kind="note"） */
+/* 点击封面放大预览（release 278） */
+static gboolean on_cover_clicked(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ev; (void)ud;
+    if (gtk_stack_get_visible_child(GTK_STACK(cover_stack)) != cover_img) return FALSE;
+    GdkPixbuf *pb = gtk_image_get_pixbuf(GTK_IMAGE(cover_img));
+    if (!pb) return FALSE;
+    int w0 = gdk_pixbuf_get_width(pb), h0 = gdk_pixbuf_get_height(pb);
+    GdkPixbuf *big = gdk_pixbuf_scale_simple(pb, w0 * 3, h0 * 3, GDK_INTERP_BILINEAR);
+    GtkWidget *dlg = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(dlg), TR("封面预览"));
+    gtk_window_set_modal(GTK_WINDOW(dlg), TRUE);
+    gtk_window_set_transient_for(GTK_WINDOW(dlg), GTK_WINDOW(win));
+    gtk_window_set_default_size(GTK_WINDOW(dlg), w0 * 3 + 20, h0 * 3 + 20);
+    GtkWidget *img = gtk_image_new_from_pixbuf(big);
+    g_object_unref(big);
+    gtk_container_add(GTK_CONTAINER(dlg), img);
+    gtk_widget_show_all(dlg);
+    return TRUE;
+}
+
 static gboolean cover_empty_draw(GtkWidget *w, cairo_t *cr, gpointer ud) {
     (void)ud;
     GtkAllocation a;
@@ -951,6 +971,8 @@ static void build_ui(void) {
     gtk_stack_add_named(GTK_STACK(cover_stack), cover_empty, "empty");
     gtk_stack_set_visible_child_name(GTK_STACK(cover_stack), "empty");
     gtk_box_pack_start(GTK_BOX(cover_hbox), cover_stack, FALSE, FALSE, 0);
+    gtk_widget_set_tooltip_text(cover_stack, TR("点击封面放大预览"));
+    g_signal_connect(cover_stack, "button-press-event", G_CALLBACK(on_cover_clicked), NULL);
 
     GtkWidget *cover_info = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     gtk_box_pack_start(GTK_BOX(cover_hbox), cover_info, TRUE, TRUE, 0);
