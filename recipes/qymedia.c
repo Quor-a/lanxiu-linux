@@ -268,6 +268,8 @@ static void stop_player(void) {
     lyric_seg_start = 0;
     lyric_elapsed = 0.0;
     set_pause_icon(QY_ICON_PAUSE);
+    /* 停止后窗口标题恢复默认（release 276） */
+    gtk_window_set_title(GTK_WINDOW(win), TR("澜岫音乐"));
 }
 
 /* 播放器进程自然退出（或被杀）后的回收 */
