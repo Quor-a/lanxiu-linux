@@ -16,6 +16,7 @@ static GtkWidget *win         = NULL;
 static GtkListBox *listbox   = NULL;
 static GtkTextView *textview = NULL;
 static GtkWidget *status_lb  = NULL;
+static GtkWidget *search_entry = NULL;   /* 笔记搜索框（release 276） */
 static GtkWidget *stack      = NULL;
 static GtkWidget *placeholder = NULL;
 static gchar *current_path   = NULL;   /* 当前打开笔记的绝对路径 */
@@ -306,6 +307,24 @@ static void on_save_clicked(GtkButton *b, gpointer ud) {
     save_current_note();
 }
 
+/* 笔记搜索：按文件名过滤列表（release 276） */
+static void on_search_changed(GtkSearchEntry *se, gpointer ud) {
+    (void)se; (void)ud;
+    const char *q = gtk_entry_get_text(GTK_ENTRY(search_entry));
+    GList *ch = gtk_container_get_children(GTK_CONTAINER(listbox));
+    for (GList *l = ch; l; l = l->next) {
+        const char *path = g_object_get_data(G_OBJECT(l->data), "note-path");
+        gboolean show = TRUE;
+        if (q && q[0] && path) {
+            gchar *b = g_path_get_basename(path);
+            show = b && strstr(b, q) != NULL;
+            g_free(b);
+        }
+        gtk_widget_set_visible(GTK_WIDGET(l->data), show);
+    }
+    g_list_free(ch);
+}
+
 /* Ctrl+S 保存 */
 static gboolean on_key_press(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
     (void)w; (void)ud;
@@ -369,6 +388,14 @@ int main(int argc, char **argv) {
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_box_pack_start(GTK_BOX(vbox), hbox, TRUE, TRUE, 0);
 
+    /* 左侧：搜索框 + 笔记列表 */
+    GtkWidget *left_v = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    search_entry = gtk_search_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(search_entry), TR("搜索笔记..."));
+    gtk_widget_set_size_request(search_entry, 190, -1);
+    g_signal_connect(search_entry, "search-changed", G_CALLBACK(on_search_changed), NULL);
+    gtk_box_pack_start(GTK_BOX(left_v), search_entry, FALSE, FALSE, 0);
+
     stack = gtk_stack_new();
     gtk_widget_set_size_request(stack, 200, -1);
 
@@ -385,6 +412,8 @@ int main(int argc, char **argv) {
     qy_add_class(placeholder, "qy-note-placeholder");
     gtk_stack_add_named(GTK_STACK(stack), placeholder, "empty");
 
+    gtk_box_pack_start(GTK_BOX(left_v), stack, TRUE, TRUE, 0);
+
     GtkWidget *sw_text = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw_text), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     textview = GTK_TEXT_VIEW(gtk_text_view_new());
@@ -395,7 +424,7 @@ int main(int argc, char **argv) {
     gtk_text_view_set_top_margin(textview, 8);
     gtk_container_add(GTK_CONTAINER(sw_text), GTK_WIDGET(textview));
 
-    gtk_box_pack_start(GTK_BOX(hbox), stack, FALSE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(hbox), left_v, FALSE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), sw_text, TRUE, TRUE, 0);
 
     gtk_widget_show_all(win);
