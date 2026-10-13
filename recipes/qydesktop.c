@@ -2229,6 +2229,9 @@ static gboolean on_notif_right_press(GtkWidget *w, GdkEventButton *ev, gpointer 
     mi = gtk_menu_item_new_with_label(TR("清空历史"));
     g_signal_connect(mi, "activate", G_CALLBACK(on_notif_clear_menu), NULL);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    mi = gtk_menu_item_new_with_label(TR("全部已读"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_notif_read_all), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
     gtk_widget_show_all(menu);
     gtk_menu_attach_to_widget(GTK_MENU(menu), w, NULL);
     gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)ev);
