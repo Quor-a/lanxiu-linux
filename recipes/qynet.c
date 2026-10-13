@@ -250,6 +250,27 @@ static void refresh_list(void) {
     }
 }
 
+/* 读取 DNS 服务器（release 275）：/etc/resolv.conf nameserver 前 2 个 */
+static void append_dns_str(GString *gs) {
+    FILE *f = fopen("/etc/resolv.conf", "r");
+    if (!f) return;
+    char line[256];
+    int n = 0;
+    while (fgets(line, sizeof line, f) && n < 2) {
+        if (strncmp(line, "nameserver", 10) == 0) {
+            char *p = line + 10;
+            while (*p == ' ' || *p == '\t') p++;
+            char *e = p;
+            while (*e && *e != '\n' && *e != ' ') e++;
+            *e = 0;
+            if (n == 0) g_string_append_printf(gs, TR(" DNS: %s"), p);
+            else g_string_append_printf(gs, " %s", p);
+            n++;
+        }
+    }
+    fclose(f);
+}
+
 /* 连接以太网：已有 IP 视为已连接；无 IP 则 up + udhcpc */
 static void do_connect(GtkWidget *w, gpointer ud) {
     (void)w;
@@ -260,9 +281,11 @@ static void do_connect(GtkWidget *w, gpointer ud) {
     if (ip[0] && strcmp(ip, "-") != 0 && strcmp(ip, "") != 0) {
         g_printerr("QYNETDBG: connect %s already up (%s)\n", ifname, ip);
         if (status_label) {
-            gchar *s = g_strdup_printf(TR("已连接 %s（%s）"), ifname, ip);
-            gtk_label_set_text(GTK_LABEL(status_label), s);
-            g_free(s);
+            GString *gs = g_string_new("");
+            g_string_printf(gs, TR("已连接 %s（%s）"), ifname, ip);
+            append_dns_str(gs);
+            gtk_label_set_text(GTK_LABEL(status_label), gs->str);
+            g_string_free(gs, TRUE);
         }
         return;
     }
