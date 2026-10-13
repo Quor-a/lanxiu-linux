@@ -88,6 +88,16 @@ static double temp_convert(double v, int from, int to) {
     }
 }
 
+/* 点击结果复制到剪贴板（release 278） */
+static gboolean on_result_copy(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ev; (void)ud;
+    const char *txt = gtk_label_get_text(GTK_LABEL(result_lb));
+    if (!txt || !txt[0] || strcmp(txt, "—") == 0) return FALSE;
+    GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    gtk_clipboard_set_text(cb, txt, -1);
+    return TRUE;
+}
+
 /* 结果格式化：整数直接显示，小数最多 6 位有效数字 */
 static void format_result(double v, char *buf, size_t sz) {
     if (v == (gint64)v && fabs(v) < 1e15) {
@@ -232,6 +242,8 @@ int main(int argc, char **argv) {
     /* 结果大字 */
     result_lb = gtk_label_new("—");
     gtk_widget_set_name(result_lb, "qy-convert-result");
+    gtk_widget_set_tooltip_text(result_lb, TR("点击复制结果"));
+    g_signal_connect(result_lb, "button-press-event", G_CALLBACK(on_result_copy), NULL);
     gtk_box_pack_start(GTK_BOX(card), result_lb, TRUE, TRUE, 0);
 
     /* 交换单位按钮（品牌橙） */
