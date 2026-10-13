@@ -460,6 +460,7 @@ static void add_to_playlist(const char *path) {
     gtk_label_set_xalign(GTK_LABEL(lbl), 0.0);
     gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
     gtk_container_add(GTK_CONTAINER(row), lbl);
+    gtk_widget_set_tooltip_text(row, path);   /* 悬停显示完整路径 */
     g_object_set_data_full(G_OBJECT(row), "track-path", g_strdup(path), g_free);
     gtk_list_box_insert(GTK_LIST_BOX(playlist), row, -1);
     g_signal_connect(row, "button-press-event", G_CALLBACK(on_track_row_press), NULL);
