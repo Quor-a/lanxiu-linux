@@ -1053,6 +1053,21 @@ static void on_filter_type_changed(GtkComboBox *combo, gpointer ud) {
 }
 
 /* ---------- 导航 ---------- */
+/* 启动目录：记住的上次目录，否则主目录（release 270） */
+static const char *start_dir(void) {
+    static char buf[4096];
+    gchar *p = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qyfiles-cwd", NULL);
+    gchar *data = NULL;
+    if (g_file_get_contents(p, &data, NULL, NULL) && data && data[0]) {
+        g_strlcpy(buf, data, sizeof buf);
+        g_free(data); g_free(p);
+        if (g_file_test(buf, G_FILE_TEST_IS_DIR)) return buf;
+        return g_get_home_dir();
+    }
+    g_free(data); g_free(p);
+    return g_get_home_dir();
+}
+
 static void chdir_to(const char *path) {
     in_trash = 0;
     set_mode_buttons();
@@ -1061,6 +1076,14 @@ static void chdir_to(const char *path) {
     GDir *dir = g_dir_open(path, 0, NULL);
     gint n = 0, ndir = 0, nfile = 0;
     if (!dir) return;
+    /* 记住上次目录（release 270） */
+    {
+        gchar *cdir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+        g_mkdir_with_parents(cdir, 0755);
+        gchar *cpath = g_build_filename(cdir, "qyfiles-cwd", NULL);
+        g_file_set_contents(cpath, path, -1, NULL);
+        g_free(cpath); g_free(cdir);
+    }
     const gchar *name;
     while ((name = g_dir_read_name(dir))) {
         /* 搜索过滤: 名称包含关键字才显示 */
@@ -2157,8 +2180,8 @@ static void activate(GtkApplication *app, gpointer ud) {
     g_signal_connect(notebook, "switch-page", G_CALLBACK(on_tab_switch), NULL);
     gtk_box_pack_start(GTK_BOX(vbox), notebook, TRUE, TRUE, 0);
 
-    /* 首个标签 = 主目录 */
-    create_tab(home);
+    /* 首个标签 = 主目录（或上次记忆目录） */
+    create_tab(start_dir());
 
     status = gtk_label_new(TR("位置: /"));
     gtk_widget_set_halign(status, GTK_ALIGN_START);
