@@ -660,6 +660,20 @@ static void cover_update(const char *audio_path) {
 
 /* ---------- 均衡器（占位实现） ---------- */
 
+/* 预设曲线（6 段：63Hz/250Hz/1kHz/4kHz/8kHz/16kHz）release 270 */
+static const double eq_flat[6] = { 0, 0, 0, 0, 0, 0 };
+static const double eq_pop[6]  = { 3, 1, 0, 1, 2, 3 };
+static const double eq_rock[6] = { 4, 2, -1, 1, 3, 4 };
+static const double eq_aco[6]  = { 2, 1, 0, 1, 2, 2 };
+
+static void on_eq_preset(GtkButton *b, gpointer ud) {
+    (void)b;
+    const double *vals = (const double *)ud;
+    for (int i = 0; i < 6; i++)
+        if (eq_scales[i]) gtk_range_set_value(GTK_RANGE(eq_scales[i]), vals[i]);
+    eq_save();
+}
+
 /* 把 6 段滑杆当前值写入 /etc/qymedia-eq.conf（[eq] bandN=值） */
 static void eq_save(void) {
     GString *s = g_string_new("[eq]\n");
@@ -704,6 +718,23 @@ static void on_eq_clicked(GtkButton *b, gpointer ud) {
             g_signal_connect(scale, "value-changed", G_CALLBACK(on_eq_changed), NULL);
             gtk_grid_attach(GTK_GRID(grid), scale, i, 1, 1, 1);
         }
+        /* 预设按钮（release 270） */
+        GtkWidget *preset_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+        GtkWidget *b_flat = gtk_button_new_with_label(TR("平直"));
+        GtkWidget *b_pop  = gtk_button_new_with_label(TR("流行"));
+        GtkWidget *b_rock = gtk_button_new_with_label(TR("摇滚"));
+        GtkWidget *b_aco  = gtk_button_new_with_label(TR("原声"));
+        qy_add_class(b_flat, "qy-btn"); qy_add_class(b_pop, "qy-btn");
+        qy_add_class(b_rock, "qy-btn"); qy_add_class(b_aco, "qy-btn");
+        g_signal_connect(b_flat, "clicked", G_CALLBACK(on_eq_preset), (gpointer)eq_flat);
+        g_signal_connect(b_pop,  "clicked", G_CALLBACK(on_eq_preset), (gpointer)eq_pop);
+        g_signal_connect(b_rock, "clicked", G_CALLBACK(on_eq_preset), (gpointer)eq_rock);
+        g_signal_connect(b_aco,  "clicked", G_CALLBACK(on_eq_preset), (gpointer)eq_aco);
+        gtk_box_pack_start(GTK_BOX(preset_row), b_flat, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(preset_row), b_pop, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(preset_row), b_rock, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(preset_row), b_aco, FALSE, FALSE, 0);
+        gtk_grid_attach(GTK_GRID(grid), preset_row, 0, 2, 6, 1);
         gtk_container_add(GTK_CONTAINER(popover), grid);
     }
     gtk_popover_popup(GTK_POPOVER(popover));
