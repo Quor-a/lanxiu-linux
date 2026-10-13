@@ -278,6 +278,7 @@ static void stop_player(void) {
     /* 停止后窗口标题恢复默认（release 276） */
     gtk_window_set_title(GTK_WINDOW(win), TR("澜岫音乐"));
     gtk_label_set_text(GTK_LABEL(status_label), TR("已停止"));
+    lyric_clear();
 }
 
 /* 播放器进程自然退出（或被杀）后的回收 */
