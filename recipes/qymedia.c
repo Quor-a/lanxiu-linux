@@ -1132,6 +1132,7 @@ static void build_ui(void) {
     GtkWidget *vol_lb = gtk_label_new(TR("音量:"));
     gtk_box_pack_start(GTK_BOX(bar2), vol_lb, FALSE, FALSE, 0);
     GtkWidget *vol_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 100, 5);
+    gtk_widget_set_tooltip_text(vol_scale, TR("音量（0-100%）"));
     gtk_scale_set_draw_value(GTK_SCALE(vol_scale), TRUE);
     gtk_scale_set_value_pos(GTK_SCALE(vol_scale), GTK_POS_LEFT);
     gtk_range_set_value(GTK_RANGE(vol_scale), 80);
