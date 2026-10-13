@@ -484,6 +484,16 @@ static gboolean on_win_key_press(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
     return FALSE;
 }
 
+/* 播放列表右键「复制路径」（release 278） */
+static void on_track_copy_path(GtkMenuItem *mi, gpointer ud) {
+    (void)mi;
+    if (ud) {
+        GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+        gtk_clipboard_set_text(cb, (const char *)ud, -1);
+        g_free(ud);
+    }
+}
+
 /* 播放列表右键「播放」（release 276） */
 static void on_track_play(GtkMenuItem *mi, gpointer ud) {
     (void)mi;
@@ -524,6 +534,9 @@ static gboolean on_track_row_press(GtkWidget *row, GdkEventButton *ev, gpointer 
     GtkWidget *mi_play = gtk_menu_item_new_with_label(TR("播放"));
     g_signal_connect(mi_play, "activate", G_CALLBACK(on_track_play), (gpointer)g_strdup(path));
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_play);
+    GtkWidget *mi_copy = gtk_menu_item_new_with_label(TR("复制路径"));
+    g_signal_connect(mi_copy, "activate", G_CALLBACK(on_track_copy_path), (gpointer)g_strdup(path));
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_copy);
     GtkWidget *mi = gtk_menu_item_new_with_label(TR("从播放列表移除"));
     g_signal_connect(mi, "activate", G_CALLBACK(on_track_remove), (gpointer)g_strdup(path));
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
