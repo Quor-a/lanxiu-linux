@@ -89,6 +89,7 @@ static void on_next_clicked(GtkWidget *w, gpointer ud);   /* 前向声明 */
 static void on_play(GtkWidget *w, gpointer ud);           /* 前向声明（媒体快捷键用） */
 static void on_pause(GtkWidget *w, gpointer ud);          /* 前向声明（媒体快捷键用） */
 static void on_open(GtkWidget *w, gpointer ud);           /* 前向声明（媒体快捷键用） */
+static void lyric_font_apply(void);                       /* 前向声明（歌词字号快捷键用） */
 static void playlist_save(void);                          /* 前向声明（add_to_playlist 自动保存用） */
 static void add_to_playlist(const char *path);            /* 前向声明（on_track_remove 提前引用） */
 
@@ -479,6 +480,15 @@ static gboolean on_win_key_press(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
     (void)w; (void)ud;
     if ((ev->state & GDK_CONTROL_MASK) && (ev->keyval == GDK_KEY_o || ev->keyval == GDK_KEY_O)) {
         on_open(NULL, NULL);   /* Ctrl+O 添加音频文件（release 278） */
+        return TRUE;
+    }
+    /* Ctrl+= / Ctrl+- 调节歌词字号（release 278） */
+    if ((ev->state & GDK_CONTROL_MASK) && (ev->keyval == GDK_KEY_equal || ev->keyval == GDK_KEY_plus)) {
+        if (lyric_font_size < 30) { lyric_font_size++; lyric_font_apply(); }
+        return TRUE;
+    }
+    if ((ev->state & GDK_CONTROL_MASK) && (ev->keyval == GDK_KEY_minus)) {
+        if (lyric_font_size > 10) { lyric_font_size--; lyric_font_apply(); }
         return TRUE;
     }
     switch (ev->keyval) {
