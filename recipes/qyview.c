@@ -27,6 +27,8 @@ static GtkWidget *save_status = NULL;  /* 底部保存结果提示 */
 static GtkWidget *image_info = NULL;   /* 底部图片尺寸/格式/大小信息 */
 static GtkWidget *zoom_label = NULL;   /* 底部当前缩放百分比 */
 static GtkWidget *play_btn = NULL;      /* 悬浮条播放/暂停按钮 */
+static GtkWidget *slide_spin = NULL;    /* 幻灯片间隔微调（release 270） */
+static int slide_ms = 3000;             /* 幻灯片间隔毫秒 */
 static GtkWidget *file_label = NULL;   /* 左下角文件名 */
 static GtkWidget *g_da = NULL;          /* 绘图区（幻灯片定时器回调用） */
 static guint slide_timer = 0;           /* 幻灯片定时器 id */
@@ -589,6 +591,12 @@ static void set_play_icon(gboolean playing) {
     gtk_widget_set_tooltip_text(play_btn, playing ? TR("暂停幻灯片 (空格)") : TR("播放幻灯片 (空格)"));
 }
 
+static void on_slide_interval(GtkSpinButton *sp, gpointer ud) {
+    (void)ud;
+    slide_ms = (int)(gtk_spin_button_get_value(sp) * 1000);
+    if (slide_ms < 1000) slide_ms = 1000;
+}
+
 static gboolean slide_tick(gpointer ud) {
     if (!slide_on) return G_SOURCE_REMOVE;
     if (dir_files && dir_files->len > 1) {
@@ -602,7 +610,7 @@ static void toggle_slideshow(void) {
     if (!dir_files || dir_files->len < 2) return;
     slide_on = !slide_on;
     if (slide_on) {
-        if (!slide_timer) slide_timer = g_timeout_add(3000, slide_tick, g_da);
+        if (!slide_timer) slide_timer = g_timeout_add(slide_ms, slide_tick, g_da);
         set_play_icon(TRUE);
     } else {
         if (slide_timer) { g_source_remove(slide_timer); slide_timer = 0; }
@@ -831,6 +839,12 @@ static void activate(GtkApplication *app, gpointer ud) {
     GtkWidget *b_prev = qy_icon_button(QY_ICON_PREV, 18, TR("上一张"), "qy-view-bar-btn");
     play_btn = qy_icon_button(QY_ICON_PLAY, 18, TR("播放幻灯片 (空格)"), "qy-view-bar-btn");
     GtkWidget *b_next = qy_icon_button(QY_ICON_NEXT, 18, TR("下一张"), "qy-view-bar-btn");
+    /* 幻灯片间隔（release 270） */
+    slide_spin = gtk_spin_button_new_with_range(1, 10, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(slide_spin), 3);
+    qy_add_class(slide_spin, "qy-view-bar-btn");
+    gtk_widget_set_tooltip_text(slide_spin, TR("幻灯片间隔（秒）"));
+    g_signal_connect(slide_spin, "value-changed", G_CALLBACK(on_slide_interval), NULL);
     GtkWidget *sep1 = gtk_separator_new(GTK_ORIENTATION_VERTICAL);
     GtkWidget *b_zoomout = gtk_button_new_with_label("−");
     GtkWidget *b_zoomin = gtk_button_new_with_label("+");
