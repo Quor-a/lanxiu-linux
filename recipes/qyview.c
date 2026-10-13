@@ -688,6 +688,18 @@ static gboolean on_key(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
         toggle_fullscreen();
         return TRUE;
     }
+    /* ESC: 全屏时退出全屏，否则关闭窗口（release 278） */
+    if (ev->keyval == GDK_KEY_Escape) {
+        if (g_win) {
+            GdkWindow *gdkw = gtk_widget_get_window(GTK_WIDGET(g_win));
+            if (gdkw && (gdk_window_get_state(gdkw) & GDK_WINDOW_STATE_FULLSCREEN)) {
+                gtk_window_unfullscreen(g_win);
+                return TRUE;
+            }
+            gtk_window_close(g_win);
+        }
+        return TRUE;
+    }
     /* 空格: 播放/暂停幻灯片 */
     if (ev->keyval == GDK_KEY_space) {
         toggle_slideshow();
