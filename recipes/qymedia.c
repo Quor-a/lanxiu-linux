@@ -795,6 +795,17 @@ static gboolean auto_play(gpointer p) {
 /* 关闭时停止播放器 */
 static gboolean on_win_delete(GtkWidget *w, GdkEventAny *ev, gpointer ud) {
     (void)w; (void)ev; (void)ud;
+    /* 记忆窗口大小（release 278） */
+    if (win) {
+        int cw = 0, ch = 0;
+        gtk_window_get_size(GTK_WINDOW(win), &cw, &ch);
+        gchar *cdir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+        g_mkdir_with_parents(cdir, 0755);
+        gchar *cp = g_build_filename(cdir, "qymedia-win.conf", NULL);
+        gchar *sz = g_strdup_printf("%d %d", cw, ch);
+        g_file_set_contents(cp, sz, -1, NULL);
+        g_free(sz); g_free(cp); g_free(cdir);
+    }
     stop_player();
     return FALSE;
 }
@@ -970,6 +981,21 @@ static void build_ui(void) {
     qy_window_setup(GTK_WINDOW(win), 640, 380, 560, 300, FALSE);
     g_signal_connect(win, "delete-event", G_CALLBACK(on_win_delete), NULL);
     g_signal_connect(win, "key-press-event", G_CALLBACK(on_win_key_press), NULL);   /* 空格/方向键（release 278） */
+    /* 恢复上次窗口大小（release 278） */
+    {
+        gchar *cp = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qymedia-win.conf", NULL);
+        gchar *sz = NULL;
+        if (g_file_get_contents(cp, &sz, NULL, NULL)) {
+            gchar **parts = g_strsplit(sz ? sz : "", " ", 2);
+            if (parts[0] && parts[1]) {
+                int rw = atoi(parts[0]), rh = atoi(parts[1]);
+                if (rw > 400 && rh > 240)
+                    gtk_window_resize(GTK_WINDOW(win), rw, rh);
+            }
+            g_strfreev(parts);
+        }
+        g_free(sz); g_free(cp);
+    }
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     qy_add_class(vbox, "qy-app-surface");
