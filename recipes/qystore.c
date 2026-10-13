@@ -306,6 +306,14 @@ static void on_row_activated(GtkTreeView *tv, GtkTreePath *path,
     show_row(tv, &it);
 }
 
+/* 复制当前包名到剪贴板（release 277） */
+static void on_copy_pkg_clicked(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    if (!g_name[0]) return;
+    GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    gtk_clipboard_set_text(cb, g_name, -1);
+}
+
 static void show_row(GtkTreeView *tv, GtkTreeIter *itp) {
     GtkTreeIter it = *itp;
     GtkTreeModel *m = gtk_tree_view_get_model(tv);
@@ -538,15 +546,7 @@ int main(int argc, char **argv) {
     gtk_container_add(GTK_CONTAINER(card), info_label);
     gtk_box_pack_start(GTK_BOX(vbox), card, FALSE, FALSE, 0);
 
-    /* 复制当前包名到剪贴板（release 277） */
-static void on_copy_pkg_clicked(GtkButton *b, gpointer ud) {
-    (void)b; (void)ud;
-    if (!g_name[0]) return;
-    GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-    gtk_clipboard_set_text(cb, g_name, -1);
-}
-
-/* 打开按钮（release 270）：已安装时启动应用 */
+    /* 打开按钮（release 270）：已安装时启动应用 */
     GtkWidget *b_open = gtk_button_new_with_label(TR("打开"));
     g_signal_connect(b_open, "clicked", G_CALLBACK(on_open_clicked), NULL);
     gtk_box_pack_start(GTK_BOX(vbox), b_open, FALSE, FALSE, 0);
