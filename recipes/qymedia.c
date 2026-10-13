@@ -428,6 +428,15 @@ static void on_prev_clicked(GtkWidget *w, gpointer ud) {
 }
 
 /* 添加一个曲目到播放列表 */
+/* 播放列表右键「播放」（release 276） */
+static void on_track_play(GtkMenuItem *mi, gpointer ud) {
+    (void)mi;
+    if (ud) {
+        play_file((const char *)ud);
+        g_free(ud);
+    }
+}
+
 /* 播放列表右键「从播放列表移除」（release 273） */
 static void on_track_remove(GtkMenuItem *mi, gpointer ud) {
     (void)mi;
@@ -456,6 +465,9 @@ static gboolean on_track_row_press(GtkWidget *row, GdkEventButton *ev, gpointer 
     const char *path = g_object_get_data(G_OBJECT(row), "track-path");
     if (!path) return FALSE;
     GtkWidget *menu = gtk_menu_new();
+    GtkWidget *mi_play = gtk_menu_item_new_with_label(TR("播放"));
+    g_signal_connect(mi_play, "activate", G_CALLBACK(on_track_play), (gpointer)g_strdup(path));
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_play);
     GtkWidget *mi = gtk_menu_item_new_with_label(TR("从播放列表移除"));
     g_signal_connect(mi, "activate", G_CALLBACK(on_track_remove), (gpointer)g_strdup(path));
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
