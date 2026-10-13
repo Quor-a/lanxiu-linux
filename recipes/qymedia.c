@@ -682,10 +682,11 @@ static void on_save_playlist(GtkWidget *w, gpointer ud) {
 static void on_clear_playlist(GtkWidget *w, gpointer ud) {
     (void)w; (void)ud;
     if (track_list && track_list->len > 0) {
+        gchar *msg = g_strdup_printf(TR("确认清空 %u 首曲目?"), track_list->len);
         GtkWidget *dlg = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(w)),
                                                 GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION,
-                                                GTK_BUTTONS_YES_NO,
-                                                TR("确认清空播放列表?"));
+                                                GTK_BUTTONS_YES_NO, "%s", msg);
+        g_free(msg);
         int ans = gtk_dialog_run(GTK_DIALOG(dlg));
         gtk_widget_destroy(dlg);
         if (ans != GTK_RESPONSE_YES) return;
