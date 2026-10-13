@@ -6,6 +6,7 @@
  */
 #include <gtk/gtk.h>
 #include <string.h>
+#include <math.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -39,6 +40,15 @@ static void on_speed_changed(GtkComboBox *combo, gpointer ud) {
     const char *id = gtk_combo_box_get_active_id(GTK_COMBO_BOX(combo));
     g_play_speed = id ? g_ascii_strtod(id, NULL) : 1.0;
     if (g_play_speed <= 0.0) g_play_speed = 1.0;
+    /* 记忆播放速度（release 275）：~/.config/lanxiu/qymedia-speed.conf */
+    {
+        gchar *cdir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+        g_mkdir_with_parents(cdir, 0755);
+        gchar *cp = g_build_filename(cdir, "qymedia-speed.conf", NULL);
+        gchar *sv = g_strdup_printf("%.2f", g_play_speed);
+        g_file_set_contents(cp, sv, -1, NULL);
+        g_free(sv); g_free(cp); g_free(cdir);
+    }
     gchar *s = g_strdup_printf(TR("播放速度 %.1fx（下次播放生效）"), g_play_speed);
     if (status_label) gtk_label_set_text(GTK_LABEL(status_label), s);
     g_free(s);
@@ -948,6 +958,28 @@ static void build_ui(void) {
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(speed_combo), "1.0", "1.0x");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(speed_combo), "1.5", "1.5x");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(speed_combo), "2.0", "2.0x");
+    gtk_combo_box_set_active_id(GTK_COMBO_BOX(speed_combo), "1.0");
+    /* 恢复上次播放速度（release 275） */
+    {
+        gchar *cdir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+        gchar *cp = g_build_filename(cdir, "qymedia-speed.conf", NULL);
+        gchar *s = NULL;
+        if (g_file_get_contents(cp, &s, NULL, NULL)) {
+            double sp = g_ascii_strtod(s ? s : "1.0", NULL);
+            if (sp > 0.0 && sp <= 4.0) {
+                const char *ids[] = { "0.5", "1.0", "1.5", "2.0" };
+                const char *best = "1.0";
+                double bd = 10.0;
+                for (guint i = 0; i < 4; i++) {
+                    double d = g_ascii_strtod(ids[i], NULL);
+                    if (fabs(d - sp) < bd) { bd = fabs(d - sp); best = ids[i]; }
+                }
+                g_play_speed = g_ascii_strtod(best, NULL);
+                gtk_combo_box_set_active_id(GTK_COMBO_BOX(speed_combo), best);
+            }
+        }
+        g_free(s); g_free(cp); g_free(cdir);
+    }
     gtk_combo_box_set_active(GTK_COMBO_BOX(speed_combo), 1);
     g_signal_connect(speed_combo, "changed", G_CALLBACK(on_speed_changed), NULL);
     gtk_box_pack_start(GTK_BOX(bar), speed_combo, FALSE, FALSE, 0);
