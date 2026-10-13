@@ -538,10 +538,22 @@ int main(int argc, char **argv) {
     gtk_container_add(GTK_CONTAINER(card), info_label);
     gtk_box_pack_start(GTK_BOX(vbox), card, FALSE, FALSE, 0);
 
-    /* 打开按钮（release 270）：已安装时启动应用 */
+    /* 复制当前包名到剪贴板（release 277） */
+static void on_copy_pkg_clicked(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    if (!g_name[0]) return;
+    GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    gtk_clipboard_set_text(cb, g_name, -1);
+}
+
+/* 打开按钮（release 270）：已安装时启动应用 */
     GtkWidget *b_open = gtk_button_new_with_label(TR("打开"));
     g_signal_connect(b_open, "clicked", G_CALLBACK(on_open_clicked), NULL);
     gtk_box_pack_start(GTK_BOX(vbox), b_open, FALSE, FALSE, 0);
+    GtkWidget *b_copy = gtk_button_new_with_label(TR("复制包名"));
+    qy_add_class(b_copy, "qy-btn");
+    g_signal_connect(b_copy, "clicked", G_CALLBACK(on_copy_pkg_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(vbox), b_copy, FALSE, FALSE, 0);
 
     btn_act = gtk_button_new_with_label(TR("安装"));
     g_signal_connect(btn_act, "clicked", G_CALLBACK(on_act), NULL);
