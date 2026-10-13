@@ -218,6 +218,40 @@ static void show_info_dialog(const char *msg) {
 }
 
 /* ---------- 主机名修改 ---------- */
+/* 复制系统信息到剪贴板（release 280） */
+static void on_copy_sysinfo(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    struct utsname u;
+    uname(&u);
+    struct sysinfo si;
+    sysinfo(&si);
+    gchar *mem = g_strdup_printf("%.1f MB", si.totalram / 1024.0 / 1024.0);
+    gchar *osrel = read_first_line("/etc/lanxiu-release");
+    gchar *deskver = read_first_line("/usr/share/qydesktop-version");
+    gchar *cpumodel = read_cpu_model();
+    gchar *cpucores = g_strdup_printf("%ld", sysconf(_SC_NPROCESSORS_ONLN));
+    gchar *uptime = read_uptime();
+    gchar *load = read_load();
+    GString *s = g_string_new("");
+    g_string_append_printf(s, "操作系统: %s\n", osrel ? osrel : "?");
+    g_string_append_printf(s, "系统平台: 澜岫 Linux %s\n", u.machine);
+    g_string_append_printf(s, "内核版本: %s\n", u.release);
+    g_string_append_printf(s, "处理器架构: %s\n", u.machine);
+    g_string_append_printf(s, "CPU 型号: %s\n", cpumodel ? cpumodel : "?");
+    g_string_append_printf(s, "CPU 核心数: %s\n", cpucores);
+    g_string_append_printf(s, "内存总量: %s\n", mem);
+    g_string_append_printf(s, "运行时间: %s\n", uptime ? uptime : "?");
+    g_string_append_printf(s, "负载均值: %s\n", load ? load : "?");
+    g_string_append_printf(s, "桌面环境: qydesktop (GTK3)\n");
+    g_string_append_printf(s, "桌面版本: %s\n", deskver ? deskver : "?");
+    g_string_append_printf(s, "显示协议: Wayland (weston)");
+    GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    gtk_clipboard_set_text(cb, s->str, -1);
+    g_string_free(s, TRUE);
+    g_free(mem); g_free(osrel); g_free(deskver); g_free(cpumodel); g_free(cpucores);
+    g_free(uptime); g_free(load);
+}
+
 /* 应用主机名: 有 hostnamectl 则调用之（并同步 /etc/hostname）；
  * 无 hostnamectl 则直接写 /etc/hostname 并提示重启后生效。失败给出友好提示。 */
 static void on_host_apply(GtkWidget *w, gpointer ud) {
@@ -2305,9 +2339,13 @@ static void activate(GtkApplication *app, gpointer ud) {
     GtkWidget *b_files = gtk_button_new_with_label(TR("打开文件管理器"));
     qy_add_class(b_files, "qy-about-btn");
     g_signal_connect(b_files, "clicked", G_CALLBACK(launch_app), (gpointer)"qyfiles");
+    GtkWidget *b_copy = gtk_button_new_with_label(TR("复制系统信息"));
+    qy_add_class(b_copy, "qy-about-btn");
+    g_signal_connect(b_copy, "clicked", G_CALLBACK(on_copy_sysinfo), NULL);
     gtk_box_pack_start(GTK_BOX(btn_hb), b_mon, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(btn_hb), b_store, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(btn_hb), b_files, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(btn_hb), b_copy, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(v1), btn_hb, FALSE, FALSE, 10);
 
     gtk_notebook_append_page(GTK_NOTEBOOK(nb), v1, tab_with_icon(TR("关于"), QY_ICON_SETTINGS));
