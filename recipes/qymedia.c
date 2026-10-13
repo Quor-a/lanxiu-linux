@@ -34,6 +34,8 @@ static void eq_save(void);   /* 前向声明（on_eq_preset 提前引用） */
 static const char *eq_band_names[6] = { "63Hz", "250Hz", "1kHz", "4kHz", "8kHz", "16kHz" };
 static double g_play_speed = 1.0;   /* 播放速度（release 267） */
 static GtkWidget *speed_combo = NULL;
+static int lyric_font_size = 15;    /* 歌词字号（release 277） */
+static GtkCssProvider *lyric_css = NULL;
 
 static void on_speed_changed(GtkComboBox *combo, gpointer ud) {
     (void)ud;
@@ -428,6 +430,33 @@ static void on_prev_clicked(GtkWidget *w, gpointer ud) {
 }
 
 /* 添加一个曲目到播放列表 */
+/* 歌词字号应用（release 277）：动态 CSS 覆盖 #qy-media-lyric */
+static void lyric_font_apply(void) {
+    if (!lyric_view) return;
+    if (!lyric_css) lyric_css = gtk_css_provider_new();
+    gchar *css = g_strdup_printf("#qy-media-lyric { font-size: %dpx; }", lyric_font_size);
+    gtk_css_provider_load_from_data(lyric_css, css, -1, NULL);
+    GdkScreen *scr = gdk_screen_get_default();
+    if (scr)
+        gtk_style_context_add_provider_for_screen(scr, GTK_STYLE_PROVIDER(lyric_css), GTK_STYLE_PROVIDER_PRIORITY_USER + 10);
+    g_free(css);
+}
+
+static void on_lyric_font_changed(GtkComboBox *combo, gpointer ud) {
+    (void)ud;
+    const char *id = gtk_combo_box_get_active_id(GTK_COMBO_BOX(combo));
+    lyric_font_size = id ? atoi(id) : 15;
+    if (lyric_font_size < 10) lyric_font_size = 10;
+    if (lyric_font_size > 30) lyric_font_size = 30;
+    lyric_font_apply();
+    gchar *cdir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+    g_mkdir_with_parents(cdir, 0755);
+    gchar *cp = g_build_filename(cdir, "qymedia-lyric-font.conf", NULL);
+    gchar *s = g_strdup_printf("%d", lyric_font_size);
+    g_file_set_contents(cp, s, -1, NULL);
+    g_free(s); g_free(cp); g_free(cdir);
+}
+
 /* 播放列表右键「播放」（release 276） */
 static void on_track_play(GtkMenuItem *mi, gpointer ud) {
     (void)mi;
@@ -1006,6 +1035,32 @@ static void build_ui(void) {
     gtk_combo_box_set_active(GTK_COMBO_BOX(speed_combo), 1);
     g_signal_connect(speed_combo, "changed", G_CALLBACK(on_speed_changed), NULL);
     gtk_box_pack_start(GTK_BOX(bar), speed_combo, FALSE, FALSE, 0);
+    /* 歌词字号下拉（release 277） */
+    GtkWidget *lyric_font_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(lyric_font_combo), "13", TR("歌词 小"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(lyric_font_combo), "15", TR("歌词 中"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(lyric_font_combo), "18", TR("歌词 大"));
+    gtk_combo_box_set_active_id(GTK_COMBO_BOX(lyric_font_combo), "15");
+    {
+        gchar *cdir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+        gchar *cp = g_build_filename(cdir, "qymedia-lyric-font.conf", NULL);
+        gchar *s = NULL;
+        if (g_file_get_contents(cp, &s, NULL, NULL)) {
+            int v = atoi(s ? s : "15");
+            if (v >= 10 && v <= 30) {
+                char id[8];
+                if (v < 14) g_strlcpy(id, "13", 8);
+                else if (v < 17) g_strlcpy(id, "15", 8);
+                else g_strlcpy(id, "18", 8);
+                lyric_font_size = atoi(id);
+                gtk_combo_box_set_active_id(GTK_COMBO_BOX(lyric_font_combo), id);
+            }
+        }
+        g_free(s); g_free(cp); g_free(cdir);
+    }
+    lyric_font_apply();
+    g_signal_connect(lyric_font_combo, "changed", G_CALLBACK(on_lyric_font_changed), NULL);
+    gtk_box_pack_start(GTK_BOX(bar), lyric_font_combo, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(right_vbox), bar, FALSE, FALSE, 0);
 
     /* 循环 + 均衡器 + 音量 */
