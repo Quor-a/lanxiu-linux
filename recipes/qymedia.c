@@ -644,6 +644,15 @@ static void on_stop(GtkWidget *w, gpointer ud) {
 static void on_volume_changed(GtkRange *range, gpointer ud) {
     (void)ud;
     int vol = (int)gtk_range_get_value(range);
+    /* 记忆音量（release 275）：写入 ~/.config/lanxiu/qymedia-vol.conf */
+    {
+        gchar *cdir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+        g_mkdir_with_parents(cdir, 0755);
+        gchar *cp = g_build_filename(cdir, "qymedia-vol.conf", NULL);
+        gchar *s = g_strdup_printf("%d", vol);
+        g_file_set_contents(cp, s, -1, NULL);
+        g_free(s); g_free(cp); g_free(cdir);
+    }
     if (has_program("amixer")) {
         gchar *cmd = g_strdup_printf("amixer -q set Master %d%%", vol);
         g_spawn_command_line_async(cmd, NULL);
@@ -959,6 +968,17 @@ static void build_ui(void) {
     gtk_scale_set_draw_value(GTK_SCALE(vol_scale), TRUE);
     gtk_scale_set_value_pos(GTK_SCALE(vol_scale), GTK_POS_LEFT);
     gtk_range_set_value(GTK_RANGE(vol_scale), 80);
+    /* 恢复上次音量（release 275） */
+    {
+        gchar *cdir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+        gchar *cp = g_build_filename(cdir, "qymedia-vol.conf", NULL);
+        gchar *s = NULL;
+        if (g_file_get_contents(cp, &s, NULL, NULL)) {
+            int v = atoi(s ? s : "80");
+            if (v >= 0 && v <= 100) gtk_range_set_value(GTK_RANGE(vol_scale), v);
+        }
+        g_free(s); g_free(cp); g_free(cdir);
+    }
     gtk_widget_set_hexpand(vol_scale, TRUE);
     g_signal_connect(vol_scale, "value-changed", G_CALLBACK(on_volume_changed), NULL);
     gtk_box_pack_start(GTK_BOX(bar2), vol_scale, TRUE, TRUE, 0);
