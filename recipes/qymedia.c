@@ -980,8 +980,11 @@ static void eq_save(void) {
 }
 
 static void on_eq_changed(GtkRange *r, gpointer ud) {
-    (void)r; (void)ud;
+    (void)ud;
     eq_save();
+    gchar *tip = g_strdup_printf(TR("当前 %.0f dB"), gtk_range_get_value(r));
+    gtk_widget_set_tooltip_text(GTK_WIDGET(r), tip);
+    g_free(tip);
 }
 
 /* 工具栏「均衡器」按钮: 弹出 6 个垂直滑杆的 GtkPopover */
