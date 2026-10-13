@@ -297,6 +297,13 @@ static void play_file(const char *path) {
     g_free(current_file);
     current_file = g_strdup(path);
     gtk_label_set_text(GTK_LABEL(file_label), path);
+    /* 窗口标题显示当前曲目（release 275） */
+    {
+        gchar *base = g_path_get_basename(path);
+        gchar *title = g_strdup_printf(TR("澜岫音乐 — %s"), base);
+        gtk_window_set_title(GTK_WINDOW(win), title);
+        g_free(title); g_free(base);
+    }
     cover_update(path);
     char st[512];
     g_snprintf(st, sizeof st, "%s: %s...", TR("正在播放"), path);
