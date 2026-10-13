@@ -892,6 +892,9 @@ static void on_eq_clicked(GtkButton *b, gpointer ud) {
             gtk_widget_set_size_request(scale, 44, 140);
             gtk_range_set_value(GTK_RANGE(scale), 0);
             eq_scales[i] = scale;
+            gchar *tip = g_strdup_printf(TR("均衡器 %s（±12 dB）"), eq_band_names[i]);
+            gtk_widget_set_tooltip_text(scale, tip);
+            g_free(tip);
             g_signal_connect(scale, "value-changed", G_CALLBACK(on_eq_changed), NULL);
             gtk_grid_attach(GTK_GRID(grid), scale, i, 1, 1, 1);
         }
