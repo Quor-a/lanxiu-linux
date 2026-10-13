@@ -400,6 +400,9 @@ static gboolean tick(gpointer data) {
     char full[96];
     g_snprintf(full, sizeof full, TR("周%s %s"), wd[tm_.tm_wday], buf);
     gtk_label_set_text(GTK_LABEL(clock_label), full);
+    char tip[160];
+    strftime(tip, sizeof tip, TR("%Y年%m月%d日 %A %H:%M:%S"), &tm_);
+    gtk_widget_set_tooltip_text(clock_label, tip);
     return G_SOURCE_CONTINUE;
 }
 
