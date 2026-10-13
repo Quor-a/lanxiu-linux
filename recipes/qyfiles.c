@@ -1496,6 +1496,32 @@ static void on_view_cursor_changed(GtkWidget *w, gpointer ud) {
     (void)w; (void)ud;
     if (preview_revealer && gtk_revealer_get_reveal_child(GTK_REVEALER(preview_revealer)))
         update_preview();
+    /* 状态栏显示选中项数与总大小（release 275） */
+    GSList *names = selected_names();
+    guint n = g_slist_length(names);
+    if (n > 0 && status) {
+        gchar *msg = NULL;
+        if (in_trash) {
+            msg = g_strdup_printf(TR("已选中 %u 项"), n);
+        } else {
+            gint64 total = 0;
+            for (GSList *l = names; l; l = l->next) {
+                char full[4096];
+                g_snprintf(full, sizeof full, "%s/%s", cwd, (const char *)l->data);
+                struct stat st;
+                if (stat(full, &st) == 0 && S_ISREG(st.st_mode)) total += st.st_size;
+            }
+            char sz[64];
+            if (total >= (1 << 20))
+                g_snprintf(sz, sizeof sz, "%.1f MB", total / (double)(1 << 20));
+            else
+                g_snprintf(sz, sizeof sz, "%lld KB", (long long)(total / 1024));
+            msg = g_strdup_printf(TR("已选中 %u 项 · 共 %s"), n, sz);
+        }
+        gtk_label_set_text(GTK_LABEL(status), msg);
+        g_free(msg);
+    }
+    g_slist_free_full(names, g_free);
 }
 
 /* 图标视图双击/回车打开 */
