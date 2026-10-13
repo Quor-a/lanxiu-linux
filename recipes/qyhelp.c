@@ -134,6 +134,7 @@ static const HelpSection sections[] = {
 #define NSECTIONS ((int)G_N_ELEMENTS(sections))
 
 static GtkWidget *textview = NULL;
+static GtkWidget *help_list = NULL;   /* 帮助主题列表（release 276 搜索用） */
 
 static void show_section(int idx) {
     if (idx < 0 || idx >= NSECTIONS) return;
@@ -142,6 +143,21 @@ static void show_section(int idx) {
     GtkTextIter start;
     gtk_text_buffer_get_start_iter(buf, &start);
     gtk_text_buffer_place_cursor(buf, &start);
+}
+
+/* 帮助主题搜索过滤（release 276） */
+static void on_help_search(GtkSearchEntry *se, gpointer ud) {
+    (void)se; (void)ud;
+    const char *q = gtk_entry_get_text(GTK_ENTRY(se));
+    if (!help_list) return;
+    GList *ch = gtk_container_get_children(GTK_CONTAINER(help_list));
+    for (GList *l = ch; l; l = l->next) {
+        int idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(l->data), "section-idx"));
+        const char *t = TR(sections[idx].title);
+        gboolean show = !q[0] || strstr(t, q) != NULL;
+        gtk_widget_set_visible(GTK_WIDGET(l->data), show);
+    }
+    g_list_free(ch);
 }
 
 static void on_row_selected(GtkListBox *box, GtkListBoxRow *row, gpointer ud) {
@@ -167,12 +183,19 @@ int main(int argc, char **argv) {
     gtk_container_set_border_width(GTK_CONTAINER(hbox), 12);
     gtk_container_add(GTK_CONTAINER(win), hbox);
 
-    /* 左侧：帮助主题列表 */
+    /* 左侧：搜索 + 帮助主题列表 */
+    GtkWidget *left_v = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *search_entry = gtk_search_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(search_entry), TR("搜索帮助..."));
+    g_signal_connect(search_entry, "search-changed", G_CALLBACK(on_help_search), NULL);
+    gtk_box_pack_start(GTK_BOX(left_v), search_entry, FALSE, FALSE, 0);
+
     GtkWidget *sw_list = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw_list), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_widget_set_size_request(sw_list, 170, -1);
 
     GtkWidget *listbox = gtk_list_box_new();
+    help_list = listbox;
     gtk_widget_set_name(listbox, "qy-help-list");
     g_signal_connect(listbox, "row-selected", G_CALLBACK(on_row_selected), NULL);
     gtk_container_add(GTK_CONTAINER(sw_list), listbox);
@@ -185,6 +208,8 @@ int main(int argc, char **argv) {
         gtk_container_add(GTK_CONTAINER(row), lbl);
         gtk_list_box_insert(GTK_LIST_BOX(listbox), row, -1);
     }
+
+    gtk_box_pack_start(GTK_BOX(left_v), sw_list, TRUE, TRUE, 0);
 
     /* 右侧：内容文本（只读） */
     GtkWidget *sw_text = gtk_scrolled_window_new(NULL, NULL);
@@ -199,7 +224,7 @@ int main(int argc, char **argv) {
     gtk_text_view_set_top_margin(GTK_TEXT_VIEW(textview), 10);
     gtk_container_add(GTK_CONTAINER(sw_text), textview);
 
-    gtk_box_pack_start(GTK_BOX(hbox), sw_list, FALSE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(hbox), left_v, FALSE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), sw_text, TRUE, TRUE, 0);
 
     gtk_widget_show_all(win);
