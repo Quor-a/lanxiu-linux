@@ -1599,6 +1599,9 @@ static void notif_badge_show_unread(void) {
         gtk_label_set_text(GTK_LABEL(notif_badge), "");
     }
     gtk_widget_show(notif_badge);
+    gchar *tip = g_strdup_printf(TR("%d 条未读通知"), n);
+    gtk_widget_set_tooltip_text(notif_badge, tip);
+    g_free(tip);
 }
 
 /* 点击铃铛查看通知后隐藏未读徽标（已读） */
