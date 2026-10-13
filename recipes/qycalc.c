@@ -82,6 +82,21 @@ static int eval_expr(const char *s, double *out) {
 }
 
 /* ---------- 输入与显示 ---------- */
+/* 点击结果复制到剪贴板（release 274） */
+static gboolean on_result_copy(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->button != 1) return FALSE;
+    const char *txt = gtk_label_get_text(GTK_LABEL(result_label));
+    if (txt && txt[0] == '=' && txt[1] == ' ') {
+        GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+        gtk_clipboard_set_text(cb, txt + 2, -1);
+        GtkWidget *win = gtk_widget_get_toplevel(w);
+        if (win) gtk_window_set_title(GTK_WINDOW(win), TR("澜岫计算器 — 已复制"));
+        return TRUE;
+    }
+    return FALSE;
+}
+
 static void update_display(void) {
     gtk_label_set_text(GTK_LABEL(expr_label), expr_buf[0] ? expr_buf : "0");
 }
@@ -397,22 +412,7 @@ int main(int argc, char **argv) {
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 10);
     gtk_container_add(GTK_CONTAINER(win), vbox);
 
-    /* 点击结果复制到剪贴板（release 274） */
-static gboolean on_result_copy(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
-    (void)w; (void)ud;
-    if (ev->button != 1) return FALSE;
-    const char *txt = gtk_label_get_text(GTK_LABEL(result_label));
-    if (txt && txt[0] == '=' && txt[1] == ' ') {
-        GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-        gtk_clipboard_set_text(cb, txt + 2, -1);
-        GtkWidget *win = gtk_widget_get_toplevel(w);
-        if (win) gtk_window_set_title(GTK_WINDOW(win), TR("澜岫计算器 — 已复制"));
-        return TRUE;
-    }
-    return FALSE;
-}
-
-expr_label = gtk_label_new("0");
+    expr_label = gtk_label_new("0");
     gtk_widget_set_halign(expr_label, GTK_ALIGN_END);
     qy_add_class(expr_label, "qy-calc-expr");
     gtk_box_pack_start(GTK_BOX(vbox), expr_label, FALSE, FALSE, 2);
