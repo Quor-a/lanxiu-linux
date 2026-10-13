@@ -1124,6 +1124,13 @@ static void menu_open_terminal(GtkMenuItem *mi, gpointer ud) { launch_cmd("westo
 static void menu_open_files(GtkMenuItem *mi, gpointer ud) { launch_cmd("qyfiles"); }
 static void menu_open_settings(GtkMenuItem *mi, gpointer ud) { launch_cmd("qysettings"); }
 static void menu_open_monitor(GtkMenuItem *mi, gpointer ud) { launch_cmd("qymon"); }
+
+/* 顶栏 CPU/内存迷你条点击打开系统监视（release 273） */
+static gboolean mon_press_cb(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ev; (void)ud;
+    launch_cmd("qymon");
+    return TRUE;
+}
 static void menu_open_driver(GtkMenuItem *mi, gpointer ud) { launch_cmd("qydriver"); }
 static void menu_open_trash(GtkMenuItem *mi, gpointer ud) { launch_cmd("qyfiles --trash"); }
 static void menu_refresh_wallpaper(GtkMenuItem *mi, gpointer ud) {
@@ -2356,7 +2363,9 @@ static void build_bar(void) {
     gtk_widget_set_halign(mon_draw, GTK_ALIGN_CENTER);
     gtk_widget_set_valign(mon_draw, GTK_ALIGN_CENTER);
     g_signal_connect(mon_draw, "draw", G_CALLBACK(mon_draw_cb), NULL);
-    gtk_widget_set_tooltip_text(mon_draw, TR("系统资源"));
+    gtk_widget_add_events(mon_draw, GDK_BUTTON_PRESS_MASK);
+    g_signal_connect(mon_draw, "button-press-event", G_CALLBACK(mon_press_cb), NULL);
+    gtk_widget_set_tooltip_text(mon_draw, TR("系统资源（点击打开系统监视）"));
     gtk_box_pack_start(GTK_BOX(mon_hb), mon_draw, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(st), mon_hb, FALSE, FALSE, 6);
     mon_label = gtk_label_new("");
