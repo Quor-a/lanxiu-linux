@@ -308,7 +308,7 @@ static void play_file(const char *path) {
     /* 窗口标题显示当前曲目（release 275） */
     {
         gchar *base = g_path_get_basename(path);
-        gchar *title = g_strdup_printf(TR("澜岫音乐 — %s"), base);
+        gchar *title = g_strdup_printf(TR("▶ 澜岫音乐 — %s"), base);
         gtk_window_set_title(GTK_WINDOW(win), title);
         g_free(title); g_free(base);
     }
@@ -742,12 +742,24 @@ static void on_pause(GtkWidget *w, gpointer ud) {
         lyric_seg_start = 0;
         set_pause_icon(QY_ICON_PLAY);
         gtk_label_set_text(GTK_LABEL(status_label), TR("已暂停"));
+        if (current_file) {
+            gchar *base = g_path_get_basename(current_file);
+            gchar *t = g_strdup_printf(TR("⏸ 澜岫音乐 — %s"), base ? base : "");
+            gtk_window_set_title(GTK_WINDOW(win), t);
+            g_free(t); g_free(base);
+        }
     } else {
         kill(player_pid, SIGCONT);
         paused = FALSE;
         lyric_seg_start = g_get_monotonic_time();
         set_pause_icon(QY_ICON_PAUSE);
         gtk_label_set_text(GTK_LABEL(status_label), TR("正在播放"));
+        if (current_file) {
+            gchar *base = g_path_get_basename(current_file);
+            gchar *t = g_strdup_printf(TR("▶ 澜岫音乐 — %s"), base ? base : "");
+            gtk_window_set_title(GTK_WINDOW(win), t);
+            g_free(t); g_free(base);
+        }
     }
 }
 
