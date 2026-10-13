@@ -2435,7 +2435,9 @@ static void build_bar(void) {
     gtk_widget_set_tooltip_text(vol_btn, TR("音量控制（点击打开滑块，右键打开 qyaudio/静音）"));
     g_signal_connect(vol_btn, "button-press-event", G_CALLBACK(on_vol_right_press), NULL);
     gtk_box_pack_start(GTK_BOX(tray_hb), vol_btn, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(tray_hb), make_tray_icon_btn(TRAY_CLIP, TR("剪贴板"), "qyclip"), FALSE, FALSE, 0);
+    GtkWidget *clip_btn = make_tray_icon_btn(TRAY_CLIP, TR("剪贴板"), "qyclip");
+    gtk_widget_set_tooltip_text(clip_btn, TR("剪贴板（打开 qyclip）"));
+    gtk_box_pack_start(GTK_BOX(tray_hb), clip_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(tray_hb), make_tray_icon_btn(TRAY_SHOT, TR("截图"), "qyshot"), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(tray_hb), make_tray_icon_btn(TRAY_LOCK, TR("锁屏"), "qylock"), FALSE, FALSE, 0);
     /* 电池（系统存在电池时显示） */
