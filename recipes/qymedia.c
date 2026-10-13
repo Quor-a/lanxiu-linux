@@ -930,6 +930,10 @@ static void on_eq_clicked(GtkButton *b, gpointer ud) {
         GtkWidget *b_pop  = gtk_button_new_with_label(TR("流行"));
         GtkWidget *b_rock = gtk_button_new_with_label(TR("摇滚"));
         GtkWidget *b_aco  = gtk_button_new_with_label(TR("原声"));
+        gtk_widget_set_tooltip_text(b_flat, TR("全部频段归零"));
+        gtk_widget_set_tooltip_text(b_pop,  TR("提升低频与高频，适合流行乐"));
+        gtk_widget_set_tooltip_text(b_rock, TR("增强低音与高频临场感"));
+        gtk_widget_set_tooltip_text(b_aco,  TR("中频突出，适合原声/人声"));
         qy_add_class(b_flat, "qy-btn"); qy_add_class(b_pop, "qy-btn");
         qy_add_class(b_rock, "qy-btn"); qy_add_class(b_aco, "qy-btn");
         g_signal_connect(b_flat, "clicked", G_CALLBACK(on_eq_preset), (gpointer)eq_flat);
