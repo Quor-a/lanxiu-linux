@@ -674,7 +674,7 @@ static void on_eq_preset(GtkButton *b, gpointer ud) {
     eq_save();
 }
 
-/* 把 6 段滑杆当前值写入 /etc/qymedia-eq.conf（[eq] bandN=值） */
+/* 把 6 段滑杆当前值写入 ~/.config/lanxiu/qymedia-eq.conf（[eq] bandN=值） */
 static void eq_save(void) {
     GString *s = g_string_new("[eq]\n");
     for (int i = 0; i < 6; i++) {
@@ -682,12 +682,16 @@ static void eq_save(void) {
         g_string_append_printf(s, "band%d=%.0f\n", i + 1, v);
     }
     GError *err = NULL;
-    if (!g_file_set_contents("/etc/qymedia-eq.conf", s->str, (gssize)s->len, &err)) {
+    gchar *eqdir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+    g_mkdir_with_parents(eqdir, 0755);
+    gchar *eqpath = g_build_filename(eqdir, "qymedia-eq.conf", NULL);
+    if (!g_file_set_contents(eqpath, s->str, (gssize)s->len, &err)) {
         g_printerr("QYMEDIADBG: eq save failed: %s\n", err ? err->message : "?");
         g_clear_error(&err);
     } else {
-        g_printerr("QYMEDIADBG: eq saved to /etc/qymedia-eq.conf\n");
+        g_printerr("QYMEDIADBG: eq saved to %s\n", eqpath);
     }
+    g_free(eqpath); g_free(eqdir);
     g_string_free(s, TRUE);
 }
 
