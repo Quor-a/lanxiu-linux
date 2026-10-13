@@ -523,6 +523,20 @@ static gboolean on_win_key_press(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
     return FALSE;
 }
 
+/* 播放列表右键「在文件管理器中显示」（release 278） */
+static void on_track_open_dir(GtkMenuItem *mi, gpointer ud) {
+    (void)mi;
+    if (!ud) return;
+    const char *path = (const char *)ud;
+    gchar *dir = g_path_get_dirname(path);
+    gchar *cmd = g_strdup_printf("qyfiles \"%s\"", dir);
+    GError *err = NULL;
+    if (!g_spawn_command_line_async(cmd, &err))
+        g_printerr("QYMEDIA: 打开目录失败: %s\n", err ? err->message : "?");
+    g_clear_error(&err);
+    g_free(cmd); g_free(dir); g_free((gpointer)ud);
+}
+
 /* 播放列表右键「复制路径」（release 278） */
 static void on_track_copy_path(GtkMenuItem *mi, gpointer ud) {
     (void)mi;
@@ -576,6 +590,9 @@ static gboolean on_track_row_press(GtkWidget *row, GdkEventButton *ev, gpointer 
     GtkWidget *mi_copy = gtk_menu_item_new_with_label(TR("复制路径"));
     g_signal_connect(mi_copy, "activate", G_CALLBACK(on_track_copy_path), (gpointer)g_strdup(path));
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_copy);
+    GtkWidget *mi_dir = gtk_menu_item_new_with_label(TR("在文件管理器中显示"));
+    g_signal_connect(mi_dir, "activate", G_CALLBACK(on_track_open_dir), (gpointer)g_strdup(path));
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_dir);
     GtkWidget *mi = gtk_menu_item_new_with_label(TR("从播放列表移除"));
     g_signal_connect(mi, "activate", G_CALLBACK(on_track_remove), (gpointer)g_strdup(path));
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
