@@ -74,6 +74,7 @@ static gboolean loop_enabled = FALSE;   /* 循环开关 */
 
 static void on_next_clicked(GtkWidget *w, gpointer ud);   /* 前向声明 */
 static void playlist_save(void);                          /* 前向声明（add_to_playlist 自动保存用） */
+static void add_to_playlist(const char *path);            /* 前向声明（on_track_remove 提前引用） */
 
 /* 检查 PATH 中是否存在程序（g_find_program_in_path 返回需 g_free） */
 static gboolean has_program(const char *name) {
