@@ -725,7 +725,8 @@ static void on_eq_clicked(GtkButton *b, gpointer ud) {
             gtk_widget_set_halign(lbl, GTK_ALIGN_CENTER);
             gtk_grid_attach(GTK_GRID(grid), lbl, i, 0, 1, 1);
             GtkWidget *scale = gtk_scale_new_with_range(GTK_ORIENTATION_VERTICAL, -12, 12, 1);
-            gtk_scale_set_draw_value(GTK_SCALE(scale), FALSE);
+            gtk_scale_set_draw_value(GTK_SCALE(scale), TRUE);
+            gtk_scale_set_value_pos(GTK_SCALE(scale), GTK_POS_RIGHT);
             gtk_widget_set_size_request(scale, 44, 140);
             gtk_range_set_value(GTK_RANGE(scale), 0);
             eq_scales[i] = scale;
