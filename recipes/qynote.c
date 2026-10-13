@@ -132,7 +132,10 @@ static void save_current_note(void) {
             g_remove(current_path);
         g_free(current_path);
         current_path = g_strdup(target);
-        gtk_label_set_text(GTK_LABEL(status_lb), TR("已保存"));
+        long wc = g_utf8_strlen(content, -1);
+        gchar *st = g_strdup_printf(TR("已保存（%ld 字）"), wc);
+        gtk_label_set_text(GTK_LABEL(status_lb), st);
+        g_free(st);
     } else {
         if (err) {
             gtk_label_set_text(GTK_LABEL(status_lb), err->message);
