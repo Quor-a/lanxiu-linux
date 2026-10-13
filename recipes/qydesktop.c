@@ -83,6 +83,7 @@ static guint     active_id     = 0;   /* 最近点击的任务栏窗口（本地
 static long      active_until  = 0;   /* 高亮截止时间戳 */
 static GtkWidget *clock_label  = NULL;
 static GtkWidget *clock_btn   = NULL;  /* 顶栏时钟按钮（点击弹出日历） */
+static gboolean clock_24h = TRUE;     /* 12/24 小时制（release 272） */
 static GtkWidget *power_btn   = NULL;  /* 顶栏电源按钮（关机/重启/注销） */
 static void on_clock_clicked(GtkWidget *w, gpointer ud);   /* 前向声明 */
 static GtkWidget *mon_label    = NULL;  /* 顶栏 CPU/内存小部件 */
@@ -383,7 +384,7 @@ static gboolean tick(gpointer data) {
     time_t t = time(NULL);
     struct tm tm_;
     localtime_r(&t, &tm_);
-    strftime(buf, sizeof buf, TR("%m月%d日 %H:%M"), &tm_);
+    strftime(buf, sizeof buf, clock_24h ? TR("%m月%d日 %H:%M") : TR("%m月%d日 %I:%M %p"), &tm_);
     const char *wd[] = { TR("日"), TR("一"), TR("二"), TR("三"), TR("四"), TR("五"), TR("六") };
     char full[96];
     g_snprintf(full, sizeof full, TR("周%s %s"), wd[tm_.tm_wday], buf);
@@ -2335,6 +2336,14 @@ static void build_bar(void) {
     add_class(clock_label, "qy-clock-label");
     gtk_container_add(GTK_CONTAINER(clock_btn), clock_label);
     g_signal_connect(clock_btn, "clicked", G_CALLBACK(on_clock_clicked), NULL);
+    g_signal_connect(clock_btn, "button-press-event", G_CALLBACK(on_clock_right_press), NULL);
+    /* 读取已保存的 12/24 小时制（release 272） */
+    {
+        gchar *cdir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+        gchar *cp = g_build_filename(cdir, "qydesktop-clock24", NULL);
+        clock_24h = g_file_test(cp, G_FILE_TEST_EXISTS);
+        g_free(cp); g_free(cdir);
+    }
     gtk_box_pack_start(GTK_BOX(st), clock_btn, FALSE, FALSE, 0);
     tick(clock_label);
     g_timeout_add_seconds(1, tick, clock_label);
@@ -2537,6 +2546,36 @@ static void build_desktop(void) {
 }
 
 /* ---------- 入口 ---------- */
+/* 时钟 12/24 小时制（release 272）：写 ~/.config/lanxiu/qydesktop-clock24 */
+static void clock_set_24h(gboolean on) {
+    clock_24h = on;
+    gchar *cdir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+    g_mkdir_with_parents(cdir, 0755);
+    gchar *cp = g_build_filename(cdir, "qydesktop-clock24", NULL);
+    if (on) g_file_set_contents(cp, "1", -1, NULL);
+    else g_remove(cp);
+    g_free(cp); g_free(cdir);
+    tick(clock_label);
+}
+
+static void on_clock_12_toggle(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    clock_set_24h(!clock_24h);
+}
+
+static gboolean on_clock_right_press(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->button != 3) return FALSE;
+    GtkWidget *menu = gtk_menu_new();
+    GtkWidget *mi = gtk_menu_item_new_with_label(clock_24h ? TR("切换到 12 小时制") : TR("切换到 24 小时制"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_clock_12_toggle), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    gtk_widget_show_all(menu);
+    gtk_menu_attach_to_widget(GTK_MENU(menu), w, NULL);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)ev);
+    return TRUE;
+}
+
 static void on_clock_clicked(GtkWidget *w, gpointer ud) {
     (void)ud;
     GtkWidget *menu = gtk_menu_new();
