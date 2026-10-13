@@ -527,6 +527,10 @@ static gboolean on_track_row_press(GtkWidget *row, GdkEventButton *ev, gpointer 
     GtkWidget *mi = gtk_menu_item_new_with_label(TR("从播放列表移除"));
     g_signal_connect(mi, "activate", G_CALLBACK(on_track_remove), (gpointer)g_strdup(path));
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+    GtkWidget *mi_clr = gtk_menu_item_new_with_label(TR("清空播放列表"));
+    g_signal_connect(mi_clr, "activate", G_CALLBACK(on_clear_playlist), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_clr);
     gtk_widget_show_all(menu);
     gtk_menu_attach_to_widget(GTK_MENU(menu), row, NULL);
     gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)ev);
