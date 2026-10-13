@@ -52,6 +52,12 @@ static void on_speed_changed(GtkComboBox *combo, gpointer ud) {
         g_file_set_contents(cp, sv, -1, NULL);
         g_free(sv); g_free(cp); g_free(cdir);
     }
+    /* 状态提示（release 278） */
+    {
+        gchar *st = g_strdup_printf(TR("播放速度: %.2fx"), g_play_speed);
+        gtk_label_set_text(GTK_LABEL(status_label), st);
+        g_free(st);
+    }
     gchar *s = g_strdup_printf(TR("播放速度 %.1fx（下次播放生效）"), g_play_speed);
     if (status_label) gtk_label_set_text(GTK_LABEL(status_label), s);
     g_free(s);
