@@ -336,7 +336,7 @@ static void wifi_list_clear(void) {
 }
 
 /* 添加一行 WiFi: SSID + 信号强度（%）+ 文本信号条（▂▄▆█ 块字符，非 emoji） */
-static void wifi_list_add(const char *ssid, int sig) {
+static void wifi_list_add(const char *ssid, int sig, gboolean enc) {
     if (!ssid || !ssid[0]) return;
     if (sig < 0) sig = 0;
     if (sig > 100) sig = 100;
@@ -346,7 +346,9 @@ static void wifi_list_add(const char *ssid, int sig) {
     gtk_widget_set_margin_end(hbox, 8);
     gtk_widget_set_margin_top(hbox, 3);
     gtk_widget_set_margin_bottom(hbox, 3);
-    GtkWidget *ssid_lbl = gtk_label_new(ssid);
+    gchar *ssid_text = g_strdup_printf("%s %s", enc ? "🔒" : "·", ssid);
+    GtkWidget *ssid_lbl = gtk_label_new(ssid_text);
+    g_free(ssid_text);
     gtk_widget_set_halign(ssid_lbl, GTK_ALIGN_START);
     gtk_widget_set_hexpand(ssid_lbl, TRUE);
     gtk_box_pack_start(GTK_BOX(hbox), ssid_lbl, TRUE, TRUE, 0);
@@ -433,6 +435,7 @@ static void wifi_scan(void) {
             char *cur_ssid = NULL;
             double cur_signal = 0;
             gboolean have_signal = FALSE;
+            gboolean cur_enc = FALSE;
             while (line && *line) {
                 char *nl = strchr(line, '\n');
                 if (nl) *nl = 0;
@@ -442,11 +445,12 @@ static void wifi_scan(void) {
                         int pct = have_signal ? (int)((cur_signal + 100.0) * 2.0) : 0;
                         if (pct < 0) pct = 0;
                         if (pct > 100) pct = 100;
-                        wifi_list_add(cur_ssid, pct);
+                        wifi_list_add(cur_ssid, pct, cur_enc);
                         any = TRUE;
                         g_free(cur_ssid);
                         cur_ssid = NULL;
                         have_signal = FALSE;
+                        cur_enc = FALSE;
                     }
                 } else if (strncmp(line, "\tSSID:", 6) == 0) {
                     g_free(cur_ssid);
@@ -454,6 +458,8 @@ static void wifi_scan(void) {
                 } else if (strncmp(line, "\tsignal:", 8) == 0) {
                     cur_signal = atof(line + 8);
                     have_signal = TRUE;
+                } else if (strncmp(line, "\tRSN:", 5) == 0 || strncmp(line, "\tWPA:", 5) == 0) {
+                    cur_enc = TRUE;
                 }
                 line = nl ? nl + 1 : NULL;
             }
@@ -462,7 +468,7 @@ static void wifi_scan(void) {
                 int pct = have_signal ? (int)((cur_signal + 100.0) * 2.0) : 0;
                 if (pct < 0) pct = 0;
                 if (pct > 100) pct = 100;
-                wifi_list_add(cur_ssid, pct);
+                wifi_list_add(cur_ssid, pct, cur_enc);
                 any = TRUE;
                 g_free(cur_ssid);
             }
