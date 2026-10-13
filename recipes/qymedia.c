@@ -806,6 +806,7 @@ static void on_volume_changed(GtkRange *range, gpointer ud) {
 static void on_loop_toggled(GtkToggleButton *btn, gpointer ud) {
     (void)ud;
     loop_enabled = gtk_toggle_button_get_active(btn);
+    gtk_widget_set_tooltip_text(GTK_WIDGET(btn), loop_enabled ? TR("循环播放：开") : TR("循环播放：关"));
 }
 
 /* 自动化: QYMEDIA_AUTO */
