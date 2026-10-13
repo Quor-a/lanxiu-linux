@@ -2264,6 +2264,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_widget_add_accelerator(search_entry, "grab-focus", accel, GDK_KEY_f, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE); /* Ctrl+F 搜索 */
     gtk_widget_add_accelerator(path_entry, "grab-focus", accel, GDK_KEY_l, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE); /* Ctrl+L 地址栏 */
     gtk_widget_add_accelerator(b_new_tab, "clicked", accel, GDK_KEY_t, GDK_CONTROL_MASK | GDK_SHIFT_MASK, GTK_ACCEL_VISIBLE); /* Ctrl+Shift+T 新标签 */
+    gtk_widget_add_accelerator(b_close_tab, "clicked", accel, GDK_KEY_w, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE); /* Ctrl+W 关闭标签 */
     /* Ctrl+A 全选（多选模式已启用） */
     GClosure *selcl = g_cclosure_new(G_CALLBACK(on_select_all), NULL, NULL);
     gtk_accel_group_connect(accel, GDK_KEY_a, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE, selcl);
