@@ -18,6 +18,7 @@ static GtkWidget *win = NULL;
 static GtkWidget *status_label = NULL;   /* #qy-rec-status */
 static GtkWidget *folder_btn = NULL;      /* GtkFileChooserButton 选择保存目录 */
 static GtkWidget *file_entry = NULL;      /* 文件名输入框 */
+static GtkWidget *format_combo = NULL;    /* 录制格式（mkv/mp4/webm）release 270 */
 static GtkWidget *rec_btn = NULL;               /* .qy-rec-btn 开始/停止 */
 static GtkWidget *hint_label = NULL;          /* 底部提示 */
 
@@ -142,6 +143,13 @@ static void start_recording(void) {
         return;
     }
     gchar *out = g_build_filename(dir, name, NULL);
+    /* 格式（release 270）：替换/追加扩展名 */
+    const char *fmt = format_combo ? gtk_combo_box_get_active_id(GTK_COMBO_BOX(format_combo)) : "mkv";
+    if (!fmt || !fmt[0]) fmt = "mkv";
+    gchar *dot = strrchr(out, '.');
+    if (dot) *dot = '\0';
+    gchar *out_tmp = g_strdup_printf("%s.%s", out, fmt);
+    g_free(out); out = out_tmp;
     gchar *out_dir = g_path_get_dirname(out);
     g_mkdir_with_parents(out_dir, 0700);
     g_free(out_dir);
@@ -254,6 +262,12 @@ static void activate(GtkApplication *app, gpointer ud) {
     g_free(def_name);
     gtk_entry_set_width_chars(GTK_ENTRY(file_entry), 16);
     gtk_box_pack_start(GTK_BOX(path_row), file_entry, FALSE, FALSE, 0);
+    format_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(format_combo), "mkv", "MKV");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(format_combo), "mp4", "MP4");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(format_combo), "webm", "WebM");
+    gtk_combo_box_set_active(GTK_COMBO_BOX(format_combo), 0);
+    gtk_box_pack_start(GTK_BOX(path_row), format_combo, FALSE, FALSE, 0);
 
     gtk_box_pack_start(GTK_BOX(vbox), path_row, FALSE, FALSE, 0);
 
