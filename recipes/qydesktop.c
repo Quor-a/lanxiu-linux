@@ -2427,6 +2427,7 @@ static void build_bar(void) {
     /* 系统托盘: 网络/声音/剪贴板/截图/锁屏（cairo 线稿图标，右键菜单） */
     GtkWidget *tray_hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     GtkWidget *net_btn = make_tray_icon_btn(TRAY_NET, TR("网络"), "qynet");
+    gtk_widget_set_tooltip_text(net_btn, TR("网络控制（打开 qynet 查看连接）"));
     g_signal_connect(net_btn, "button-press-event", G_CALLBACK(on_net_right_press), NULL);
     gtk_box_pack_start(GTK_BOX(tray_hb), net_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(tray_hb), make_tray_icon_btn(TRAY_DRV, TR("驱动"), "qydriver"), FALSE, FALSE, 0);
