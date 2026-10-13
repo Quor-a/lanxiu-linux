@@ -516,6 +516,7 @@ static void on_wifi_clicked(GtkWidget *w, gpointer ud) {
     const char *preset_ssid = ud ? (const char *)ud : NULL;
     GtkWidget *dlg = gtk_dialog_new_with_buttons(TR("连接 WiFi"), NULL,
         GTK_DIALOG_MODAL, TR("连接"), GTK_RESPONSE_OK,
+        TR("断开"), GTK_RESPONSE_REJECT,
         TR("取消"), GTK_RESPONSE_CANCEL, NULL);
     GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
     GtkWidget *ssid_e = gtk_entry_new();
@@ -528,10 +529,17 @@ static void on_wifi_clicked(GtkWidget *w, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(box), ssid_e, FALSE, FALSE, 6);
     gtk_box_pack_start(GTK_BOX(box), psk_e, FALSE, FALSE, 6);
     gtk_widget_show_all(dlg);
-    if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_OK) {
+    int resp = gtk_dialog_run(GTK_DIALOG(dlg));
+    if (resp == GTK_RESPONSE_OK) {
         const char *ssid = gtk_entry_get_text(GTK_ENTRY(ssid_e));
         const char *psk = gtk_entry_get_text(GTK_ENTRY(psk_e));
         wifi_connect(ssid, psk);
+    } else if (resp == GTK_RESPONSE_REJECT) {
+        /* 断开 WiFi（release 270） */
+        g_spawn_command_line_async("pkill -x wpa_supplicant 2>/dev/null; pkill -x udhcpc 2>/dev/null; true", NULL);
+        if (status_label)
+            gtk_label_set_text(GTK_LABEL(status_label), TR("已断开 WiFi"));
+        g_timeout_add(3000, (GSourceFunc)refresh_list, NULL);
     }
     gtk_widget_destroy(dlg);
 }
