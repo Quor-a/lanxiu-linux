@@ -192,6 +192,16 @@ static void ws_goto(int n) {
 static void ws_prev_clicked(GtkWidget *w, gpointer ud) { (void)w; (void)ud; ws_goto(g_workspace - 1); }
 static void ws_next_clicked(GtkWidget *w, gpointer ud) { (void)w; (void)ud; ws_goto(g_workspace + 1); }
 
+/* 工作区指示器滚轮切换（release 277） */
+static gboolean on_ws_scroll(GtkWidget *w, GdkEventScroll *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->direction == GDK_SCROLL_UP || ev->direction == GDK_SCROLL_LEFT)
+        ws_goto(g_workspace - 1);
+    else if (ev->direction == GDK_SCROLL_DOWN || ev->direction == GDK_SCROLL_RIGHT)
+        ws_goto(g_workspace + 1);
+    return TRUE;
+}
+
 /* ---------- 工作区预览（悬停指示器弹出 GtkPopover） ---------- */
 /* 从 /etc/qyworkspaces.conf 读取 count=N（默认 4） */
 static int ws_count_from_conf(void) {
@@ -2334,6 +2344,7 @@ static void build_bar(void) {
     GtkWidget *ws_eb = gtk_event_box_new();
     gtk_container_add(GTK_CONTAINER(ws_eb), ws_box);
     g_signal_connect(ws_eb, "enter-notify-event", G_CALLBACK(on_ws_enter), NULL);
+    g_signal_connect(ws_eb, "scroll-event", G_CALLBACK(on_ws_scroll), NULL);
     gtk_box_pack_start(GTK_BOX(st), ws_eb, FALSE, FALSE, 2);
     ws_update_label();
 
