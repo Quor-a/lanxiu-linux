@@ -85,6 +85,9 @@ static int current_index = -1;          /* 当前曲目索引 */
 static gboolean loop_enabled = FALSE;   /* 循环开关 */
 
 static void on_next_clicked(GtkWidget *w, gpointer ud);   /* 前向声明 */
+static void on_play(GtkWidget *w, gpointer ud);           /* 前向声明（媒体快捷键用） */
+static void on_pause(GtkWidget *w, gpointer ud);          /* 前向声明（媒体快捷键用） */
+static void on_open(GtkWidget *w, gpointer ud);           /* 前向声明（媒体快捷键用） */
 static void playlist_save(void);                          /* 前向声明（add_to_playlist 自动保存用） */
 static void add_to_playlist(const char *path);            /* 前向声明（on_track_remove 提前引用） */
 
@@ -455,6 +458,30 @@ static void on_lyric_font_changed(GtkComboBox *combo, gpointer ud) {
     gchar *s = g_strdup_printf("%d", lyric_font_size);
     g_file_set_contents(cp, s, -1, NULL);
     g_free(s); g_free(cp); g_free(cdir);
+}
+
+/* 媒体快捷键：空格播放/暂停，←/→ 上一首/下一首（release 278） */
+static gboolean on_win_key_press(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if ((ev->state & GDK_CONTROL_MASK) && (ev->keyval == GDK_KEY_o || ev->keyval == GDK_KEY_O)) {
+        on_open(NULL, NULL);   /* Ctrl+O 添加音频文件（release 278） */
+        return TRUE;
+    }
+    switch (ev->keyval) {
+        case GDK_KEY_space: case GDK_KEY_KP_Space:
+            if (player_pid > 0)
+                on_pause(GTK_WIDGET(btn_pause), NULL);
+            else
+                on_play(GTK_WIDGET(btn_play), NULL);
+            return TRUE;
+        case GDK_KEY_Left:
+            on_prev_clicked(NULL, NULL);
+            return TRUE;
+        case GDK_KEY_Right:
+            on_next_clicked(NULL, NULL);
+            return TRUE;
+    }
+    return FALSE;
 }
 
 /* 播放列表右键「播放」（release 276） */
@@ -907,6 +934,7 @@ static void build_ui(void) {
     gtk_widget_set_name(GTK_WIDGET(win), "qy-media-win");
     qy_window_setup(GTK_WINDOW(win), 640, 380, 560, 300, FALSE);
     g_signal_connect(win, "delete-event", G_CALLBACK(on_win_delete), NULL);
+    g_signal_connect(win, "key-press-event", G_CALLBACK(on_win_key_press), NULL);   /* 空格/方向键（release 278） */
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     qy_add_class(vbox, "qy-app-surface");
