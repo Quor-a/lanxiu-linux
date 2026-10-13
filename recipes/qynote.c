@@ -275,6 +275,32 @@ static void on_delete_clicked(GtkButton *b, gpointer ud) {
     g_free(title);
 }
 
+/* 导出笔记为 UTF-8 文本（release 275） */
+static void on_export_clicked(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    GtkTextBuffer *buf = gtk_text_view_get_buffer(textview);
+    GtkTextIter s, e;
+    gtk_text_buffer_get_start_iter(buf, &s);
+    gtk_text_buffer_get_end_iter(buf, &e);
+    char *txt = gtk_text_buffer_get_text(buf, &s, &e, FALSE);
+    GtkWidget *dlg = gtk_file_chooser_native_new(TR("导出笔记"), GTK_WINDOW(win),
+                          GTK_FILE_CHOOSER_ACTION_SAVE, TR("导出"), TR("取消"));
+    GtkFileChooser *fc = GTK_FILE_CHOOSER(dlg);
+    gtk_file_chooser_set_current_name(fc, "note.txt");
+    if (gtk_native_dialog_run(GTK_NATIVE_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
+        char *path = gtk_file_chooser_get_filename(fc);
+        if (path) {
+            if (g_file_set_contents(path, txt, -1, NULL))
+                gtk_label_set_text(GTK_LABEL(status_lb), TR("已导出为文本"));
+            else
+                gtk_label_set_text(GTK_LABEL(status_lb), TR("导出失败"));
+            g_free(path);
+        }
+    }
+    gtk_widget_destroy(dlg);
+    g_free(txt);
+}
+
 static void on_save_clicked(GtkButton *b, gpointer ud) {
     (void)b; (void)ud;
     save_current_note();
@@ -326,12 +352,16 @@ int main(int argc, char **argv) {
     GtkWidget *b_save = gtk_button_new_with_label(TR("保存"));
     qy_add_class(b_save, "qy-btn");
     g_signal_connect(b_save, "clicked", G_CALLBACK(on_save_clicked), NULL);
+    GtkWidget *b_exp = gtk_button_new_with_label(TR("导出"));
+    qy_add_class(b_exp, "qy-btn");
+    g_signal_connect(b_exp, "clicked", G_CALLBACK(on_export_clicked), NULL);
     status_lb = gtk_label_new("");
     qy_add_class(status_lb, "qy-note-status");
     gtk_widget_set_halign(status_lb, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(toolbar), b_new, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), b_del, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), b_save, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(toolbar), b_exp, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), status_lb, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
 
