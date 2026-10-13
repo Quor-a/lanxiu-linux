@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <glib/gstdio.h>
+#include <sys/stat.h>
 #include "qytheme.h"
 #include "qyicon.h"
 #include "qyl10n.h"
@@ -567,6 +568,16 @@ static void add_to_playlist(const char *path) {
     gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
     gtk_container_add(GTK_CONTAINER(row), lbl);
     gtk_widget_set_tooltip_text(row, path);   /* 悬停显示完整路径 */
+    /* tooltip 附文件大小（release 278） */
+    {
+        GStatBuf sb;
+        if (g_stat(path, &sb) == 0 && S_ISREG(sb.st_mode)) {
+            gchar *sz = g_format_size(sb.st_size);
+            gchar *tip = g_strdup_printf("%s\n%s", path, sz);
+            gtk_widget_set_tooltip_text(row, tip);
+            g_free(tip); g_free(sz);
+        }
+    }
     g_object_set_data_full(G_OBJECT(row), "track-path", g_strdup(path), g_free);
     gtk_list_box_insert(GTK_LIST_BOX(playlist), row, -1);
     g_signal_connect(row, "button-press-event", G_CALLBACK(on_track_row_press), NULL);
