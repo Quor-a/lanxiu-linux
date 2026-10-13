@@ -9,9 +9,11 @@
 #include <stdio.h>
 #include <glib/gstdio.h>
 #include <sys/wait.h>
+#include <sys/statvfs.h>
 
 static GtkWidget *view;
 static GtkWidget *status;
+static GtkWidget *disk_lb = NULL;   /* 侧边栏磁盘可用空间（release 276） */
 static GtkWidget *path_entry = NULL;  /* 路径地址栏 */
 static char cwd[4096];
 static int in_trash = 0;   /* 当前是否处于回收站页 */
@@ -630,6 +632,19 @@ static void do_prop(GtkButton *b, gpointer ud) {
     if (!name) { gtk_label_set_text(GTK_LABEL(status), TR("请先选择一个文件")); return; }
     do_prop_name(name);
     g_free(name);
+}
+
+/* 侧边栏磁盘可用空间（release 276） */
+static gboolean update_disk_label(gpointer p) {
+    (void)p;
+    struct statvfs sv;
+    if (statvfs("/", &sv) == 0 && disk_lb) {
+        double avail = (double)sv.f_bavail * sv.f_frsize / (1024.0 * 1024.0 * 1024.0);
+        gchar *s = g_strdup_printf(TR("磁盘可用 %.1f GB"), avail);
+        gtk_label_set_text(GTK_LABEL(disk_lb), s);
+        g_free(s);
+    }
+    return G_SOURCE_CONTINUE;
 }
 
 /* ---------- 侧边栏导航 ---------- */
@@ -2070,6 +2085,13 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_container_add(GTK_CONTAINER(bm_sw), book_list);
     gtk_box_pack_start(GTK_BOX(side), bm_sw, TRUE, TRUE, 0);
     load_bookmarks();
+    gtk_box_pack_start(GTK_BOX(side), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 4);
+    disk_lb = gtk_label_new("");
+    gtk_widget_set_halign(disk_lb, GTK_ALIGN_START);
+    qy_add_class(disk_lb, "qy-files-disk");
+    gtk_box_pack_start(GTK_BOX(side), disk_lb, FALSE, FALSE, 2);
+    update_disk_label(NULL);
+    g_timeout_add_seconds(30, update_disk_label, NULL);
     gtk_box_pack_start(GTK_BOX(hpane), side, FALSE, FALSE, 0);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
