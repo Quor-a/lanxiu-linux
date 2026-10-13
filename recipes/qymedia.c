@@ -313,6 +313,18 @@ static void play_file(const char *path) {
         g_free(title); g_free(base);
     }
     cover_update(path);
+    /* 滚动当前曲目到可见（release 278） */
+    {
+        GList *ch = gtk_container_get_children(GTK_CONTAINER(playlist));
+        for (GList *l = ch; l; l = l->next) {
+            const char *p = g_object_get_data(G_OBJECT(l->data), "track-path");
+            if (p && strcmp(p, path) == 0) {
+                gtk_widget_grab_focus(GTK_WIDGET(l->data));
+                break;
+            }
+        }
+        g_list_free(ch);
+    }
     char st[512];
     g_snprintf(st, sizeof st, "%s: %s...", TR("正在播放"), path);
     gtk_label_set_text(GTK_LABEL(status_label), st);
