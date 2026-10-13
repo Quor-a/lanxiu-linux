@@ -2340,6 +2340,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     qy_add_class(b_files, "qy-about-btn");
     g_signal_connect(b_files, "clicked", G_CALLBACK(launch_app), (gpointer)"qyfiles");
     GtkWidget *b_copy = gtk_button_new_with_label(TR("复制系统信息"));
+    gtk_widget_set_tooltip_text(b_copy, TR("复制 12 项系统信息到剪贴板"));
     qy_add_class(b_copy, "qy-about-btn");
     g_signal_connect(b_copy, "clicked", G_CALLBACK(on_copy_sysinfo), NULL);
     gtk_box_pack_start(GTK_BOX(btn_hb), b_mon, FALSE, FALSE, 0);
