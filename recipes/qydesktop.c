@@ -2453,6 +2453,7 @@ static void build_bar(void) {
         gtk_box_pack_start(GTK_BOX(tray_hb), bat_btn, FALSE, FALSE, 0);
     }
     power_btn = make_tray_icon_btn_cb(TRAY_PWR, TR("电源"), G_CALLBACK(on_power_btn_clicked), NULL);
+    gtk_widget_set_tooltip_text(power_btn, TR("电源控制（打开 qypower）"));
     gtk_box_pack_start(GTK_BOX(tray_hb), power_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(st), tray_hb, FALSE, FALSE, 4);
     gtk_widget_set_margin_end(st, 8);
