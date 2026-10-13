@@ -564,7 +564,7 @@ static gboolean on_draw(GtkWidget *da, cairo_t *cr, gpointer ud) {
         draw_series(cr, cpu_hist, hist_n, 0.95, 0.55, 0.15, w, h / 2 - 4);   /* CPU 橙 */
         draw_series(cr, mem_hist, hist_n, 0.45, 0.65, 0.95, w, h / 2 - 4);   /* MEM 蓝 */
         draw_series(cr, disk_hist, hist_n, 0.20, 0.83, 0.60, w, h / 2 - 4); /* DISK 绿 */
-        draw_series(cr, net_hist, hist_n, 0.72, 0.38, 0.95, w, h / 2 - 4); /* NET 紫 */
+        draw_series(cr, net_hist, hist_n, 0.18, 0.76, 0.76, w, h / 2 - 4); /* NET 青（禁紫） */
     }
     /* 图例文字（带彩色方块） */
     cairo_set_font_size(cr, 12);
@@ -578,9 +578,9 @@ static gboolean on_draw(GtkWidget *da, cairo_t *cr, gpointer ud) {
     cairo_set_source_rgb(cr, 0.9, 0.9, 0.9);
     cairo_move_to(cr, 24, 18);
     cairo_show_text(cr, g_strdup_printf("CPU %3.0f%%", last_cpu * 100));
-    /* NET 紫方块 + 文字 (KB/s) */
+    /* NET 青方块 + 文字 (KB/s)（禁紫） */
     double last_net = hist_n ? net_hist[hist_n - 1] : 0;
-    cairo_set_source_rgb(cr, 0.72, 0.38, 0.95);
+    cairo_set_source_rgb(cr, 0.18, 0.76, 0.76);
     cairo_rectangle(cr, w - 190, 8, 10, 10);
     cairo_fill(cr);
     cairo_set_source_rgb(cr, 0.9, 0.9, 0.9);
