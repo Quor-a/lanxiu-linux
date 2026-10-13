@@ -1122,6 +1122,7 @@ static void build_ui(void) {
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(speed_combo), "1.5", "1.5x");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(speed_combo), "2.0", "2.0x");
     gtk_combo_box_set_active_id(GTK_COMBO_BOX(speed_combo), "1.0");
+    gtk_widget_set_tooltip_text(speed_combo, TR("播放速度"));
     /* 恢复上次播放速度（release 275） */
     {
         gchar *cdir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
