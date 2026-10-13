@@ -2439,7 +2439,9 @@ static void build_bar(void) {
     gtk_widget_set_tooltip_text(clip_btn, TR("剪贴板（打开 qyclip）"));
     gtk_box_pack_start(GTK_BOX(tray_hb), clip_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(tray_hb), make_tray_icon_btn(TRAY_SHOT, TR("截图"), "qyshot"), FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(tray_hb), make_tray_icon_btn(TRAY_LOCK, TR("锁屏"), "qylock"), FALSE, FALSE, 0);
+    GtkWidget *lock_btn = make_tray_icon_btn(TRAY_LOCK, TR("锁屏"), "qylock");
+    gtk_widget_set_tooltip_text(lock_btn, TR("锁屏（打开 qylock）"));
+    gtk_box_pack_start(GTK_BOX(tray_hb), lock_btn, FALSE, FALSE, 0);
     /* 电池（系统存在电池时显示） */
     if (has_battery()) {
         GtkWidget *bat_btn = make_tray_icon_btn_cb(TRAY_BAT, TR("电池"), G_CALLBACK(on_bat_clicked), NULL);
