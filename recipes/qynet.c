@@ -663,6 +663,7 @@ int main(int argc, char **argv) {
     qy_add_class(b_conn, "qy-btn");
     g_signal_connect(b_conn, "clicked", G_CALLBACK(do_connect), NULL);
     GtkWidget *b_refresh = gtk_button_new_with_label(TR("刷新"));
+    gtk_widget_set_tooltip_text(b_refresh, TR("重新扫描网络接口"));
     qy_add_class(b_refresh, "qy-btn");
     g_signal_connect(b_refresh, "clicked", G_CALLBACK(refresh_list), NULL);
     GtkWidget *b_wifi = gtk_button_new_with_label(TR("WiFi 连接"));
