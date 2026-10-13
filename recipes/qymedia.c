@@ -1231,6 +1231,7 @@ static void build_ui(void) {
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(lyric_font_combo), "15", TR("歌词 中"));
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(lyric_font_combo), "18", TR("歌词 大"));
     gtk_combo_box_set_active_id(GTK_COMBO_BOX(lyric_font_combo), "15");
+    gtk_widget_set_tooltip_text(lyric_font_combo, TR("歌词字号（也可 Ctrl+= / Ctrl+滚轮调节）"));
     {
         gchar *cdir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
         gchar *cp = g_build_filename(cdir, "qymedia-lyric-font.conf", NULL);
