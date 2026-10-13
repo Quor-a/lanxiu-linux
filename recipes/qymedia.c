@@ -1250,6 +1250,7 @@ static void build_ui(void) {
     /* 循环 + 均衡器 + 音量 */
     GtkWidget *bar2 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget *eq_btn = gtk_button_new_with_label(TR("均衡器"));
+    gtk_widget_set_tooltip_text(eq_btn, TR("六段均衡器（63Hz-16kHz）"));
     qy_add_class(eq_btn, "qy-btn");
     g_signal_connect(eq_btn, "clicked", G_CALLBACK(on_eq_clicked), NULL);
     gtk_box_pack_start(GTK_BOX(bar2), eq_btn, FALSE, FALSE, 0);
