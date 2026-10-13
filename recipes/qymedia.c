@@ -408,6 +408,43 @@ static void on_prev_clicked(GtkWidget *w, gpointer ud) {
 }
 
 /* 添加一个曲目到播放列表 */
+/* 播放列表右键「从播放列表移除」（release 273） */
+static void on_track_remove(GtkMenuItem *mi, gpointer ud) {
+    (void)mi;
+    const char *path = (const char *)ud;
+    if (path && path[0]) {
+        for (guint i = 0; i < track_list->len; i++) {
+            if (strcmp((const char *)g_ptr_array_index(track_list, i), path) == 0) {
+                g_ptr_array_remove_index(track_list, i);
+                break;
+            }
+        }
+    }
+    GList *ch = gtk_container_get_children(GTK_CONTAINER(playlist));
+    for (GList *l = ch; l; l = l->next)
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(ch);
+    for (guint i = 0; i < track_list->len; i++)
+        add_to_playlist((const char *)g_ptr_array_index(track_list, i));
+    playlist_save();
+    g_free(ud);
+}
+
+static gboolean on_track_row_press(GtkWidget *row, GdkEventButton *ev, gpointer ud) {
+    (void)ud;
+    if (ev->button != 3) return FALSE;
+    const char *path = g_object_get_data(G_OBJECT(row), "track-path");
+    if (!path) return FALSE;
+    GtkWidget *menu = gtk_menu_new();
+    GtkWidget *mi = gtk_menu_item_new_with_label(TR("从播放列表移除"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_track_remove), (gpointer)g_strdup(path));
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    gtk_widget_show_all(menu);
+    gtk_menu_attach_to_widget(GTK_MENU(menu), row, NULL);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)ev);
+    return TRUE;
+}
+
 static void add_to_playlist(const char *path) {
     if (!path || !path[0]) return;
     for (guint i = 0; i < track_list->len; i++) {
@@ -424,6 +461,7 @@ static void add_to_playlist(const char *path) {
     gtk_container_add(GTK_CONTAINER(row), lbl);
     g_object_set_data_full(G_OBJECT(row), "track-path", g_strdup(path), g_free);
     gtk_list_box_insert(GTK_LIST_BOX(playlist), row, -1);
+    g_signal_connect(row, "button-press-event", G_CALLBACK(on_track_row_press), NULL);
     playlist_save();   /* 添加后自动保存 */
 }
 
