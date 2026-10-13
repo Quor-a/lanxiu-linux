@@ -722,6 +722,19 @@ static void on_eq_clicked(GtkButton *b, gpointer ud) {
             g_signal_connect(scale, "value-changed", G_CALLBACK(on_eq_changed), NULL);
             gtk_grid_attach(GTK_GRID(grid), scale, i, 1, 1, 1);
         }
+        /* 加载已保存均衡器配置（release 270） */
+        gchar *eqpath = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qymedia-eq.conf", NULL);
+        GKeyFile *kf = g_key_file_new();
+        if (g_key_file_load_from_file(kf, eqpath, G_KEY_FILE_NONE, NULL)) {
+            for (int i = 0; i < 6; i++) {
+                gchar *key = g_strdup_printf("band%d", i + 1);
+                gint val = g_key_file_get_integer(kf, "eq", key, NULL);
+                g_free(key);
+                if (eq_scales[i]) gtk_range_set_value(GTK_RANGE(eq_scales[i]), val);
+            }
+        }
+        g_key_file_free(kf);
+        g_free(eqpath);
         /* 预设按钮（release 270） */
         GtkWidget *preset_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
         GtkWidget *b_flat = gtk_button_new_with_label(TR("平直"));
