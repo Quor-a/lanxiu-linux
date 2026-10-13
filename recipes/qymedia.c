@@ -931,6 +931,7 @@ static void on_eq_preset(GtkButton *b, gpointer ud) {
     for (int i = 0; i < 6; i++)
         if (eq_scales[i]) gtk_range_set_value(GTK_RANGE(eq_scales[i]), vals[i]);
     eq_save();
+    gtk_label_set_text(GTK_LABEL(status_label), TR("均衡器预设已应用"));
 }
 
 /* 把 6 段滑杆当前值写入 ~/.config/lanxiu/qymedia-eq.conf（[eq] bandN=值） */
