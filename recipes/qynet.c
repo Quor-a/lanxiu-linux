@@ -412,7 +412,7 @@ static void wifi_scan(void) {
                         esc = strstr(ssid, "\\:");
                     }
                     if (ssid[0] && ssid[0] != ':') {
-                        wifi_list_add(ssid, sig);
+                        wifi_list_add(ssid, sig, FALSE);
                         any = TRUE;
                     }
                     g_free(ssid);
