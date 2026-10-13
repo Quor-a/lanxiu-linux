@@ -486,7 +486,9 @@ static void add_to_playlist(const char *path) {
     g_ptr_array_add(track_list, g_strdup(path));
     gchar *base = g_path_get_basename(path);
     GtkWidget *row = gtk_list_box_row_new();
-    GtkWidget *lbl = gtk_label_new(base);
+    gchar *numbered = g_strdup_printf("%u. %s", track_list->len, base);
+    GtkWidget *lbl = gtk_label_new(numbered);
+    g_free(numbered);
     g_free(base);
     gtk_label_set_xalign(GTK_LABEL(lbl), 0.0);
     gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
