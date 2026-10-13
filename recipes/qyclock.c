@@ -351,6 +351,14 @@ static gboolean timer_tick(gpointer p) {
     return G_SOURCE_CONTINUE;
 }
 
+/* 计时器预设：1/5/10 分钟（release 278） */
+static void on_timer_preset(GtkButton *b, gpointer ud) {
+    (void)b;
+    int total = GPOINTER_TO_INT(ud);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(timer_min), total / 60);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(timer_sec), total % 60);
+}
+
 static void on_timer_start(GtkButton *b, gpointer ud) {
     (void)b; (void)ud;
     if (timer_running) return;   /* 运行中忽略重复开始 */
@@ -404,6 +412,15 @@ static GtkWidget *build_timer_page(void) {
     gtk_box_pack_start(GTK_BOX(row), timer_min, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(row), sl, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(row), timer_sec, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(row), gtk_label_new(" "), FALSE, FALSE, 0);
+    const int presets[] = { 60, 300, 600 };
+    const char *preset_lbl[] = { TR("1分钟"), TR("5分钟"), TR("10分钟") };
+    for (int i = 0; i < 3; i++) {
+        GtkWidget *pb = gtk_button_new_with_label(preset_lbl[i]);
+        qy_add_class(pb, "qy-clock-btn");
+        g_signal_connect(pb, "clicked", G_CALLBACK(on_timer_preset), GINT_TO_POINTER(presets[i]));
+        gtk_box_pack_start(GTK_BOX(row), pb, FALSE, FALSE, 0);
+    }
     gtk_box_pack_start(GTK_BOX(page), row, FALSE, FALSE, 0);
 
     GtkWidget *btns = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
