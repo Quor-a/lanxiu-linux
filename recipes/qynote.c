@@ -333,6 +333,11 @@ static gboolean on_key_press(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
         save_current_note();
         return TRUE;
     }
+    if ((ev->state & GDK_CONTROL_MASK) &&
+        (ev->keyval == GDK_KEY_n || ev->keyval == GDK_KEY_N)) {
+        on_new_clicked(NULL, NULL);
+        return TRUE;
+    }
     return FALSE;
 }
 
