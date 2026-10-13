@@ -42,9 +42,12 @@ static const CityEntry CITIES[] = {
     { "纽约", -5 },
     { "东京", 9 },
     { "悉尼", 10 },
+    { "巴黎", 1 },
+    { "迪拜", 4 },
+    { "洛杉矶", -8 },
 };
 #define NCITIES ((int)(sizeof CITIES / sizeof CITIES[0]))
-static GtkWidget *world_time_labels[NCITIES] = { NULL, NULL, NULL, NULL, NULL };
+static GtkWidget *world_time_labels[NCITIES] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
 
 /* ---------- 计时器 ---------- */
 static GtkWidget *timer_label  = NULL;   /* #qyclock-timer 大字 MM:SS */
