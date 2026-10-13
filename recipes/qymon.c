@@ -47,17 +47,41 @@ static gchar *proc_filter = NULL;         /* 当前过滤文本（小写） */
 static gint  ctx_pid = 0;
 static gchar *ctx_name = NULL;
 
-enum { P_PID, P_NAME, P_MEM, N_PCOLS };
+/* CPU% 两次采样差分（release 271） */
+typedef struct { gint64 ticks; gint64 mono_us; } ProcCpuSample;
+static GHashTable *cpu_prev = NULL;   /* gint64* pid -> ProcCpuSample* */
+static long clk_tck = 0;
+
+enum { P_PID, P_NAME, P_MEM, P_CPU, N_PCOLS };
+
+/* 进程行 CPU% 格式化（GtkCellRendererText data func） */
+static void cpu_cell_data_func(GtkTreeViewColumn *col, GtkCellRenderer *r,
+                               GtkTreeModel *m, GtkTreeIter *it, gpointer ud) {
+    (void)col; (void)ud;
+    double v = 0;
+    gtk_tree_model_get(m, it, P_CPU, &v, -1);
+    gchar *s = g_strdup_printf("%.1f%%", v);
+    g_object_set(r, "text", s, NULL);
+    g_free(s);
+}
 
 /* 刷新全量进程列表（/proc/PID/comm + status VmRSS），默认按内存降序。
  * 若设置了 proc_filter，仅保留进程名（忽略大小写）包含过滤词的条目。 */
 static void refresh_proc_list(void) {
     if (!proc_store) return;
+    /* CPU% 差分采样：初始化哈希表与 CLK_TCK（release 271） */
+    if (!cpu_prev)
+        cpu_prev = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, g_free);
+    if (clk_tck <= 0) {
+        clk_tck = sysconf(_SC_CLK_TCK);
+        if (clk_tck <= 0) clk_tck = 100;
+    }
     gtk_list_store_clear(proc_store);
     GDir *dir = g_dir_open("/proc", 0, NULL);
     if (!dir) return;
     const char *ent;
     int n = 0;
+    GHashTable *seen = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL); /* 本次出现的 pid 集合 */
     while ((ent = g_dir_read_name(dir)) != NULL) {
         if (!g_ascii_isdigit(ent[0])) continue;
         gchar *cp = g_strdup_printf("/proc/%s/comm", ent);
@@ -84,18 +108,85 @@ static void refresh_proc_list(void) {
             }
             g_free(sp);
             g_free(status);
+            /* CPU% 两次采样差分（release 271） */
+            gint64 pid64 = g_ascii_strtoll(ent, NULL, 10);
+            gint64 *pid_key = g_new(gint64, 1);
+            *pid_key = pid64;
+            g_hash_table_add(seen, pid_key);
+            double cpu = 0.0;
+            gchar *statp = g_strdup_printf("/proc/%s/stat", ent);
+            gchar *stat = NULL;
+            if (g_file_get_contents(statp, &stat, NULL, NULL) && stat) {
+                char *rp = strchr(stat, ')');   /* comm 可能含空格/括号，从最后一个 ')' 后开始解析 */
+                if (rp) {
+                    unsigned long long utime = 0, stime = 0;
+                    /* 字段：state ppid pgrp session tty_nr tpgid flags minflt cminflt majflt cmajflt utime stime */
+                    char *p = rp + 1;
+                    int field = 0;   /* 0=state, 1=ppid, ... 11=utime, 12=stime */
+                    while (*p) {
+                        while (*p == ' ' || *p == '\t') p++;
+                        if (!*p) break;
+                        if (field == 0) {
+                            p++;   /* state 是单个字符（R/S/D/Z 等） */
+                        } else {
+                            char *end = NULL;
+                            unsigned long long v = strtoull(p, &end, 10);
+                            if (end == p) break;   /* 解析失败，防止死循环 */
+                            p = end;
+                            if (field == 11) utime = v;
+                            else if (field == 12) stime = v;
+                        }
+                        field++;
+                    }
+                    if (field >= 13) {
+                        gint64 now_us = g_get_monotonic_time();
+                        gint64 ticks = (gint64)(utime + stime);
+                        ProcCpuSample *prev = g_hash_table_lookup(cpu_prev, pid_key);
+                        if (prev && prev->mono_us > 0 && now_us > prev->mono_us) {
+                            double dt = (now_us - prev->mono_us) / 1000000.0;
+                            gint64 dticks = ticks - prev->ticks;
+                            if (dticks < 0) dticks = 0;
+                            if (dt > 0)
+                                cpu = (double)dticks / (dt * clk_tck) * 100.0;
+                            if (cpu < 0) cpu = 0;
+                            if (cpu > 1000) cpu = 1000;   /* 防御多核异常 */
+                        }
+                        if (prev) {
+                            prev->ticks = ticks;
+                            prev->mono_us = now_us;
+                        } else {
+                            ProcCpuSample *ns = g_new0(ProcCpuSample, 1);
+                            ns->ticks = ticks;
+                            ns->mono_us = now_us;
+                            g_hash_table_insert(cpu_prev, g_new(gint64, 1), ns);
+                        }
+                    }
+                }
+            }
+            g_free(statp);
+            g_free(stat);
             GtkTreeIter it;
             gtk_list_store_append(proc_store, &it);
             gtk_list_store_set(proc_store, &it,
-                               P_PID, atoi(ent),
+                               P_PID, (int)pid64,
                                P_NAME, comm,
-                               P_MEM, rss_kb, -1);
+                               P_MEM, rss_kb,
+                               P_CPU, cpu, -1);
             n++;
             g_free(comm);
         }
         g_free(cp);
     }
     g_dir_close(dir);
+    /* 清理已消失进程的 CPU 采样（长期运行内存有界） */
+    GHashTableIter hit;
+    gpointer hk, hv;
+    g_hash_table_iter_init(&hit, cpu_prev);
+    while (g_hash_table_iter_next(&hit, &hk, &hv)) {
+        if (!g_hash_table_contains(seen, hk))
+            g_hash_table_iter_remove(&hit);
+    }
+    g_hash_table_destroy(seen);
     g_printerr("QYMONDBG: procs=%d\n", n);
     if (proc_info_label) {
         gchar *s = g_strdup_printf(TR("进程 %d 个 · 点击选择后结束"), n);
@@ -848,7 +939,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(vbox), proc_label, FALSE, FALSE, 0);
 
     /* 全量进程列表（可排序、可选择） */
-    proc_store = gtk_list_store_new(N_PCOLS, G_TYPE_INT, G_TYPE_STRING, G_TYPE_LONG);
+    proc_store = gtk_list_store_new(N_PCOLS, G_TYPE_INT, G_TYPE_STRING, G_TYPE_LONG, G_TYPE_DOUBLE);
     proc_tv = gtk_tree_view_new_with_model(GTK_TREE_MODEL(proc_store));
     GtkCellRenderer *pr = gtk_cell_renderer_text_new();
     GtkTreeViewColumn *col = gtk_tree_view_column_new_with_attributes("PID", pr, "text", P_PID, NULL);
@@ -861,6 +952,14 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_tree_view_append_column(GTK_TREE_VIEW(proc_tv), col);
     col = gtk_tree_view_column_new_with_attributes(TR("内存 KB"), pr, "text", P_MEM, NULL);
     gtk_tree_view_column_set_sort_column_id(col, P_MEM);
+    gtk_tree_view_column_set_clickable(col, TRUE);
+    gtk_tree_view_append_column(GTK_TREE_VIEW(proc_tv), col);
+    /* CPU% 列（release 271）：double 值排序，自定义格式化显示 */
+    col = gtk_tree_view_column_new();
+    gtk_tree_view_column_set_title(col, TR("CPU%"));
+    gtk_tree_view_column_pack_start(col, pr, TRUE);
+    gtk_tree_view_column_set_cell_data_func(col, pr, cpu_cell_data_func, NULL, NULL);
+    gtk_tree_view_column_set_sort_column_id(col, P_CPU);
     gtk_tree_view_column_set_clickable(col, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(proc_tv), col);
     /* 进程搜索框：输入即过滤（进程刷新时应用），置于列表上方 */

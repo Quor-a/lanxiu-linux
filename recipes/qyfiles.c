@@ -1197,6 +1197,16 @@ static void chdir_trash(void) {
 }
 
 /* ---------- 搜索过滤 ---------- */
+/* Ctrl+F 聚焦搜索框（release 271） */
+static gboolean on_main_keypress(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->keyval == GDK_KEY_f && (ev->state & GDK_CONTROL_MASK)) {
+        if (search_entry) gtk_widget_grab_focus(search_entry);
+        return TRUE;
+    }
+    return FALSE;
+}
+
 static void on_search_changed(GtkSearchEntry *se, gpointer ud) {
     (void)ud;
     const char *text = gtk_entry_get_text(GTK_ENTRY(se));
@@ -1995,6 +2005,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_window_set_title(GTK_WINDOW(win), TR("澜岫文件管理器"));
     qy_make_titlebar(GTK_WINDOW(win), TR("澜岫文件管理器"));
     qy_window_setup(GTK_WINDOW(win), 920, 560, 720, 480, FALSE);
+    g_signal_connect(win, "key-press-event", G_CALLBACK(on_main_keypress), NULL);
 
     GtkWidget *hpane = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     qy_add_class(hpane, "qy-app-surface");
