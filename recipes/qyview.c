@@ -595,6 +595,13 @@ static void on_slide_interval(GtkSpinButton *sp, gpointer ud) {
     (void)ud;
     slide_ms = (int)(gtk_spin_button_get_value(sp) * 1000);
     if (slide_ms < 1000) slide_ms = 1000;
+    /* 记忆间隔（release 281） */
+    gchar *dir = g_build_filename(g_get_user_config_dir(), "lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    gchar *cfg = g_build_filename(dir, "qyview-slide.conf", NULL);
+    gchar *txt = g_strdup_printf("%d\n", slide_ms / 1000);
+    g_file_set_contents(cfg, txt, -1, NULL);
+    g_free(txt); g_free(cfg); g_free(dir);
 }
 
 static gboolean slide_tick(gpointer ud) {
@@ -854,6 +861,18 @@ static void activate(GtkApplication *app, gpointer ud) {
     /* 幻灯片间隔（release 270） */
     slide_spin = gtk_spin_button_new_with_range(1, 10, 1);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(slide_spin), 3);
+    /* 加载上次间隔（release 281） */
+    {
+        gchar *dir = g_build_filename(g_get_user_config_dir(), "lanxiu", NULL);
+        gchar *cfg = g_build_filename(dir, "qyview-slide.conf", NULL);
+        gchar *contents = NULL;
+        if (g_file_get_contents(cfg, &contents, NULL, NULL)) {
+            int sec = atoi(contents);
+            if (sec >= 1 && sec <= 10)
+                gtk_spin_button_set_value(GTK_SPIN_BUTTON(slide_spin), sec);
+        }
+        g_free(contents); g_free(cfg); g_free(dir);
+    }
     qy_add_class(slide_spin, "qy-view-bar-btn");
     gtk_widget_set_tooltip_text(slide_spin, TR("幻灯片间隔（秒）"));
     g_signal_connect(slide_spin, "value-changed", G_CALLBACK(on_slide_interval), NULL);
