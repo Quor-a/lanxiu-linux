@@ -512,17 +512,32 @@ static void hist_on_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer 
     if (hist_popover) gtk_popover_popdown(GTK_POPOVER(hist_popover));
 }
 
+/* 清空计算历史（release 285） */
+static void hist_clear(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (!hist_entries) return;
+    g_ptr_array_set_size(hist_entries, 0);
+    hist_save();
+    hist_refresh_list();
+}
+
 /* 构建「历史」按钮 + 弹层 */
 static void build_history_ui(GtkWidget *vbox) {
     hist_btn = gtk_button_new_with_label(TR("历史"));
     qy_add_class(hist_btn, "qy-btn");
     hist_popover = gtk_popover_new(hist_btn);
+    GtkWidget *pv = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
-    gtk_widget_set_size_request(sw, 250, 210);
+    gtk_widget_set_size_request(sw, 250, 200);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     hist_list = gtk_list_box_new();
     gtk_container_add(GTK_CONTAINER(sw), hist_list);
-    gtk_container_add(GTK_CONTAINER(hist_popover), sw);
+    GtkWidget *b_clear = gtk_button_new_with_label(TR("清空历史"));
+    qy_add_class(b_clear, "qy-btn qy-btn-danger");
+    g_signal_connect(b_clear, "clicked", G_CALLBACK(hist_clear), NULL);
+    gtk_box_pack_start(GTK_BOX(pv), sw, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(pv), b_clear, FALSE, FALSE, 0);
+    gtk_container_add(GTK_CONTAINER(hist_popover), pv);
     g_signal_connect(hist_list, "row-activated", G_CALLBACK(hist_on_row_activated), NULL);
     hist_load();
     hist_refresh_list();
