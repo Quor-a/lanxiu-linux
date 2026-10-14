@@ -341,6 +341,19 @@ static gboolean on_key_press(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
     return FALSE;
 }
 
+/* 拖放 .txt 文件到窗口打开（release 281） */
+static void on_win_drag_recv(GtkWidget *w, GdkDragContext *ctx, gint x, gint y,
+                             GtkSelectionData *data, guint info, guint t, gpointer ud) {
+    (void)w; (void)ctx; (void)x; (void)y; (void)info; (void)t; (void)ud;
+    gchar **uris = gtk_selection_data_get_uris(data);
+    if (uris && uris[0]) {
+        gchar *path = g_filename_from_uri(uris[0], NULL, NULL);
+        if (path) load_note(path);
+        g_free(path);
+    }
+    g_strfreev(uris);
+}
+
 /* 自动化: 每 60 秒自动保存当前笔记（release 280） */
 static gboolean auto_save(gpointer p) {
     (void)p;
@@ -362,6 +375,12 @@ int main(int argc, char **argv) {
 
     win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(win), TR("笔记"));
+    /* 拖放 .txt 文件到窗口打开（release 281） */
+    {
+        GtkTargetEntry te = { (gchar *)"text/uri-list", 0, 0 };
+        gtk_drag_dest_set(win, GTK_DEST_DEFAULT_ALL, &te, 1, GDK_ACTION_COPY);
+        g_signal_connect(win, "drag-data-received", G_CALLBACK(on_win_drag_recv), NULL);
+    }
     gtk_widget_set_name(win, "qy-note-win");
     qy_make_titlebar(GTK_WINDOW(win), TR("笔记"));
     qy_window_setup(GTK_WINDOW(win), 680, 460, 560, 400, TRUE);
