@@ -448,6 +448,34 @@ static void do_save_as(GtkWidget *w, gpointer ud) {
     if (!current_path) current_path = old; /* 取消则恢复 */
 }
 
+/* ---------- 自动缩进（release 283）：回车时复制当前行前导空白 ---------- */
+static gboolean on_editor_key_press(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
+    (void)ud;
+    if (ev->keyval != GDK_KEY_Return && ev->keyval != GDK_KEY_KP_Enter &&
+        ev->keyval != GDK_KEY_ISO_Enter)
+        return FALSE;
+    GtkTextBuffer *b = gtk_text_view_get_buffer(GTK_TEXT_VIEW(w));
+    GtkTextIter ins;
+    gtk_text_buffer_get_iter_at_mark(b, &ins, gtk_text_buffer_get_insert(b));
+    GtkTextIter line_start = ins;
+    gtk_text_iter_set_line_offset(&line_start, 0);
+    GtkTextIter scan = line_start;
+    while (!gtk_text_iter_ends_line(&scan)) {
+        gunichar ch = gtk_text_iter_get_char(&scan);
+        if (ch != ' ' && ch != '\t') break;
+        gtk_text_iter_forward_char(&scan);
+    }
+    gchar *indent = gtk_text_iter_get_slice(&line_start, &scan);
+    gtk_text_buffer_begin_user_action(b);
+    gtk_text_buffer_insert_at_cursor(b, "\n", 1);
+    if (indent && indent[0])
+        gtk_text_buffer_insert_at_cursor(b, indent, -1);
+    gtk_text_buffer_end_user_action(b);
+    g_free(indent);
+    gtk_text_view_scroll_to_mark(GTK_TEXT_VIEW(w), gtk_text_buffer_get_insert(b), 0, FALSE, 0, 0);
+    return TRUE;
+}
+
 int main(int argc, char **argv) {
     gtk_init(&argc, &argv);
     qy_load_theme();
@@ -517,6 +545,8 @@ int main(int argc, char **argv) {
     g_signal_connect_after(text_view, "draw", G_CALLBACK(on_editor_draw), NULL);
     /* 右键菜单（剪切/复制/粘贴/全选/查找） */
     g_signal_connect(text_view, "button-press-event", G_CALLBACK(on_editor_button_press), NULL);
+    /* 自动缩进（release 283）：回车复制前导空白 */
+    g_signal_connect(text_view, "key-press-event", G_CALLBACK(on_editor_key_press), NULL);
     /* 支持环境变量 QYEDIT_FONT_SIZE 调整正文字号（自动化验证用） */
     {
         const char *fs = getenv("QYEDIT_FONT_SIZE");
