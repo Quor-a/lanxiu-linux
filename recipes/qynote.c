@@ -277,7 +277,7 @@ static void on_delete_clicked(GtkButton *b, gpointer ud) {
     g_free(title);
 }
 
-/* 导出笔记为 UTF-8 文本（release 275） */
+/* 导出笔记为 UTF-8 文本 / Markdown（release 275/285） */
 static void on_export_clicked(GtkButton *b, gpointer ud) {
     (void)b; (void)ud;
     GtkTextBuffer *buf = gtk_text_view_get_buffer(textview);
@@ -289,13 +289,34 @@ static void on_export_clicked(GtkButton *b, gpointer ud) {
                           GTK_FILE_CHOOSER_ACTION_SAVE, TR("导出"), TR("取消"));
     GtkFileChooser *fc = GTK_FILE_CHOOSER(dlg);
     gtk_file_chooser_set_current_name(fc, "note.txt");
+    /* 格式选择（release 285） */
+    GtkWidget *extra = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_box_pack_start(GTK_BOX(extra), gtk_label_new(TR("格式:")), FALSE, FALSE, 0);
+    GtkWidget *fmt = gtk_combo_box_text_new();
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(fmt), TR("纯文本 (.txt)"));
+    gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(fmt), TR("Markdown (.md)"));
+    gtk_combo_box_set_active(GTK_COMBO_BOX(fmt), 0);
+    gtk_box_pack_start(GTK_BOX(extra), fmt, FALSE, FALSE, 0);
+    gtk_file_chooser_set_extra_widget(fc, extra);
     if (gtk_native_dialog_run(GTK_NATIVE_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
         char *path = gtk_file_chooser_get_filename(fc);
         if (path) {
-            if (g_file_set_contents(path, txt, -1, NULL))
-                gtk_label_set_text(GTK_LABEL(status_lb), TR("已导出为文本"));
+            int md = gtk_combo_box_get_active(GTK_COMBO_BOX(fmt)) == 1;
+            gchar *out = g_strdup(path);
+            const char *ext = strrchr(out, '.');
+            gboolean has_ext = ext && (g_ascii_strcasecmp(ext, ".txt") == 0 ||
+                                       g_ascii_strcasecmp(ext, ".md") == 0);
+            if (!has_ext) {
+                gchar *with_ext = g_strdup_printf("%s%s", out, md ? ".md" : ".txt");
+                g_free(out);
+                out = with_ext;
+            }
+            if (g_file_set_contents(out, txt, -1, NULL))
+                gtk_label_set_text(GTK_LABEL(status_lb),
+                                   md ? TR("已导出为 Markdown") : TR("已导出为文本"));
             else
                 gtk_label_set_text(GTK_LABEL(status_lb), TR("导出失败"));
+            g_free(out);
             g_free(path);
         }
     }
