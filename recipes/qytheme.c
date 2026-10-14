@@ -39,15 +39,16 @@ void qy_load_theme(void) {
     const char *color = "#E95420";  /* orange */
     /* 仅保留锁橙强调色；blue/green 分支已按审计移除（禁多色系） */
 
-    /* 覆盖 CSS: 主按钮 / 标题 / 进度条 */
+    /* 覆盖 CSS: 主按钮 / 标题 / 进度条 / 按钮焦点环（release 283 键盘导航） */
     gchar *css = g_strdup_printf(
         ".qy-btn { background-image: none; background-color: %s; border-color: %s; color: #ffffff; }\n"
         ".qy-btn:hover { background-image: none; background-color: %s; }\n"
         ".qy-mon-cpu { background-color: %s; border-color: %s; color: #ffffff; }\n"
         ".qy-mon-title { color: %s; }\n"
         "progressbar trough { background-color: #222a38; }\n"
-        "progressbar progress { background-color: %s; }\n",
-        color, color, color, color, color, color, color);
+        "progressbar progress { background-color: %s; }\n"
+        "button:focus { box-shadow: 0 0 0 2px %s; }\n",
+        color, color, color, color, color, color, color, color);
     GtkCssProvider *p2 = gtk_css_provider_new();
     if (gtk_css_provider_load_from_data(p2, css, -1, NULL)) {
         gtk_style_context_add_provider_for_screen(

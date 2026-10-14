@@ -93,6 +93,7 @@ static gboolean player_manual_stop = FALSE;
 static GPtrArray *track_list = NULL;    /* gchar* 路径 */
 static int current_index = -1;          /* 当前曲目索引 */
 static gboolean loop_enabled = FALSE;   /* 循环开关 */
+static GHashTable *play_counts = NULL; /* 播放计数: path -> count（release 283） */
 
 static void on_next_clicked(GtkWidget *w, gpointer ud);   /* 前向声明 */
 static void on_play(GtkWidget *w, gpointer ud);           /* 前向声明（媒体快捷键用） */
@@ -104,6 +105,7 @@ static void on_remove_selected(GtkMenuItem *mi, gpointer ud); /* 前向声明（
 static void playlist_save(void);                          /* 前向声明（add_to_playlist 自动保存用） */
 static void add_to_playlist(const char *path);            /* 前向声明（on_track_remove 提前引用） */
 static void playlist_row_add(const char *path, guint seq);                        /* 前向声明（拖拽重建用） */
+static void count_increment(const char *path);              /* 前向声明（play_file 播放计数用） */
 static void on_playlist_drag_get(GtkWidget *w, GdkDragContext *ctx, GtkSelectionData *data,
                                  guint info, guint t, gpointer ud);               /* 前向声明（拖拽排序） */
 static void on_playlist_drag_recv(GtkWidget *w, GdkDragContext *ctx, gint x, gint y,
@@ -407,6 +409,7 @@ static void play_file(const char *path) {
         lyric_elapsed = 0.0;
         lyric_seg_start = g_get_monotonic_time();
         set_pause_icon(QY_ICON_PAUSE);
+        count_increment(path);   /* 播放计数 +1（release 283） */
     }
     g_strfreev(argv);
 }
@@ -704,7 +707,10 @@ static void playlist_row_add(const char *path, guint seq) {
     if (!path || !path[0]) return;
     gchar *base = g_path_get_basename(path);
     GtkWidget *row = gtk_list_box_row_new();
-    gchar *numbered = g_strdup_printf("%u. %s", seq, base);
+    guint count = play_counts ? GPOINTER_TO_UINT(g_hash_table_lookup(play_counts, path)) : 0;
+    gchar *numbered = count > 0
+        ? g_strdup_printf("%u. %s  · %s%u %s", seq, base, TR("播放"), count, TR("次"))
+        : g_strdup_printf("%u. %s", seq, base);
     GtkWidget *lbl = gtk_label_new(numbered);
     g_free(numbered);
     g_free(base);
@@ -723,6 +729,8 @@ static void playlist_row_add(const char *path, guint seq) {
         }
     }
     g_object_set_data_full(G_OBJECT(row), "track-path", g_strdup(path), g_free);
+    g_object_set_data(G_OBJECT(row), "track-lbl", lbl);       /* 播放计数刷新用（release 283） */
+    g_object_set_data(G_OBJECT(row), "track-seq", GUINT_TO_POINTER(seq));
     gtk_list_box_insert(GTK_LIST_BOX(playlist), row, -1);
     g_signal_connect(row, "button-press-event", G_CALLBACK(on_track_row_press), NULL);
     /* 拖拽排序（release 280） */
@@ -836,6 +844,96 @@ static void playlist_load(void) {
     }
     g_free(content);
     g_free(path);
+}
+
+/* ---------- 播放计数（~/.config/lanxiu/qymedia-count.conf，release 283） ---------- */
+static gchar *count_path(void) {
+    return g_build_filename(g_get_home_dir(), ".config/lanxiu/qymedia-count.conf", NULL);
+}
+
+static void counts_save(void) {
+    if (!play_counts) return;
+    gchar *path = count_path();
+    GKeyFile *kf = g_key_file_new();
+    GHashTableIter it;
+    gpointer key, val;
+    g_hash_table_iter_init(&it, play_counts);
+    while (g_hash_table_iter_next(&it, &key, &val)) {
+        gint c = GPOINTER_TO_INT(val);
+        if (c > 0)
+            g_key_file_set_integer(kf, "counts", (const char *)key, c);
+    }
+    gsize len = 0;
+    gchar *data = g_key_file_to_data(kf, &len, NULL);
+    if (data) {
+        gchar *dir = g_path_get_dirname(path);
+        g_mkdir_with_parents(dir, 0755);
+        g_free(dir);
+        GError *err = NULL;
+        g_file_set_contents(path, data, len, &err);
+        if (err) g_clear_error(&err);
+        g_free(data);
+    }
+    g_key_file_free(kf);
+    g_free(path);
+}
+
+static void counts_load(void) {
+    play_counts = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    gchar *path = count_path();
+    GKeyFile *kf = g_key_file_new();
+    if (g_key_file_load_from_file(kf, path, G_KEY_FILE_NONE, NULL)) {
+        gsize n = 0;
+        gchar **keys = g_key_file_get_keys(kf, "counts", &n, NULL);
+        for (gsize i = 0; i < n; i++) {
+            gint c = g_key_file_get_integer(kf, "counts", keys[i], NULL);
+            if (c > 0)
+                g_hash_table_replace(play_counts, g_strdup(keys[i]), GUINT_TO_POINTER(c));
+        }
+        g_strfreev(keys);
+    }
+    g_key_file_free(kf);
+    g_free(path);
+}
+
+/* 更新播放列表行的文字（含播放次数） */
+static void playlist_row_refresh(const char *path, guint seq, guint count) {
+    if (!playlist) return;
+    GList *ch = gtk_container_get_children(GTK_CONTAINER(playlist));
+    for (GList *l = ch; l; l = l->next) {
+        const char *p = g_object_get_data(G_OBJECT(l->data), "track-path");
+        if (p && strcmp(p, path) == 0) {
+            GtkWidget *lbl = g_object_get_data(G_OBJECT(l->data), "track-lbl");
+            if (lbl) {
+                gchar *base = g_path_get_basename(path);
+                gchar *txt = count > 0
+                    ? g_strdup_printf("%u. %s  · %s%u %s", seq, base, TR("播放"), count, TR("次"))
+                    : g_strdup_printf("%u. %s", seq, base);
+                gtk_label_set_text(GTK_LABEL(lbl), txt);
+                g_free(txt);
+                g_free(base);
+            }
+            break;
+        }
+    }
+    g_list_free(ch);
+}
+
+/* 曲目开始播放时计数 +1 并持久化 */
+static void count_increment(const char *path) {
+    if (!path || !path[0] || !play_counts) return;
+    guint c = GPOINTER_TO_UINT(g_hash_table_lookup(play_counts, path));
+    g_hash_table_replace(play_counts, g_strdup(path), GUINT_TO_POINTER(c + 1));
+    counts_save();
+    /* 找到该曲目所在行并更新显示（行号按当前列表位置） */
+    guint seq = 0;
+    for (guint i = 0; i < track_list->len; i++) {
+        if (strcmp((const char *)g_ptr_array_index(track_list, i), path) == 0) {
+            seq = i + 1;
+            break;
+        }
+    }
+    if (seq) playlist_row_refresh(path, seq, c + 1);
 }
 
 /* 工具栏「保存列表」 */
@@ -1461,7 +1559,8 @@ static void build_ui(void) {
     gtk_box_pack_start(GTK_BOX(bar2), vol_scale, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(right_vbox), bar2, FALSE, FALSE, 0);
 
-    /* 启动时加载上次保存的播放列表 */
+    /* 启动时加载播放计数 + 上次保存的播放列表 */
+    counts_load();
     playlist_load();
 
     gtk_widget_show_all(win);

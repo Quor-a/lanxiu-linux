@@ -22,7 +22,7 @@ static GtkListStore *store;
 static GtkWidget *info_label;
 static GtkWidget *btn_act;
 static GtkWidget *count_label;
-static char g_file[512] = "", g_name[128] = "", g_status[32] = "";
+static char g_file[512] = "", g_name[128] = "", g_ver[64] = "", g_status[32] = "";
 static char g_filter[256] = "";      /* 当前搜索词 */
 static int g_status_filter = 0;       /* 0=全部 1=已安装 2=可安装 */
 static GtkWidget *b_all = NULL, *b_inst = NULL, *b_avail = NULL;
@@ -123,6 +123,44 @@ static void human_size(long v, char *out, size_t n) {
     if (v >= 1048576) snprintf(out, n, "%.1f MB", v / 1048576.0);
     else if (v >= 1024) snprintf(out, n, "%ld KB", v / 1024);
     else snprintf(out, n, "%ld B", v);
+}
+
+/* 组装包详情多行文本: 名称-版本 / 描述 / 依赖 / 大小（release 283） */
+static void pkg_detail_text(const char *name, const char *ver, const char *file,
+                            char *out, size_t outsz) {
+    char *js = pkg_meta(file ? file : "");
+    if (js) {
+        char desc[512] = "", deps[256] = "", sizestr[64] = "";
+        json_str(js, "description", desc, sizeof desc);
+        if (!desc[0]) json_str(js, "summary", desc, sizeof desc);
+        long sz = json_num(js, "size");
+        if (sz > 0) human_size(sz, sizestr, sizeof sizestr);
+        /* depends 数组首段扫名字 */
+        const char *dp = strstr(js, "\"depends\"");
+        if (dp) {
+            size_t j = 0;
+            const char *q = strchr(dp, '[');
+            if (q) {
+                q++;
+                while (*q && *q != ']' && j + 1 < sizeof deps) {
+                    if (*q == '"') {
+                        q++;
+                        if (j && j + 1 < sizeof deps) deps[j++] = ',';
+                        while (*q && *q != '"' && j + 1 < sizeof deps) deps[j++] = *q++;
+                    }
+                    q++;
+                }
+            }
+            deps[j] = 0;
+        }
+        free(js);
+        snprintf(out, outsz, "%s-%s\n%s\n%s: %s\n%s: %s",
+                 name, ver ? ver : "", desc,
+                 TR("依赖"), deps,
+                 TR("大小"), sizestr[0] ? sizestr : "-");
+    } else {
+        snprintf(out, outsz, "%s-%s", name, ver ? ver : "");
+    }
 }
 
 
@@ -296,7 +334,21 @@ static gboolean on_refresh_auto(gpointer p) {
 }
 
 static void show_row(GtkTreeView *tv, GtkTreeIter *itp);
+static void detail_dialog(GtkWidget *parent);
 
+/* 单击 / 方向键选择行时刷新底部详情卡（release 283） */
+static void on_cursor_changed(GtkTreeView *tv, gpointer ud) {
+    (void)ud;
+    GtkTreePath *path = NULL;
+    gtk_tree_view_get_cursor(tv, &path, NULL);
+    if (!path) return;
+    GtkTreeIter it;
+    GtkTreeModel *m = gtk_tree_view_get_model(tv);
+    if (gtk_tree_model_get_iter(m, &it, path)) show_row(tv, &it);
+    gtk_tree_path_free(path);
+}
+
+/* 双击行：刷新详情卡并打开包详情对话框（release 283） */
 static void on_row_activated(GtkTreeView *tv, GtkTreePath *path,
                              GtkTreeViewColumn *col, gpointer ud) {
     (void)col; (void)ud;
@@ -304,6 +356,7 @@ static void on_row_activated(GtkTreeView *tv, GtkTreePath *path,
     GtkTreeModel *m = gtk_tree_view_get_model(tv);
     if (!gtk_tree_model_get_iter(m, &it, path)) return;
     show_row(tv, &it);
+    detail_dialog(gtk_widget_get_toplevel(GTK_WIDGET(tv)));
 }
 
 /* 复制当前包名到剪贴板（release 277） */
@@ -320,42 +373,11 @@ static void show_row(GtkTreeView *tv, GtkTreeIter *itp) {
     gchar *name = NULL, *file = NULL, *ver = NULL;
     gtk_tree_model_get(m, &it, C_NAME, &name, C_VER, &ver, C_FILE, &file, -1);
     snprintf(g_name, sizeof g_name, "%s", name ? name : "");
+    snprintf(g_ver, sizeof g_ver, "%s", ver ? ver : "");
     snprintf(g_file, sizeof g_file, "%s", file ? file : "");
     snprintf(g_status, sizeof g_status, "%s", is_installed(g_name) ? "installed" : "available");
     char txt[1024];
-    char *js = pkg_meta(file ? file : "");
-    if (js) {
-        char desc[512] = "", deps[256] = "", sizestr[64] = "";
-        json_str(js, "description", desc, sizeof desc);
-        if (!desc[0]) json_str(js, "summary", desc, sizeof desc);
-        long sz = json_num(js, "size");
-        if (sz > 0) human_size(sz, sizestr, sizeof sizestr);
-        /* depends 数组首段扫名字 */
-        const char *dp = strstr(js, "\"depends\"");
-        if (dp) {
-            size_t j = 0;
-            const char *q = strchr(dp, '[');
-            if (q) {
-                q++;
-                while (*q && *q != ']' && j + 1 < sizeof deps) {
-                    if (*q == '"') {
-                        q++;
-                        if (j && j + 1 < sizeof deps) deps[j++] = ',';
-                        while (*q && *q != '"' && j + 1 < sizeof deps) deps[j++] = *q++;
-                    }
-                    q++;
-                }
-            }
-            deps[j] = 0;
-        }
-        free(js);
-        snprintf(txt, sizeof txt, "%s-%s\n%s\n%s: %s\n%s: %s",
-                 g_name, ver ? ver : "", desc,
-                 TR("依赖"), deps,
-                 TR("大小"), sizestr[0] ? sizestr : "-");
-    } else {
-        snprintf(txt, sizeof txt, "%s-%s", g_name, ver ? ver : "");
-    }
+    pkg_detail_text(g_name, g_ver, g_file, txt, sizeof txt);
     {
         size_t L = strlen(txt);
         snprintf(txt + L, sizeof txt - L, "\n%s",
@@ -365,6 +387,37 @@ static void show_row(GtkTreeView *tv, GtkTreeIter *itp) {
     gtk_button_set_label(GTK_BUTTON(btn_act),
         g_status[0] == 'i' ? TR("卸载") : TR("安装"));
     g_free(name); g_free(ver); g_free(file);
+}
+
+/* 包详情对话框（release 283）：双击行查看完整元数据 */
+static void detail_dialog(GtkWidget *parent) {
+    if (!g_name[0] || !g_file[0]) return;
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(
+        g_name, parent ? GTK_WINDOW(parent) : NULL,
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        TR("复制包名"), GTK_RESPONSE_APPLY,
+        TR("关闭"), GTK_RESPONSE_CLOSE, NULL);
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_CLOSE);
+    GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_container_set_border_width(GTK_CONTAINER(content), 12);
+    char txt[2048];
+    pkg_detail_text(g_name, g_ver, g_file, txt, sizeof txt);
+    {
+        size_t L = strlen(txt);
+        snprintf(txt + L, sizeof txt - L, "\n%s: %s\n%s: %s",
+                 TR("状态"), g_status[0] == 'i' ? TR("已安装") : TR("可安装"),
+                 TR("路径"), g_file);
+    }
+    GtkWidget *label = gtk_label_new(txt);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+    gtk_label_set_line_wrap(GTK_LABEL(label), TRUE);
+    gtk_label_set_selectable(GTK_LABEL(label), TRUE);
+    gtk_box_pack_start(GTK_BOX(content), label, TRUE, TRUE, 0);
+    gtk_widget_show_all(content);
+    int ans = gtk_dialog_run(GTK_DIALOG(dlg));
+    if (ans == GTK_RESPONSE_APPLY)
+        on_copy_pkg_clicked(NULL, NULL);
+    gtk_widget_destroy(dlg);
 }
 
 static void append_log(const char *msg) {
@@ -404,6 +457,9 @@ static void on_act(GtkWidget *w, gpointer ud) {
         build_install_cmd(g_file, cmd, sizeof cmd);
     }
     append_log(TR("执行中…"));
+    /* 安装/卸载期间禁用操作按钮，防止并发操作（release 283） */
+    gtk_widget_set_sensitive(btn_act, FALSE);
+    gtk_button_set_label(GTK_BUTTON(btn_act), TR("执行中…"));
     if (spinner) {
         gtk_spinner_start(GTK_SPINNER(spinner));
         while (gtk_events_pending()) gtk_main_iteration();
@@ -414,6 +470,7 @@ static void on_act(GtkWidget *w, gpointer ud) {
     snprintf(msg, sizeof msg, rc == 0 ? TR("完成 OK") : TR("失败 (rc=%d)"), rc);
     append_log(msg);
     snprintf(g_status, sizeof g_status, "%s", is_installed(g_name) ? "installed" : "available");
+    gtk_widget_set_sensitive(btn_act, TRUE);
     gtk_button_set_label(GTK_BUTTON(btn_act), g_status[0] == 'i' ? TR("卸载") : TR("安装"));
     refresh_row_status();
 }
@@ -510,6 +567,7 @@ int main(int argc, char **argv) {
         gtk_tree_view_append_column(tv, col);
     }
     gtk_tree_view_set_headers_visible(tv, TRUE);
+    g_signal_connect(tv, "cursor-changed", G_CALLBACK(on_cursor_changed), NULL);
     g_signal_connect(tv, "row-activated", G_CALLBACK(on_row_activated), NULL);
     gtk_container_add(GTK_CONTAINER(sw), GTK_WIDGET(tv));
 
