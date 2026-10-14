@@ -621,6 +621,9 @@ static gboolean on_track_row_press(GtkWidget *row, GdkEventButton *ev, gpointer 
     GtkWidget *mi = gtk_menu_item_new_with_label(TR("从播放列表移除"));
     g_signal_connect(mi, "activate", G_CALLBACK(on_track_remove), (gpointer)g_strdup(path));
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    GtkWidget *mi_rm = gtk_menu_item_new_with_label(TR("移除选中曲目"));
+    g_signal_connect(mi_rm, "activate", G_CALLBACK(on_remove_selected), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_rm);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
     GtkWidget *mi_clr = gtk_menu_item_new_with_label(TR("清空播放列表"));
     g_signal_connect(mi_clr, "activate", G_CALLBACK(on_clear_playlist), NULL);
@@ -629,6 +632,31 @@ static gboolean on_track_row_press(GtkWidget *row, GdkEventButton *ev, gpointer 
     gtk_menu_attach_to_widget(GTK_MENU(menu), row, NULL);
     gtk_menu_popup_at_pointer(GTK_MENU(menu), (GdkEvent *)ev);
     return TRUE;
+}
+
+/* 移除选中曲目（release 281 多选批量） */
+static void on_remove_selected(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    GList *sel = gtk_list_box_get_selected_rows(GTK_LIST_BOX(playlist));
+    if (!sel) return;
+    for (GList *l = sel; l; l = l->next) {
+        const char *p = g_object_get_data(G_OBJECT(l->data), "track-path");
+        if (!p) continue;
+        for (guint i = 0; i < track_list->len; i++) {
+            if (strcmp((const char *)g_ptr_array_index(track_list, i), p) == 0) {
+                g_ptr_array_remove_index(track_list, i);
+                break;
+            }
+        }
+    }
+    g_list_free(sel);
+    GList *ch = gtk_container_get_children(GTK_CONTAINER(playlist));
+    for (GList *l = ch; l; l = l->next) gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(ch);
+    for (guint i = 0; i < track_list->len; i++)
+        playlist_row_add((const char *)g_ptr_array_index(track_list, i), i + 1);
+    if (current_index >= 0) highlight_current_row();
+    playlist_save();
 }
 
 /* 拖拽源: 输出曲目路径（release 280 拖拽排序） */
@@ -1242,6 +1270,7 @@ static void build_ui(void) {
     playlist = gtk_list_box_new();
     gtk_widget_set_name(GTK_WIDGET(playlist), "qy-media-list");
     gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(playlist), FALSE);
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(playlist), GTK_SELECTION_MULTIPLE);   /* 多选（release 281） */
     g_signal_connect(playlist, "row-activated", G_CALLBACK(on_row_activated), NULL);
     gtk_container_add(GTK_CONTAINER(pl_sw), playlist);
     gtk_box_pack_start(GTK_BOX(left_vbox), pl_sw, TRUE, TRUE, 0);
