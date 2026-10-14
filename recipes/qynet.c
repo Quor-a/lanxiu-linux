@@ -543,6 +543,17 @@ static void wifi_connect(const char *ssid, const char *psk) {
     g_timeout_add(3000, (GSourceFunc)refresh_list, NULL);
 }
 
+/* 状态栏点击复制当前信息（release 281） */
+static gboolean on_status_clicked(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ev; (void)ud;
+    const char *txt = status_label ? gtk_label_get_text(GTK_LABEL(status_label)) : "";
+    if (txt && txt[0]) {
+        GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+        gtk_clipboard_set_text(cb, txt, -1);
+    }
+    return TRUE;
+}
+
 /* 显示/隐藏 WiFi 密码（release 281） */
 static void on_psk_show_toggled(GtkToggleButton *btn, gpointer ud) {
     GtkEntry *e = GTK_ENTRY(ud);
@@ -683,12 +694,16 @@ int main(int argc, char **argv) {
     g_signal_connect(b_wifi, "clicked", G_CALLBACK(on_wifi_clicked), NULL);
     count_label = gtk_label_new("");
     status_label = gtk_label_new("");
+    GtkWidget *status_eb = gtk_event_box_new();
+    gtk_container_add(GTK_CONTAINER(status_eb), status_label);
+    gtk_widget_set_tooltip_text(status_eb, TR("点击复制当前状态信息"));
+    g_signal_connect(status_eb, "button-press-event", G_CALLBACK(on_status_clicked), NULL);
     gtk_box_pack_start(GTK_BOX(hb), b_conn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hb), b_refresh, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hb), b_wifi, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hb), count_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), hb, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), status_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), status_eb, FALSE, FALSE, 0);
 
     /* 实时流量曲线 */
     rate_label = gtk_label_new(TR("当前速率: 0 KB/s"));
