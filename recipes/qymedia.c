@@ -936,6 +936,32 @@ static void count_increment(const char *path) {
     if (seq) playlist_row_refresh(path, seq, c + 1);
 }
 
+/* 播放计数排序比较器：按播放次数降序（release 284） */
+static gint sort_count_cmp(gconstpointer a, gconstpointer b) {
+    const char *pa = *(char *const *)a;
+    const char *pb = *(char *const *)b;
+    guint ca = play_counts ? GPOINTER_TO_UINT(g_hash_table_lookup(play_counts, pa)) : 0;
+    guint cb = play_counts ? GPOINTER_TO_UINT(g_hash_table_lookup(play_counts, pb)) : 0;
+    if (cb != ca) return cb > ca ? 1 : -1;   /* 降序：次数多在前 */
+    return strcmp(pa, pb);
+}
+
+/* 工具栏「按次数排序」：按播放次数降序重排播放列表 */
+static void on_sort_by_count(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    if (!track_list || track_list->len < 2 || !play_counts) return;
+    g_ptr_array_sort(track_list, sort_count_cmp);
+    /* 重建列表 UI（track_list 已排序） */
+    GList *ch = gtk_container_get_children(GTK_CONTAINER(playlist));
+    for (GList *l = ch; l; l = l->next) gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(ch);
+    for (guint i = 0; i < track_list->len; i++)
+        playlist_row_add((const char *)g_ptr_array_index(track_list, i), i + 1);
+    if (current_index >= 0) highlight_current_row();
+    playlist_save();
+    gtk_label_set_text(GTK_LABEL(status_label), TR("已按播放次数排序"));
+}
+
 /* 工具栏「保存列表」 */
 static void on_save_playlist(GtkWidget *w, gpointer ud) {
     (void)w; (void)ud;
@@ -1357,11 +1383,15 @@ static void build_ui(void) {
     qy_add_class(b_save, "qy-btn");
     GtkWidget *b_clear = gtk_button_new_with_label(TR("清空列表"));
     qy_add_class(b_clear, "qy-btn qy-btn-danger");
+    GtkWidget *b_sort = gtk_button_new_with_label(TR("次数排序"));
+    qy_add_class(b_sort, "qy-btn");
     g_signal_connect(b_add, "clicked", G_CALLBACK(on_add_files), NULL);
     g_signal_connect(b_save, "clicked", G_CALLBACK(on_save_playlist), NULL);
     g_signal_connect(b_clear, "clicked", G_CALLBACK(on_clear_playlist), NULL);
+    g_signal_connect(b_sort, "clicked", G_CALLBACK(on_sort_by_count), NULL);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_add, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_save, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(pl_bar), b_sort, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_clear, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(left_vbox), pl_bar, FALSE, FALSE, 0);
 
