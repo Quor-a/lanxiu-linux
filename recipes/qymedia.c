@@ -1046,6 +1046,16 @@ static const double eq_pop[6]  = { 3, 1, 0, 1, 2, 3 };
 static const double eq_rock[6] = { 4, 2, -1, 1, 3, 4 };
 static const double eq_aco[6]  = { 2, 1, 0, 1, 2, 2 };
 
+/* 均衡器滑杆双击复位 0 dB（release 281） */
+static gboolean on_eq_scale_press(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)ud;
+    if (ev->type == GDK_2BUTTON_PRESS && ev->button == 1) {
+        gtk_range_set_value(GTK_RANGE(w), 0.0);
+        return TRUE;
+    }
+    return FALSE;
+}
+
 static void on_eq_preset(GtkButton *b, gpointer ud) {
     (void)b;
     const double *vals = (const double *)ud;
@@ -1108,6 +1118,7 @@ static void on_eq_clicked(GtkButton *b, gpointer ud) {
             gtk_widget_set_tooltip_text(scale, tip);
             g_free(tip);
             g_signal_connect(scale, "value-changed", G_CALLBACK(on_eq_changed), NULL);
+            g_signal_connect(scale, "button-press-event", G_CALLBACK(on_eq_scale_press), NULL);
             gtk_grid_attach(GTK_GRID(grid), scale, i, 1, 1, 1);
         }
         /* 加载已保存均衡器配置（release 270） */
