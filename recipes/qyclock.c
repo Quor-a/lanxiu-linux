@@ -2,7 +2,7 @@
  * 页0: 大时钟 + 日期星期 + 月历 + 秒表（开始/暂停/复位）+ 今天高亮。
  * 页1: 闹钟（时间输入 + 添加闹钟 + 闹钟列表 + 删除；到点 qynotify 或弹窗；
  *       存储 ~/.config/lanxiu/alarms.txt，每行 HH:MM）。
- * 页2: 世界时钟（北京/伦敦/纽约/东京/悉尼，UTC 偏移 +8/+0/-5/+9/+10，每 1s 刷新）。
+ * 页2: 世界时钟（8 内置城市 + 自定义城市添加/移除，UTC 偏移 -12~+14，每 1s 刷新）。
  * 页3: 计时器（分/秒 SpinButton + 开始/停止重置；大字 MM:SS，1s 递减；
  *       到 0 调用 qynotify 计时结束，无 qynotify 则弹窗，并自动复位）。
  * 风格沿用 qylock 的大时钟与深色主题（#qy-clock-win）。
@@ -35,8 +35,8 @@ static GtkWidget *alarm_min  = NULL;      /* 分 GtkSpinButton */
 static gchar *alarm_fired_min = NULL;    /* 已触发过的分钟 HH:MM（避免同分钟重复触发） */
 
 /* ---------- 世界时钟 ---------- */
-typedef struct { const char *city; int offset; } CityEntry;
-static const CityEntry CITIES[] = {
+typedef struct { char *city; int offset; } WorldCity;
+static const WorldCity BUILTIN_CITIES[] = {
     { "北京", 8 },
     { "伦敦", 0 },
     { "纽约", -5 },
@@ -46,8 +46,12 @@ static const CityEntry CITIES[] = {
     { "迪拜", 4 },
     { "洛杉矶", -8 },
 };
-#define NCITIES ((int)(sizeof CITIES / sizeof CITIES[0]))
-static GtkWidget *world_time_labels[NCITIES] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+#define NBUILTIN ((int)(sizeof BUILTIN_CITIES / sizeof BUILTIN_CITIES[0]))
+static GPtrArray *world_cities = NULL;   /* WorldCity*：内置 + 自定义（release 283） */
+static GPtrArray *world_labels = NULL;   /* GtkWidget* 时间标签，与 world_cities 对齐 */
+static GtkWidget *world_rows_box = NULL; /* 城市行容器 */
+static GtkWidget *world_entry = NULL;    /* 添加城市：城市名输入 */
+static GtkWidget *world_spin  = NULL;    /* 添加城市：UTC 偏移 */
 
 /* ---------- 计时器 ---------- */
 static GtkWidget *timer_label  = NULL;   /* #qyclock-timer 大字 MM:SS */
@@ -277,14 +281,17 @@ static void on_alarm_delete(GtkButton *b, gpointer ud) {
 /* ---------- 世界时钟 ---------- */
 static gboolean world_tick(gpointer ud) {
     (void)ud;
+    if (!world_cities || !world_labels) return G_SOURCE_CONTINUE;
     time_t now = time(NULL);
-    for (int i = 0; i < NCITIES; i++) {
-        if (!world_time_labels[i]) continue;
-        time_t t = now + CITIES[i].offset * 3600;   /* 城市时间 = UTC + 偏移 */
+    for (guint i = 0; i < world_cities->len && i < world_labels->len; i++) {
+        WorldCity *wc = g_ptr_array_index(world_cities, i);
+        GtkWidget *lbl = g_ptr_array_index(world_labels, i);
+        if (!wc || !lbl) continue;
+        time_t t = now + wc->offset * 3600;   /* 城市时间 = UTC + 偏移 */
         struct tm *tm = gmtime(&t);
         char buf[16];
         g_snprintf(buf, sizeof buf, "%02d:%02d:%02d", tm->tm_hour, tm->tm_min, tm->tm_sec);
-        gtk_label_set_text(GTK_LABEL(world_time_labels[i]), buf);
+        gtk_label_set_text(GTK_LABEL(lbl), buf);
     }
     return G_SOURCE_CONTINUE;
 }
@@ -480,33 +487,165 @@ static GtkWidget *build_alarm_page(void) {
     return page;
 }
 
+/* ---------- 世界时钟：自定义城市持久化（~/.config/lanxiu/qyclock-cities.conf，release 283） ---------- */
+static gchar *world_cities_path(void) {
+    return g_build_filename(g_get_home_dir(), ".config/lanxiu/qyclock-cities.conf", NULL);
+}
+
+static void world_cities_save(void) {
+    if (!world_cities) return;
+    gchar *path = world_cities_path();
+    GKeyFile *kf = g_key_file_new();
+    for (guint i = (guint)NBUILTIN; i < world_cities->len; i++) {
+        WorldCity *wc = g_ptr_array_index(world_cities, i);
+        if (wc && wc->city && wc->city[0])
+            g_key_file_set_integer(kf, "cities", wc->city, wc->offset);
+    }
+    gsize len = 0;
+    gchar *data = g_key_file_to_data(kf, &len, NULL);
+    if (data) {
+        gchar *dir = g_path_get_dirname(path);
+        g_mkdir_with_parents(dir, 0755);
+        g_free(dir);
+        GError *err = NULL;
+        g_file_set_contents(path, data, len, &err);
+        if (err) g_clear_error(&err);
+        g_free(data);
+    }
+    g_key_file_free(kf);
+    g_free(path);
+}
+
+static void world_cities_load(void) {
+    world_cities = g_ptr_array_new();
+    for (int i = 0; i < NBUILTIN; i++) {
+        WorldCity *wc = g_new(WorldCity, 1);
+        wc->city = g_strdup(BUILTIN_CITIES[i].city);
+        wc->offset = BUILTIN_CITIES[i].offset;
+        g_ptr_array_add(world_cities, wc);
+    }
+    gchar *path = world_cities_path();
+    GKeyFile *kf = g_key_file_new();
+    if (g_key_file_load_from_file(kf, path, G_KEY_FILE_NONE, NULL)) {
+        gsize n = 0;
+        gchar **keys = g_key_file_get_keys(kf, "cities", &n, NULL);
+        for (gsize i = 0; i < n; i++) {
+            gint off = g_key_file_get_integer(kf, "cities", keys[i], NULL);
+            WorldCity *wc = g_new(WorldCity, 1);
+            wc->city = g_strdup(keys[i]);
+            wc->offset = off;
+            g_ptr_array_add(world_cities, wc);
+        }
+        g_strfreev(keys);
+    }
+    g_key_file_free(kf);
+    g_free(path);
+}
+
+/* 追加一行城市到世界时钟页 */
+static void world_row_add(WorldCity *wc) {
+    if (!world_rows_box || !wc) return;
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_margin_top(row, 8);
+    gtk_widget_set_margin_bottom(row, 8);
+    qy_add_class(row, "qy-world-row");
+
+    GtkWidget *city = gtk_label_new(wc->city);
+    gtk_widget_set_halign(city, GTK_ALIGN_START);
+    qy_add_class(city, "qy-world-city");
+    gchar *tz = g_strdup_printf("UTC%+d", wc->offset);
+    GtkWidget *offset = gtk_label_new(tz);
+    g_free(tz);
+    qy_add_class(offset, "qy-world-offset");
+
+    GtkWidget *tl = gtk_label_new("--:--:--");
+    qy_add_class(tl, "qy-world-time");
+
+    gtk_box_pack_start(GTK_BOX(row), city, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(row), offset, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(row), tl, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(world_rows_box), row, FALSE, FALSE, 0);
+    g_ptr_array_add(world_labels, tl);
+}
+
+/* 添加城市：输入名 + UTC 偏移，去重后追加并持久化 */
+static void on_world_add_clicked(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (!world_entry || !world_spin) return;
+    const char *name = gtk_entry_get_text(GTK_ENTRY(world_entry));
+    if (!name || !name[0]) return;
+    gchar *trim = g_strdup(name);
+    g_strstrip(trim);
+    if (!trim[0]) { g_free(trim); return; }
+    for (guint i = 0; i < world_cities->len; i++) {
+        WorldCity *wc = g_ptr_array_index(world_cities, i);
+        if (wc && strcmp(wc->city, trim) == 0) {
+            gtk_entry_set_text(GTK_ENTRY(world_entry), "");
+            g_free(trim);
+            return;
+        }
+    }
+    int off = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(world_spin));
+    WorldCity *wc = g_new(WorldCity, 1);
+    wc->city = g_strdup(trim);
+    wc->offset = off;
+    g_ptr_array_add(world_cities, wc);
+    world_row_add(wc);
+    world_cities_save();
+    gtk_entry_set_text(GTK_ENTRY(world_entry), "");
+    g_free(trim);
+}
+
+/* 移除最后一个自定义城市（内置城市不可移除） */
+static void on_world_del_clicked(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (!world_cities || world_cities->len <= (guint)NBUILTIN) return;
+    guint idx = world_cities->len - 1;
+    WorldCity *wc = g_ptr_array_index(world_cities, idx);
+    g_ptr_array_remove_index(world_cities, idx);
+    if (wc) { g_free(wc->city); g_free(wc); }
+    if (world_rows_box) {
+        GList *ch = gtk_container_get_children(GTK_CONTAINER(world_rows_box));
+        GList *last = g_list_last(ch);
+        if (last) gtk_widget_destroy(GTK_WIDGET(last->data));
+        g_list_free(ch);
+    }
+    if (world_labels && world_labels->len > 0)
+        g_ptr_array_remove_index(world_labels, world_labels->len - 1);
+    world_cities_save();
+}
+
 static GtkWidget *build_world_page(void) {
     GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     gtk_container_set_border_width(GTK_CONTAINER(page), 14);
 
-    for (int i = 0; i < NCITIES; i++) {
-        GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-        gtk_widget_set_margin_top(row, 8);
-        gtk_widget_set_margin_bottom(row, 8);
-        qy_add_class(row, "qy-world-row");
+    world_rows_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(page), world_rows_box, FALSE, FALSE, 0);
 
-        GtkWidget *city = gtk_label_new(CITIES[i].city);
-        gtk_widget_set_halign(city, GTK_ALIGN_START);
-        qy_add_class(city, "qy-world-city");
-        gchar *tz = g_strdup_printf("UTC%+d", CITIES[i].offset);
-        GtkWidget *offset = gtk_label_new(tz);
-        g_free(tz);
-        qy_add_class(offset, "qy-world-offset");
+    world_labels = g_ptr_array_new();
+    for (guint i = 0; i < world_cities->len; i++)
+        world_row_add(g_ptr_array_index(world_cities, i));
 
-        GtkWidget *tl = gtk_label_new("--:--:--");
-        qy_add_class(tl, "qy-world-time");
-        world_time_labels[i] = tl;
+    /* 添加城市输入行（release 283） */
+    GtkWidget *add_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_margin_top(add_row, 12);
+    world_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(world_entry), TR("城市名"));
+    gtk_entry_set_width_chars(GTK_ENTRY(world_entry), 10);
+    world_spin = gtk_spin_button_new_with_range(-12, 14, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(world_spin), 8);
+    GtkWidget *b_add = gtk_button_new_with_label(TR("添加"));
+    qy_add_class(b_add, "qy-clock-btn");
+    GtkWidget *b_del = gtk_button_new_with_label(TR("移除"));
+    qy_add_class(b_del, "qy-clock-btn");
+    g_signal_connect(b_add, "clicked", G_CALLBACK(on_world_add_clicked), NULL);
+    g_signal_connect(b_del, "clicked", G_CALLBACK(on_world_del_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(add_row), world_entry, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(add_row), world_spin, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(add_row), b_add, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(add_row), b_del, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(page), add_row, FALSE, FALSE, 0);
 
-        gtk_box_pack_start(GTK_BOX(row), city, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(row), offset, FALSE, FALSE, 0);
-        gtk_box_pack_end(GTK_BOX(row), tl, FALSE, FALSE, 0);
-        gtk_box_pack_start(GTK_BOX(page), row, FALSE, FALSE, 0);
-    }
     return page;
 }
 
@@ -568,7 +707,8 @@ int main(int argc, char **argv) {
     /* 页1: 闹钟 */
     gtk_notebook_append_page(GTK_NOTEBOOK(nb), build_alarm_page(), gtk_label_new(TR("闹钟")));
 
-    /* 页2: 世界时钟 */
+    /* 页2: 世界时钟（加载内置 + 自定义城市，release 283） */
+    world_cities_load();
     gtk_notebook_append_page(GTK_NOTEBOOK(nb), build_world_page(), gtk_label_new(TR("世界时钟")));
 
     /* 页3: 计时器 */
