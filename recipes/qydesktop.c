@@ -176,6 +176,9 @@ static void ws_update_label(void) {
                                 g_workspace, WORKSPACE_MAX);
     gtk_label_set_markup(GTK_LABEL(ws_label), mk);
     g_free(mk);
+    gchar *tip = g_strdup_printf(TR("工作区 %d / %d（滚轮切换）"), g_workspace, WORKSPACE_MAX);
+    gtk_widget_set_tooltip_text(ws_label, tip);
+    g_free(tip);
     g_printerr("QYDESKTOPDBG: workspace=%d\n", g_workspace);
 }
 
