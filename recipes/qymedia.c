@@ -1125,12 +1125,7 @@ static void eq_save(void) {
     g_string_free(s, TRUE);
 }
 
-/* 滑杆值格式: +3 dB（release 282） */
-static gchar *eq_format_value(GtkScale *scale, gdouble v, gpointer ud) {
-    (void)scale; (void)ud;
-    return g_strdup_printf("%+.0f dB", v);
-}
-
+/* 滑杆值格式: +3 dB（release 282）——sysroot 头文件无 set_format_value_func，改用 draw_value 数字 + tooltip 单位 */
 static void on_eq_changed(GtkRange *r, gpointer ud) {
     (void)ud;
     eq_save();
@@ -1154,7 +1149,6 @@ static void on_eq_clicked(GtkButton *b, gpointer ud) {
             gtk_widget_set_halign(lbl, GTK_ALIGN_CENTER);
             gtk_grid_attach(GTK_GRID(grid), lbl, i, 0, 1, 1);
             GtkWidget *scale = gtk_scale_new_with_range(GTK_ORIENTATION_VERTICAL, -12, 12, 1);
-            gtk_scale_set_format_value_func(GTK_SCALE(scale), eq_format_value, NULL, NULL);   /* 显示 dB 单位 */
             gtk_scale_set_draw_value(GTK_SCALE(scale), TRUE);
             gtk_scale_set_value_pos(GTK_SCALE(scale), GTK_POS_RIGHT);
             gtk_widget_set_size_request(scale, 44, 140);
