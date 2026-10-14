@@ -796,12 +796,39 @@ static void on_open_dialog(void) {
     gtk_widget_destroy(dlg);
 }
 
+/* 拖放图片文件到窗口打开（release 281） */
+static void on_win_drag_recv(GtkWidget *w, GdkDragContext *ctx, gint x, gint y,
+                             GtkSelectionData *data, guint info, guint t, gpointer ud) {
+    (void)w; (void)ctx; (void)x; (void)y; (void)info; (void)t; (void)ud;
+    gchar **uris = gtk_selection_data_get_uris(data);
+    if (uris && uris[0]) {
+        gchar *path = g_filename_from_uri(uris[0], NULL, NULL);
+        if (path) {
+            scan_dir(path);
+            for (guint i = 0; i < dir_files->len; i++) {
+                if (strcmp((const char *)g_ptr_array_index(dir_files, i), path) == 0) {
+                    load_by_index(GTK_WIDGET(g_da), (int)i);
+                    break;
+                }
+            }
+            g_free(path);
+        }
+    }
+    g_strfreev(uris);
+}
+
 static void activate(GtkApplication *app, gpointer ud) {
     qy_load_theme();
     GtkWidget *win = gtk_application_window_new(app);
     g_win = GTK_WINDOW(win);
     gtk_window_set_title(GTK_WINDOW(win), "澜岫图片查看器");
     qy_window_setup(GTK_WINDOW(win), 700, 500, 480, 360, FALSE);
+    /* 拖放图片文件到窗口打开（release 281） */
+    {
+        GtkTargetEntry te = { (gchar *)"text/uri-list", 0, 0 };
+        gtk_drag_dest_set(win, GTK_DEST_DEFAULT_ALL, &te, 1, GDK_ACTION_COPY);
+        g_signal_connect(win, "drag-data-received", G_CALLBACK(on_win_drag_recv), NULL);
+    }
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_container_add(GTK_CONTAINER(win), vbox);
