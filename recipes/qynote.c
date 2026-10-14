@@ -354,6 +354,38 @@ static void on_win_drag_recv(GtkWidget *w, GdkDragContext *ctx, gint x, gint y,
     g_strfreev(uris);
 }
 
+/* 窗口大小记忆（release 281） */
+static void save_win_size(void) {
+    if (!win) return;
+    int w = 0, h = 0;
+    gtk_window_get_size(GTK_WINDOW(win), &w, &h);
+    gchar *dir = g_build_filename(g_get_user_config_dir(), "lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    gchar *cfg = g_build_filename(dir, "qynote-win.conf", NULL);
+    gchar *txt = g_strdup_printf("%d %d\n", w, h);
+    g_file_set_contents(cfg, txt, -1, NULL);
+    g_free(txt); g_free(cfg); g_free(dir);
+}
+
+static void on_destroy(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    save_win_size();
+    gtk_main_quit();
+}
+
+static void load_win_size(void) {
+    if (!win) return;
+    gchar *dir = g_build_filename(g_get_user_config_dir(), "lanxiu", NULL);
+    gchar *cfg = g_build_filename(dir, "qynote-win.conf", NULL);
+    gchar *contents = NULL;
+    if (g_file_get_contents(cfg, &contents, NULL, NULL)) {
+        int w = 0, h = 0;
+        if (sscanf(contents, "%d %d", &w, &h) == 2 && w >= 560 && h >= 400)
+            gtk_window_resize(GTK_WINDOW(win), w, h);
+    }
+    g_free(contents); g_free(cfg); g_free(dir);
+}
+
 /* 自动化: 每 60 秒自动保存当前笔记（release 280） */
 static gboolean auto_save(gpointer p) {
     (void)p;
@@ -384,7 +416,8 @@ int main(int argc, char **argv) {
     gtk_widget_set_name(win, "qy-note-win");
     qy_make_titlebar(GTK_WINDOW(win), TR("笔记"));
     qy_window_setup(GTK_WINDOW(win), 680, 460, 560, 400, TRUE);
-    g_signal_connect(win, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    load_win_size();
+    g_signal_connect(win, "destroy", G_CALLBACK(on_destroy), NULL);
     g_signal_connect(win, "key-press-event", G_CALLBACK(on_key_press), NULL);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
