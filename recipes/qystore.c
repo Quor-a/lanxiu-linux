@@ -30,6 +30,7 @@ static GtkWidget *spinner = NULL;    /* 搜索/安装加载动画（release 256�
 static GtkWidget *list_stack = NULL; /* 列表 / 空状态 切换 */
 static GtkWidget *empty_label = NULL; /* 空状态文字（未找到匹配的应用） */
 static GtkTreeView *g_tv = NULL;      /* 主列表视图（release 283：搜索后自动选中首行） */
+static GtkWidget *g_open_btn = NULL;   /* 「打开」按钮（release 284：未安装时禁用） */
 
 /* 空状态插图（cairo，深蓝底 + 橙色放大镜） */
 static gboolean empty_draw_cb(GtkWidget *w, cairo_t *cr, gpointer ud) {
@@ -387,6 +388,7 @@ static void show_row(GtkTreeView *tv, GtkTreeIter *itp) {
     gtk_label_set_text(GTK_LABEL(info_label), txt);
     gtk_button_set_label(GTK_BUTTON(btn_act),
         g_status[0] == 'i' ? TR("卸载") : TR("安装"));
+    if (g_open_btn) gtk_widget_set_sensitive(g_open_btn, g_status[0] == 'i');   /* release 284 */
     g_free(name); g_free(ver); g_free(file);
 }
 
@@ -502,6 +504,7 @@ static void select_first_row(void) {
     } else {
         gtk_label_set_text(GTK_LABEL(info_label), TR("选择一个软件包"));
         gtk_button_set_label(GTK_BUTTON(btn_act), TR("安装"));
+        if (g_open_btn) gtk_widget_set_sensitive(g_open_btn, FALSE);
     }
 }
 
@@ -626,9 +629,9 @@ int main(int argc, char **argv) {
     gtk_box_pack_start(GTK_BOX(vbox), card, FALSE, FALSE, 0);
 
     /* 打开按钮（release 270）：已安装时启动应用 */
-    GtkWidget *b_open = gtk_button_new_with_label(TR("打开"));
-    g_signal_connect(b_open, "clicked", G_CALLBACK(on_open_clicked), NULL);
-    gtk_box_pack_start(GTK_BOX(vbox), b_open, FALSE, FALSE, 0);
+    g_open_btn = gtk_button_new_with_label(TR("打开"));
+    g_signal_connect(g_open_btn, "clicked", G_CALLBACK(on_open_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(vbox), g_open_btn, FALSE, FALSE, 0);
     GtkWidget *b_copy = gtk_button_new_with_label(TR("复制包名"));
     qy_add_class(b_copy, "qy-btn");
     g_signal_connect(b_copy, "clicked", G_CALLBACK(on_copy_pkg_clicked), NULL);

@@ -718,14 +718,21 @@ static void playlist_row_add(const char *path, guint seq) {
     gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
     gtk_container_add(GTK_CONTAINER(row), lbl);
     gtk_widget_set_tooltip_text(row, path);   /* 悬停显示完整路径 */
-    /* tooltip 附文件大小（release 278） */
+    /* tooltip 附文件大小 + 播放次数（release 278/284） */
     {
         GStatBuf sb;
+        guint cnt = play_counts ? GPOINTER_TO_UINT(g_hash_table_lookup(play_counts, path)) : 0;
         if (g_stat(path, &sb) == 0 && S_ISREG(sb.st_mode)) {
             gchar *sz = g_format_size(sb.st_size);
-            gchar *tip = g_strdup_printf("%s\n%s", path, sz);
+            gchar *tip = cnt > 0
+                ? g_strdup_printf("%s\n%s\n%s%u %s", path, sz, TR("播放"), cnt, TR("次"))
+                : g_strdup_printf("%s\n%s", path, sz);
             gtk_widget_set_tooltip_text(row, tip);
             g_free(tip); g_free(sz);
+        } else if (cnt > 0) {
+            gchar *tip = g_strdup_printf("%s\n%s%u %s", path, TR("播放"), cnt, TR("次"));
+            gtk_widget_set_tooltip_text(row, tip);
+            g_free(tip);
         }
     }
     g_object_set_data_full(G_OBJECT(row), "track-path", g_strdup(path), g_free);
