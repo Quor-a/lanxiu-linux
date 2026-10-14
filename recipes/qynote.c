@@ -341,6 +341,13 @@ static gboolean on_key_press(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
     return FALSE;
 }
 
+/* 自动化: 每 60 秒自动保存当前笔记（release 280） */
+static gboolean auto_save(gpointer p) {
+    (void)p;
+    if (current_path) save_current_note();
+    return G_SOURCE_CONTINUE;
+}
+
 /* 自动化: 延迟新建（GSourceFunc 包装） */
 static gboolean auto_new(gpointer p) {
     (void)p;
@@ -441,6 +448,7 @@ int main(int argc, char **argv) {
     if (g_getenv("QYNOTE_NEW"))
         g_timeout_add(600, auto_new, NULL);
 
+    g_timeout_add(60000, auto_save, NULL);   /* 自动保存（release 280） */
     gtk_main();
     return 0;
 }
