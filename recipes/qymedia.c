@@ -662,6 +662,7 @@ static void on_playlist_drag_recv(GtkWidget *w, GdkDragContext *ctx, gint x, gin
             g_list_free(ch);
             for (guint i = 0; i < track_list->len; i++)
                 playlist_row_add((const char *)g_ptr_array_index(track_list, i), i + 1);
+            if (current_index >= 0) highlight_current_row();   /* 拖拽后保持高亮 */
             playlist_save();
         }
     }
