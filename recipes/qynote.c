@@ -16,6 +16,7 @@ static GtkWidget *win         = NULL;
 static GtkListBox *listbox   = NULL;
 static GtkTextView *textview = NULL;
 static GtkWidget *status_lb  = NULL;
+static GtkWidget *count_lb   = NULL;   /* 实时字数/行数统计（release 283） */
 static GtkWidget *search_entry = NULL;   /* 笔记搜索框（release 276） */
 static GtkWidget *stack      = NULL;
 static GtkWidget *placeholder = NULL;
@@ -406,6 +407,22 @@ static gboolean auto_new(gpointer p) {
     return G_SOURCE_REMOVE;
 }
 
+/* ---------- 实时字数 / 行数统计（release 283） ---------- */
+static void update_count(GtkTextBuffer *b, gpointer ud) {
+    (void)b; (void)ud;
+    if (!count_lb || !textview) return;
+    GtkTextBuffer *buf = gtk_text_view_get_buffer(textview);
+    GtkTextIter s, e;
+    gtk_text_buffer_get_bounds(buf, &s, &e);
+    gchar *txt = gtk_text_buffer_get_text(buf, &s, &e, FALSE);
+    long chars = txt ? g_utf8_strlen(txt, -1) : 0;
+    int lines = gtk_text_buffer_get_line_count(buf);
+    gchar *st = g_strdup_printf("%ld %s · %d %s", chars, TR("字"), lines, TR("行"));
+    gtk_label_set_text(GTK_LABEL(count_lb), st);
+    g_free(st);
+    g_free(txt);
+}
+
 /* ---------- UI ---------- */
 int main(int argc, char **argv) {
     gtk_init(&argc, &argv);
@@ -447,11 +464,14 @@ int main(int argc, char **argv) {
     status_lb = gtk_label_new("");
     qy_add_class(status_lb, "qy-note-status");
     gtk_widget_set_halign(status_lb, GTK_ALIGN_START);
+    count_lb = gtk_label_new("");
+    qy_add_class(count_lb, "qy-note-count");
     gtk_box_pack_start(GTK_BOX(toolbar), b_new, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), b_del, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), b_save, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), b_exp, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), status_lb, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(toolbar), count_lb, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
 
     /* 主体：左列表 + 右编辑区 */
@@ -493,6 +513,13 @@ int main(int argc, char **argv) {
     gtk_text_view_set_right_margin(textview, 10);
     gtk_text_view_set_top_margin(textview, 8);
     gtk_container_add(GTK_CONTAINER(sw_text), GTK_WIDGET(textview));
+
+    /* 实时字数统计（release 283） */
+    {
+        GtkTextBuffer *buf = gtk_text_view_get_buffer(textview);
+        g_signal_connect(buf, "changed", G_CALLBACK(update_count), NULL);
+        update_count(buf, NULL);
+    }
 
     gtk_box_pack_start(GTK_BOX(hbox), left_v, FALSE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), sw_text, TRUE, TRUE, 0);
