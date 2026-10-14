@@ -1219,6 +1219,11 @@ static gboolean on_main_keypress(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
         if (search_entry) gtk_widget_grab_focus(search_entry);
         return TRUE;
     }
+    /* F2 重命名当前文件（release 280） */
+    if (ev->keyval == GDK_KEY_F2) {
+        do_rename();
+        return TRUE;
+    }
     return FALSE;
 }
 
