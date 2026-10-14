@@ -2331,12 +2331,15 @@ static void activate(GtkApplication *app, gpointer ud) {
     /* 关于页快捷启动 */
     GtkWidget *btn_hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget *b_mon = gtk_button_new_with_label(TR("打开系统监视"));
+    gtk_widget_set_tooltip_text(b_mon, TR("打开 qymon 查看资源占用"));
     qy_add_class(b_mon, "qy-about-btn");
     g_signal_connect(b_mon, "clicked", G_CALLBACK(launch_app), (gpointer)"qymon");
     GtkWidget *b_store = gtk_button_new_with_label(TR("打开软件中心"));
+    gtk_widget_set_tooltip_text(b_store, TR("打开 qystore 安装/卸载软件"));
     qy_add_class(b_store, "qy-about-btn");
     g_signal_connect(b_store, "clicked", G_CALLBACK(launch_app), (gpointer)"qystore");
     GtkWidget *b_files = gtk_button_new_with_label(TR("打开文件管理器"));
+    gtk_widget_set_tooltip_text(b_files, TR("打开 qyfiles 管理文件"));
     qy_add_class(b_files, "qy-about-btn");
     g_signal_connect(b_files, "clicked", G_CALLBACK(launch_app), (gpointer)"qyfiles");
     GtkWidget *b_copy = gtk_button_new_with_label(TR("复制系统信息"));
