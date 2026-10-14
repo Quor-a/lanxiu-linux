@@ -543,6 +543,12 @@ static void wifi_connect(const char *ssid, const char *psk) {
     g_timeout_add(3000, (GSourceFunc)refresh_list, NULL);
 }
 
+/* 显示/隐藏 WiFi 密码（release 281） */
+static void on_psk_show_toggled(GtkToggleButton *btn, gpointer ud) {
+    GtkEntry *e = GTK_ENTRY(ud);
+    gtk_entry_set_visibility(e, gtk_toggle_button_get_active(btn));
+}
+
 static void on_wifi_clicked(GtkWidget *w, gpointer ud) {
     (void)w;
     const char *preset_ssid = ud ? (const char *)ud : NULL;
@@ -560,6 +566,9 @@ static void on_wifi_clicked(GtkWidget *w, gpointer ud) {
     gtk_entry_set_visibility(GTK_ENTRY(psk_e), FALSE);
     gtk_box_pack_start(GTK_BOX(box), ssid_e, FALSE, FALSE, 6);
     gtk_box_pack_start(GTK_BOX(box), psk_e, FALSE, FALSE, 6);
+    GtkWidget *show_cb = gtk_check_button_new_with_label(TR("显示密码"));
+    g_signal_connect(show_cb, "toggled", G_CALLBACK(on_psk_show_toggled), psk_e);
+    gtk_box_pack_start(GTK_BOX(box), show_cb, FALSE, FALSE, 6);
     gtk_widget_show_all(dlg);
     int resp = gtk_dialog_run(GTK_DIALOG(dlg));
     if (resp == GTK_RESPONSE_OK) {
