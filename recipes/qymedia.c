@@ -26,6 +26,7 @@ static GtkWidget *win = NULL;
 
 /* ---------- 封面显示（同目录 cover.jpg/png/webp，128x128） ---------- */
 static GtkWidget *cover_stack = NULL;   /* img/empty 二选一 */
+static GtkWidget *cover_fmt_badge = NULL; /* 封面格式徽标（release 280） */
 static GtkWidget *cover_img = NULL;     /* 有封面时显示 GdkPixbuf */
 static GtkWidget *cover_empty = NULL;   /* 无封面时 qy_draw_empty_state(kind="note") */
 
@@ -989,6 +990,12 @@ static void cover_update(const char *audio_path) {
         }
         g_free(dir);
     }
+    if (cover_fmt_badge) {
+        const char *dot = audio_path ? strrchr(audio_path, '.') : NULL;
+        gchar *up = dot ? g_ascii_strup(dot + 1, -1) : NULL;
+        gtk_label_set_text(GTK_LABEL(cover_fmt_badge), up ? up : "");
+        g_free(up);
+    }
     if (pb) {
         gtk_image_set_from_pixbuf(GTK_IMAGE(cover_img), pb);
         g_object_unref(pb);
@@ -1196,7 +1203,17 @@ static void build_ui(void) {
     g_signal_connect(cover_empty, "draw", G_CALLBACK(cover_empty_draw), NULL);
     gtk_stack_add_named(GTK_STACK(cover_stack), cover_empty, "empty");
     gtk_stack_set_visible_child_name(GTK_STACK(cover_stack), "empty");
-    gtk_box_pack_start(GTK_BOX(cover_hbox), cover_stack, FALSE, FALSE, 0);
+    /* 封面格式徽标（release 280） */
+    GtkWidget *cover_overlay = gtk_overlay_new();
+    gtk_container_add(GTK_CONTAINER(cover_overlay), cover_stack);
+    cover_fmt_badge = gtk_label_new("");
+    gtk_widget_set_halign(cover_fmt_badge, GTK_ALIGN_END);
+    gtk_widget_set_valign(cover_fmt_badge, GTK_ALIGN_START);
+    gtk_widget_set_margin_end(cover_fmt_badge, 4);
+    gtk_widget_set_margin_top(cover_fmt_badge, 4);
+    gtk_overlay_add_overlay(GTK_OVERLAY(cover_overlay), cover_fmt_badge);
+    gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(cover_overlay), cover_fmt_badge, TRUE);
+    gtk_box_pack_start(GTK_BOX(cover_hbox), cover_overlay, FALSE, FALSE, 0);
     gtk_widget_set_tooltip_text(cover_stack, TR("点击封面放大预览"));
     g_signal_connect(cover_stack, "button-press-event", G_CALLBACK(on_cover_clicked), NULL);
 
