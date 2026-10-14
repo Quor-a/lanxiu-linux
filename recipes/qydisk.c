@@ -29,6 +29,10 @@ static GtkWidget *err_lb = NULL;    /* 错误提示 */
 /* 挂载树 */
 static GtkListStore *mount_store = NULL;   /* 挂载树数据 */
 static GtkWidget *mount_tv = NULL;         /* 挂载树视图 */
+static gchar *g_mount_target = NULL;         /* 当前选中挂载点（卸载用，release 286） */
+static GtkWidget *b_unmount = NULL;         /* 卸载按钮（release 286） */
+static GtkWidget *g_win = NULL;               /* 主窗口（release 286：卸载确认对话框父窗口） */
+static void refresh_all(GtkWidget *w, gpointer p);   /* 前向声明 */
 static GtkWidget *fs_info_label = NULL;    /* #qydisk-fs-info 选中挂载点详情 */
 
 enum { M_TARGET, M_FSTYPE, M_SIZE, M_USED, M_AVAIL, N_MCOLS };
@@ -316,10 +320,21 @@ static void on_mount_cursor_changed(GtkTreeView *tv, gpointer ud) {
     if (!fs_info_label || !mount_store) return;
     GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(mount_tv));
     GtkTreeIter it;
-    if (!gtk_tree_selection_get_selected(sel, NULL, &it)) return;
+    if (!gtk_tree_selection_get_selected(sel, NULL, &it)) {
+        if (b_unmount) gtk_widget_set_sensitive(b_unmount, FALSE);
+        return;
+    }
     gchar *target = NULL;
     gtk_tree_model_get(GTK_TREE_MODEL(mount_store), &it, M_TARGET, &target, -1);
-    if (!target) return;
+    if (!target) {
+        if (b_unmount) gtk_widget_set_sensitive(b_unmount, FALSE);
+        return;
+    }
+    g_free(g_mount_target);
+    g_mount_target = g_strdup(target);
+    if (b_unmount)
+        gtk_widget_set_sensitive(b_unmount,
+            target[0] == '/' && strcmp(target, "/") != 0);
 
     gchar *content = NULL;
     if (g_file_get_contents("/proc/mounts", &content, NULL, NULL) && content) {
@@ -346,6 +361,35 @@ static void on_mount_cursor_changed(GtkTreeView *tv, gpointer ud) {
     g_free(target);
 }
 
+/* 卸载当前选中挂载点（release 286） */
+static void on_unmount_clicked(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (!g_mount_target || g_mount_target[0] != '/') return;
+    GtkWidget *dlg = gtk_message_dialog_new(GTK_WINDOW(g_win),
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO,
+        TR("确定卸载 %s 吗？"), g_mount_target);
+    gtk_window_set_title(GTK_WINDOW(dlg), TR("卸载"));
+    int r = gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+    if (r != GTK_RESPONSE_YES) return;
+
+    gchar *cmd = g_strdup_printf("qysudo -n umount '%s' 2>&1", g_mount_target);
+    GError *err = NULL;
+    gchar *out = NULL, *errout = NULL;
+    gint status = 1;
+    gboolean ok = g_spawn_command_line_sync(cmd, &out, &errout, &status, &err);
+    if (!ok || status != 0) {
+        gchar *msg = (errout && errout[0]) ? errout : out;
+        gtk_label_set_text(GTK_LABEL(err_lb), (msg && msg[0]) ? msg : TR("卸载失败"));
+    } else {
+        gtk_label_set_text(GTK_LABEL(err_lb), TR("已卸载"));
+    }
+    g_free(out); g_free(errout); g_free(cmd);
+    if (err) g_clear_error(&err);
+    refresh_all(NULL, NULL);
+}
+
 /* 自动化刷新包装（GSourceFunc） */
 static gboolean auto_refresh(gpointer p) {
     (void)p;
@@ -367,6 +411,7 @@ int main(int argc, char **argv) {
     qy_load_theme();
 
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    g_win = win;   /* release 286 */
     gtk_window_set_title(GTK_WINDOW(win), TR("磁盘分析"));
     gtk_widget_set_name(win, "qy-disk-win");
     qy_make_titlebar(GTK_WINDOW(win), TR("磁盘分析"));
@@ -385,8 +430,13 @@ int main(int argc, char **argv) {
     GtkWidget *refresh_btn = gtk_button_new_with_label(TR("刷新"));
     qy_add_class(refresh_btn, "qy-btn");
     g_signal_connect(refresh_btn, "clicked", G_CALLBACK(refresh_all), NULL);
+    b_unmount = gtk_button_new_with_label(TR("卸载选中"));
+    qy_add_class(b_unmount, "qy-btn qy-btn-danger");
+    gtk_widget_set_sensitive(b_unmount, FALSE);
+    g_signal_connect(b_unmount, "clicked", G_CALLBACK(on_unmount_clicked), NULL);
     gtk_box_pack_start(GTK_BOX(top), sum_lb, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(top), refresh_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(top), b_unmount, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), top, FALSE, FALSE, 0);
 
     err_lb = gtk_label_new("");
