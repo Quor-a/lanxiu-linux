@@ -2087,8 +2087,20 @@ static GtkWidget *make_tray_icon_btn(int icon, const char *tip, const char *cmd)
 static void on_power_action(GtkMenuItem *mi, gpointer ud) {
     (void)mi;
     const char *cmd = (const char *)ud;
+    const char *label = strstr(cmd, "poweroff") ? TR("关机") :
+                        strstr(cmd, "reboot")   ? TR("重启") : TR("注销");
+    /* 确认对话框（release 281） */
+    GtkWidget *dlg = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION,
+                                            GTK_BUTTONS_YES_NO, TR("确认%s?"), label);
+    int ans = gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+    if (ans != GTK_RESPONSE_YES) {
+        g_free((gpointer)ud);
+        return;
+    }
     g_printerr("QYDESKTOPDBG: power action %s\n", cmd);
     g_spawn_command_line_async(cmd, NULL);
+    g_free((gpointer)ud);
 }
 
 static void on_power_btn_clicked(GtkWidget *w, gpointer ud) {
