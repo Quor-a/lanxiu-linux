@@ -100,6 +100,7 @@ static void on_pause(GtkWidget *w, gpointer ud);          /* 前向声明（媒�
 static void on_open(GtkWidget *w, gpointer ud);           /* 前向声明（媒体快捷键用） */
 static void lyric_font_apply(void);                       /* 前向声明（歌词字号快捷键用） */
 static void on_clear_playlist(GtkWidget *w, gpointer ud); /* 前向声明（右键菜单用） */
+static void on_remove_selected(GtkMenuItem *mi, gpointer ud); /* 前向声明（多选批量移除） */
 static void playlist_save(void);                          /* 前向声明（add_to_playlist 自动保存用） */
 static void add_to_playlist(const char *path);            /* 前向声明（on_track_remove 提前引用） */
 static void playlist_row_add(const char *path, guint seq);                        /* 前向声明（拖拽重建用） */
