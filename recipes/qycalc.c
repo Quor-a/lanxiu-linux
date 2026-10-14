@@ -14,6 +14,14 @@ static GtkWidget *result_label = NULL;  /* 结果 */
 static GtkWidget *win = NULL;
 static char expr_buf[256] = {0};
 
+/* ---------- 计算历史（release 284） ---------- */
+#define HIST_MAX 20
+static GtkWidget *hist_btn = NULL;      /* 「历史」按钮 */
+static GtkWidget *hist_popover = NULL;  /* 历史弹层 */
+static GtkWidget *hist_list = NULL;     /* 历史条目 GtkListBox */
+static GPtrArray *hist_entries = NULL; /* gchar* "表达式 = 结果" */
+static void hist_add(const char *expr, const char *result);   /* 前向声明 */
+
 /* ---------- 简单表达式求值器（+ - * / 和括号，含优先级） ---------- */
 static const char *ep;
 static int ep_error;
@@ -142,12 +150,17 @@ static void on_equal_clicked(GtkButton *b, gpointer ud) {
     double result = 0;
     if (expr_buf[0] && eval_expr(expr_buf, &result) == 0) {
         char out[96];
-        if (result == (double)(long)result)
+        char res[64];
+        if (result == (double)(long)result) {
             g_snprintf(out, sizeof out, "= %ld  0x%lx", (long)result, (unsigned long)(long)result);
-        else
+            g_snprintf(res, sizeof res, "%ld", (long)result);
+        } else {
             g_snprintf(out, sizeof out, "= %g", result);
+            g_snprintf(res, sizeof res, "%g", result);
+        }
         gtk_label_set_text(GTK_LABEL(result_label), out);
         g_printerr("QYCALCDBG: expr=%s result=%g\n", expr_buf, result);
+        hist_add(expr_buf, res);   /* 记录历史（release 284） */
     } else {
         gtk_label_set_text(GTK_LABEL(result_label), TR("= 错误"));
         g_printerr("QYCALCDBG: expr=%s error\n", expr_buf);
@@ -178,6 +191,10 @@ static void set_result_value(double v) {
         g_snprintf(out, sizeof out, "= %g", v);
     gtk_label_set_text(GTK_LABEL(result_label), out);
     g_printerr("QYCALCDBG: sci expr=%s result=%g\n", expr_buf, v);
+    char res[64];
+    if (v == (double)(long)v) g_snprintf(res, sizeof res, "%ld", (long)v);
+    else g_snprintf(res, sizeof res, "%g", v);
+    hist_add(expr_buf, res);   /* 记录历史（release 284） */
 }
 
 /* 显示错误结果 */
@@ -398,6 +415,120 @@ static gboolean auto_calc(gpointer p) {
     return G_SOURCE_REMOVE;
 }
 
+/* ---------- 计算历史（release 284） ---------- */
+static gchar *hist_path(void) {
+    return g_build_filename(g_get_home_dir(), ".config/lanxiu/qycalc-history.txt", NULL);
+}
+
+static void hist_save(void) {
+    if (!hist_entries) return;
+    gchar *path = hist_path();
+    GString *s = g_string_new(NULL);
+    for (guint i = 0; i < hist_entries->len; i++)
+        g_string_append_printf(s, "%s\n", (const char *)g_ptr_array_index(hist_entries, i));
+    gchar *dir = g_path_get_dirname(path);
+    g_mkdir_with_parents(dir, 0755);
+    g_free(dir);
+    GError *err = NULL;
+    g_file_set_contents(path, s->str, s->len, &err);
+    if (err) g_clear_error(&err);
+    g_string_free(s, TRUE);
+    g_free(path);
+}
+
+static void hist_load(void) {
+    hist_entries = g_ptr_array_new_with_free_func(g_free);
+    gchar *path = hist_path();
+    gchar *content = NULL;
+    if (g_file_get_contents(path, &content, NULL, NULL) && content) {
+        char **lines = g_strsplit(content, "\n", -1);
+        for (int i = 0; lines[i] && (int)hist_entries->len < HIST_MAX; i++) {
+            gchar *line = g_strstrip(lines[i]);
+            if (line[0]) g_ptr_array_add(hist_entries, g_strdup(line));
+        }
+        g_strfreev(lines);
+    }
+    g_free(content);
+    g_free(path);
+}
+
+/* 刷新历史弹层列表 */
+static void hist_refresh_list(void) {
+    if (!hist_list) return;
+    GList *ch = gtk_container_get_children(GTK_CONTAINER(hist_list));
+    for (GList *l = ch; l; l = l->next)
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(ch);
+    if (!hist_entries || hist_entries->len == 0) {
+        GtkWidget *row = gtk_list_box_row_new();
+        GtkWidget *lbl = gtk_label_new(TR("暂无历史"));
+        gtk_widget_set_sensitive(row, FALSE);
+        gtk_container_add(GTK_CONTAINER(row), lbl);
+        gtk_list_box_insert(GTK_LIST_BOX(hist_list), row, -1);
+        return;
+    }
+    for (guint i = 0; i < hist_entries->len; i++) {
+        const char *line = (const char *)g_ptr_array_index(hist_entries, i);
+        GtkWidget *row = gtk_list_box_row_new();
+        GtkWidget *lbl = gtk_label_new(line);
+        gtk_label_set_xalign(GTK_LABEL(lbl), 0.0);
+        gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
+        gtk_container_add(GTK_CONTAINER(row), lbl);
+        g_object_set_data_full(G_OBJECT(row), "hist-line", g_strdup(line), g_free);
+        gtk_list_box_insert(GTK_LIST_BOX(hist_list), row, -1);
+    }
+}
+
+/* 记录一条历史（去重末尾 + 上限 HIST_MAX） */
+static void hist_add(const char *expr, const char *result) {
+    if (!expr || !expr[0]) return;
+    if (!hist_entries) hist_load();
+    gchar *line = g_strdup_printf("%s = %s", expr, result);
+    if (hist_entries->len > 0) {
+        const char *last = (const char *)g_ptr_array_index(hist_entries, hist_entries->len - 1);
+        if (strcmp(last, line) == 0) { g_free(line); return; }
+    }
+    g_ptr_array_add(hist_entries, line);
+    while ((int)hist_entries->len > HIST_MAX)
+        g_ptr_array_remove_index(hist_entries, 0);
+    hist_save();
+    hist_refresh_list();
+}
+
+/* 点击历史条目：把表达式载入输入并收起弹层 */
+static void hist_on_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer ud) {
+    (void)box; (void)ud;
+    const char *line = g_object_get_data(G_OBJECT(row), "hist-line");
+    if (!line) return;
+    const char *eq = strstr(line, " = ");
+    if (!eq) return;
+    size_t n = (size_t)(eq - line);
+    if (n >= sizeof expr_buf) n = sizeof expr_buf - 1;
+    memcpy(expr_buf, line, n);
+    expr_buf[n] = 0;
+    g_strstrip(expr_buf);
+    update_display();
+    gtk_label_set_text(GTK_LABEL(result_label), "");
+    if (hist_popover) gtk_popover_popdown(GTK_POPOVER(hist_popover));
+}
+
+/* 构建「历史」按钮 + 弹层 */
+static void build_history_ui(GtkWidget *vbox) {
+    hist_btn = gtk_button_new_with_label(TR("历史"));
+    qy_add_class(hist_btn, "qy-btn");
+    hist_popover = gtk_popover_new(hist_btn);
+    GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
+    gtk_widget_set_size_request(sw, 250, 210);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    hist_list = gtk_list_box_new();
+    gtk_container_add(GTK_CONTAINER(sw), hist_list);
+    gtk_container_add(GTK_CONTAINER(hist_popover), sw);
+    g_signal_connect(hist_list, "row-activated", G_CALLBACK(hist_on_row_activated), NULL);
+    hist_load();
+    hist_refresh_list();
+    gtk_box_pack_start(GTK_BOX(vbox), hist_btn, FALSE, FALSE, 0);
+}
+
 int main(int argc, char **argv) {
     gtk_init(&argc, &argv);
     qy_load_theme();
@@ -491,6 +622,9 @@ int main(int argc, char **argv) {
     gtk_widget_set_name(sci_toggle_btn, "qycalc-sci-toggle");
     g_signal_connect(sci_toggle_btn, "clicked", G_CALLBACK(on_sci_toggle), NULL);
     gtk_box_pack_start(GTK_BOX(vbox), sci_toggle_btn, FALSE, FALSE, 0);
+
+    /* 历史记录（release 284） */
+    build_history_ui(vbox);
 
     gtk_widget_show_all(win);
 
