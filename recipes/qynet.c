@@ -587,7 +587,15 @@ static void on_wifi_clicked(GtkWidget *w, gpointer ud) {
         const char *psk = gtk_entry_get_text(GTK_ENTRY(psk_e));
         wifi_connect(ssid, psk);
     } else if (resp == GTK_RESPONSE_REJECT) {
-        /* 断开 WiFi（release 270） */
+        /* 断开 WiFi（release 270）——增加确认（release 282） */
+        GtkWidget *cdlg = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION,
+                                                 GTK_BUTTONS_YES_NO, "%s", TR("确认断开当前 WiFi?"));
+        int cans = gtk_dialog_run(GTK_DIALOG(cdlg));
+        gtk_widget_destroy(cdlg);
+        if (cans != GTK_RESPONSE_YES) {
+            gtk_widget_destroy(dlg);
+            return;
+        }
         g_spawn_command_line_async("pkill -x wpa_supplicant 2>/dev/null; pkill -x udhcpc 2>/dev/null; true", NULL);
         if (status_label)
             gtk_label_set_text(GTK_LABEL(status_label), TR("已断开 WiFi"));
