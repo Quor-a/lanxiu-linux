@@ -28,6 +28,7 @@ static GtkWidget *win = NULL;
 static GtkWidget *cover_stack = NULL;   /* img/empty 二选一 */
 static GtkWidget *cover_fmt_badge = NULL; /* 封面格式徽标（release 280） */
 static gboolean shuffle_enabled = FALSE;   /* 随机播放（release 280） */
+static GtkWidget *eq_preset_btns[4] = { NULL, NULL, NULL, NULL }; /* 预设按钮（高亮用） */
 static GtkWidget *cover_img = NULL;     /* 有封面时显示 GdkPixbuf */
 static GtkWidget *cover_empty = NULL;   /* 无封面时 qy_draw_empty_state(kind="note") */
 
@@ -1064,6 +1065,14 @@ static void on_eq_preset(GtkButton *b, gpointer ud) {
         if (eq_scales[i]) gtk_range_set_value(GTK_RANGE(eq_scales[i]), vals[i]);
     eq_save();
     gtk_label_set_text(GTK_LABEL(status_label), TR("均衡器预设已应用"));
+    /* 高亮当前预设按钮（release 281） */
+    for (int i = 0; i < 4; i++)
+        if (eq_preset_btns[i])
+            gtk_widget_unset_state_flags(eq_preset_btns[i], GTK_STATE_FLAG_SELECTED);
+    const void *p = (const void *)ud;
+    int pidx = (p == eq_flat) ? 0 : (p == eq_pop) ? 1 : (p == eq_rock) ? 2 : (p == eq_aco) ? 3 : -1;
+    if (pidx >= 0 && eq_preset_btns[pidx])
+        gtk_widget_set_state_flags(eq_preset_btns[pidx], GTK_STATE_FLAG_SELECTED, FALSE);
 }
 
 /* 把 6 段滑杆当前值写入 ~/.config/lanxiu/qymedia-eq.conf（[eq] bandN=值） */
@@ -1151,6 +1160,8 @@ static void on_eq_clicked(GtkButton *b, gpointer ud) {
         g_signal_connect(b_pop,  "clicked", G_CALLBACK(on_eq_preset), (gpointer)eq_pop);
         g_signal_connect(b_rock, "clicked", G_CALLBACK(on_eq_preset), (gpointer)eq_rock);
         g_signal_connect(b_aco,  "clicked", G_CALLBACK(on_eq_preset), (gpointer)eq_aco);
+        eq_preset_btns[0] = b_flat; eq_preset_btns[1] = b_pop;
+        eq_preset_btns[2] = b_rock; eq_preset_btns[3] = b_aco;
         gtk_box_pack_start(GTK_BOX(preset_row), b_flat, FALSE, FALSE, 0);
         gtk_box_pack_start(GTK_BOX(preset_row), b_pop, FALSE, FALSE, 0);
         gtk_box_pack_start(GTK_BOX(preset_row), b_rock, FALSE, FALSE, 0);
