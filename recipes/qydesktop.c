@@ -2430,7 +2430,9 @@ static void build_bar(void) {
     gtk_widget_set_tooltip_text(net_btn, TR("网络控制（打开 qynet 查看连接）"));
     g_signal_connect(net_btn, "button-press-event", G_CALLBACK(on_net_right_press), NULL);
     gtk_box_pack_start(GTK_BOX(tray_hb), net_btn, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(tray_hb), make_tray_icon_btn(TRAY_DRV, TR("驱动"), "qydriver"), FALSE, FALSE, 0);
+    GtkWidget *drv_btn = make_tray_icon_btn(TRAY_DRV, TR("驱动"), "qydriver");
+    gtk_widget_set_tooltip_text(drv_btn, TR("驱动管理（打开 qydriver）"));
+    gtk_box_pack_start(GTK_BOX(tray_hb), drv_btn, FALSE, FALSE, 0);
     GtkWidget *vol_btn = make_tray_icon_btn_cb(TRAY_VOL, TR("声音"), G_CALLBACK(on_vol_btn_clicked), NULL);
     gtk_widget_set_tooltip_text(vol_btn, TR("音量控制（点击打开滑块，右键打开 qyaudio/静音）"));
     g_signal_connect(vol_btn, "button-press-event", G_CALLBACK(on_vol_right_press), NULL);
@@ -2447,6 +2449,7 @@ static void build_bar(void) {
     /* 电池（系统存在电池时显示） */
     if (has_battery()) {
         GtkWidget *bat_btn = make_tray_icon_btn_cb(TRAY_BAT, TR("电池"), G_CALLBACK(on_bat_clicked), NULL);
+        gtk_widget_set_tooltip_text(bat_btn, TR("电池状态（点击查看）"));
         /* 电池百分比 tooltip（release 268） */
         gchar *bat_cap = NULL;
         if (g_file_get_contents("/sys/class/power_supply/BAT0/capacity", &bat_cap, NULL, NULL)) {
