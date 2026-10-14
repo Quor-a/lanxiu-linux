@@ -22,6 +22,15 @@ static GtkWidget *find_entry = NULL;
 static GtkWidget *replace_entry = NULL;
 static GtkTextTag *find_tag = NULL;
 
+/* ---------- 轻量语法高亮（release 285） ---------- */
+static GtkTextTag *tag_comment = NULL;
+static GtkTextTag *tag_string  = NULL;
+static GtkTextTag *tag_keyword = NULL;
+static GtkTextTag *tag_number  = NULL;
+static gboolean syntax_enabled = FALSE;
+static guint syntax_idle = 0;          /* 高亮防抖定时器 id */
+static void syntax_schedule(void);      /* 前向声明（on_buffer_changed 用） */
+
 /* ---------- 行号栏：自绘 gutter（背景 #101826 / 文字 #9AA7B8 / 右分隔线） ---------- */
 static void queue_gutter_redraw(void) {
     if (!text_view) return;
@@ -88,10 +97,11 @@ static gboolean on_editor_draw(GtkWidget *w, cairo_t *cr, gpointer ud) {
     return FALSE;   /* 让默认绘制继续画文本/光标/选区 */
 }
 
-/* 文本变化或滚动时刷新行号栏 */
+/* 文本变化或滚动时刷新行号栏；变化也触发语法高亮防抖（release 285） */
 static void on_buffer_changed(GtkTextBuffer *b) {
     (void)b;
     queue_gutter_redraw();
+    syntax_schedule();
 }
 
 /* ---------- 字号调整: 按钮 + / - 与 QYEDIT_FONT_BIGGER 自动化 ---------- */
@@ -476,6 +486,181 @@ static gboolean on_editor_key_press(GtkWidget *w, GdkEventKey *ev, gpointer ud) 
     return TRUE;
 }
 
+/* ---------- 轻量语法高亮（release 285） ---------- */
+static const char *SYN_C_KW[] = {
+    "if","else","for","while","do","return","int","char","float","double","void",
+    "static","const","struct","enum","union","typedef","sizeof","break","continue",
+    "switch","case","default","unsigned","long","short","auto","extern","register",
+    "volatile","goto","signed"
+};
+static const char *SYN_PY_KW[] = {
+    "def","class","import","from","if","elif","else","for","while","return","None",
+    "True","False","and","or","not","in","is","lambda","with","as","try","except",
+    "finally","raise","global","nonlocal","pass","break","continue","yield","assert",
+    "del","async","await"
+};
+static const char *SYN_SH_KW[] = {
+    "if","then","fi","else","elif","for","while","do","done","case","esac","function",
+    "local","export","return","exit","echo","set","unset","read","shift"
+};
+static const char *SYN_JS_KW[] = {
+    "var","let","const","function","return","if","else","for","while","do","switch",
+    "case","break","continue","new","delete","typeof","instanceof","class","extends",
+    "this","null","undefined","true","false","try","catch","finally","throw","async",
+    "await","yield","import","export","default"
+};
+
+typedef struct { const char *ext; const char **words; int n; } SynLang;
+static const SynLang SYN_LANGS[] = {
+    { "c",   SYN_C_KW, G_N_ELEMENTS(SYN_C_KW) },
+    { "h",   SYN_C_KW, G_N_ELEMENTS(SYN_C_KW) },
+    { "cpp", SYN_C_KW, G_N_ELEMENTS(SYN_C_KW) },
+    { "py",  SYN_PY_KW, G_N_ELEMENTS(SYN_PY_KW) },
+    { "sh",  SYN_SH_KW, G_N_ELEMENTS(SYN_SH_KW) },
+    { "bash",SYN_SH_KW, G_N_ELEMENTS(SYN_SH_KW) },
+    { "js",  SYN_JS_KW, G_N_ELEMENTS(SYN_JS_KW) },
+    { "json", NULL, 0 },
+    { "conf", NULL, 0 },
+    { "ini", NULL, 0 },
+};
+
+/* 当前文件是否启用高亮，以及关键词表 */
+static const SynLang *syntax_lang(void) {
+    if (!current_path) return NULL;
+    const char *dot = strrchr(current_path, '.');
+    if (!dot) return NULL;
+    const char *ext = dot + 1;
+    for (guint i = 0; i < G_N_ELEMENTS(SYN_LANGS); i++) {
+        if (g_ascii_strcasecmp(SYN_LANGS[i].ext, ext) == 0)
+            return &SYN_LANGS[i];
+    }
+    return NULL;
+}
+
+static gboolean is_keyword(const SynLang *lang, const char *w) {
+    if (!lang || !lang->words || !w) return FALSE;
+    for (int i = 0; i < lang->n; i++) {
+        if (strcmp(lang->words[i], w) == 0) return TRUE;
+    }
+    return FALSE;
+}
+
+/* 全缓冲扫描：注释 / 字符串 / 数字 / 关键字 */
+static void syntax_apply(void) {
+    syntax_idle = 0;
+    if (!text_view) return;
+    const SynLang *lang = syntax_lang();
+    syntax_enabled = lang != NULL;
+    GtkTextBuffer *b = gtk_text_view_get_buffer(GTK_TEXT_VIEW(text_view));
+    GtkTextIter start, end;
+    gtk_text_buffer_get_bounds(b, &start, &end);
+    gtk_text_buffer_remove_tag(b, tag_comment, &start, &end);
+    gtk_text_buffer_remove_tag(b, tag_string,  &start, &end);
+    gtk_text_buffer_remove_tag(b, tag_keyword, &start, &end);
+    gtk_text_buffer_remove_tag(b, tag_number,  &start, &end);
+    if (!syntax_enabled) return;
+
+    GtkTextIter iter = start;
+    gboolean in_block = FALSE;
+    GtkTextIter block_start;
+    while (!gtk_text_iter_equal(&iter, &end)) {
+        gunichar ch = gtk_text_iter_get_char(&iter);
+        if (in_block) {
+            if (ch == '*') {
+                GtkTextIter n = iter;
+                gtk_text_iter_forward_char(&n);
+                if (!gtk_text_iter_equal(&n, &end) && gtk_text_iter_get_char(&n) == '/') {
+                    gtk_text_iter_forward_char(&n);
+                    gtk_text_buffer_apply_tag(b, tag_comment, &block_start, &n);
+                    iter = n;
+                    in_block = FALSE;
+                    continue;
+                }
+            }
+            gtk_text_iter_forward_char(&iter);
+            continue;
+        }
+        if (ch == '/') {
+            GtkTextIter n = iter;
+            gtk_text_iter_forward_char(&n);
+            if (!gtk_text_iter_equal(&n, &end)) {
+                gunichar c2 = gtk_text_iter_get_char(&n);
+                if (c2 == '/') {
+                    GtkTextIter line_end = n;
+                    gtk_text_iter_forward_to_line_end(&line_end);
+                    gtk_text_buffer_apply_tag(b, tag_comment, &iter, &line_end);
+                    iter = line_end;
+                    continue;
+                }
+                if (c2 == '*') {
+                    in_block = TRUE;
+                    block_start = iter;
+                    gtk_text_iter_forward_char(&iter);
+                    gtk_text_iter_forward_char(&iter);
+                    continue;
+                }
+            }
+            gtk_text_iter_forward_char(&iter);
+            continue;
+        }
+        if (ch == '"' || ch == '\'') {
+            gunichar quote = ch;
+            GtkTextIter s = iter;
+            gtk_text_iter_forward_char(&iter);
+            while (!gtk_text_iter_equal(&iter, &end)) {
+                gunichar c = gtk_text_iter_get_char(&iter);
+                if (c == '\\') {
+                    gtk_text_iter_forward_char(&iter);
+                    gtk_text_iter_forward_char(&iter);
+                    continue;
+                }
+                gtk_text_iter_forward_char(&iter);
+                if (c == quote) break;
+            }
+            gtk_text_buffer_apply_tag(b, tag_string, &s, &iter);
+            continue;
+        }
+        if (g_unichar_isalpha(ch) || ch == '_') {
+            GtkTextIter s = iter;
+            while (!gtk_text_iter_equal(&iter, &end)) {
+                gunichar c = gtk_text_iter_get_char(&iter);
+                if (!(g_unichar_isalnum(c) || c == '_')) break;
+                gtk_text_iter_forward_char(&iter);
+            }
+            gchar *word = gtk_text_iter_get_slice(&s, &iter);
+            if (is_keyword(lang, word))
+                gtk_text_buffer_apply_tag(b, tag_keyword, &s, &iter);
+            g_free(word);
+            continue;
+        }
+        if (g_unichar_isdigit(ch)) {
+            GtkTextIter s = iter;
+            while (!gtk_text_iter_equal(&iter, &end)) {
+                gunichar c = gtk_text_iter_get_char(&iter);
+                if (!(g_unichar_isalnum(c) || c == '.' || c == '_')) break;
+                gtk_text_iter_forward_char(&iter);
+            }
+            gtk_text_buffer_apply_tag(b, tag_number, &s, &iter);
+            continue;
+        }
+        gtk_text_iter_forward_char(&iter);
+    }
+    if (in_block)
+        gtk_text_buffer_apply_tag(b, tag_comment, &block_start, &end);
+}
+
+/* 防抖调度：文本变化 300ms 后重新高亮 */
+static gboolean syntax_debounce(gpointer p) {
+    (void)p;
+    syntax_apply();
+    return G_SOURCE_REMOVE;
+}
+
+static void syntax_schedule(void) {
+    if (syntax_idle) return;
+    syntax_idle = g_timeout_add(300, syntax_debounce, NULL);
+}
+
 int main(int argc, char **argv) {
     gtk_init(&argc, &argv);
     qy_load_theme();
@@ -612,6 +797,15 @@ int main(int argc, char **argv) {
     find_tag = gtk_text_buffer_create_tag(buffer, "qy-find-highlight",
                                             "background-rgba", &find_hl,
                                             NULL);
+    /* 轻量语法高亮 tag（release 285） */
+    tag_comment = gtk_text_buffer_create_tag(buffer, "qy-syn-comment",
+                                             "foreground", "#5f8f6f", "style", PANGO_STYLE_ITALIC, NULL);
+    tag_string  = gtk_text_buffer_create_tag(buffer, "qy-syn-string",
+                                             "foreground", "#d08770", NULL);
+    tag_keyword = gtk_text_buffer_create_tag(buffer, "qy-syn-keyword",
+                                             "foreground", "#6cb2eb", "weight", PANGO_WEIGHT_BOLD, NULL);
+    tag_number  = gtk_text_buffer_create_tag(buffer, "qy-syn-number",
+                                             "foreground", "#e5c07b", NULL);
     g_signal_connect(buffer, "changed", G_CALLBACK(update_status), NULL);
     g_signal_connect(buffer, "changed", G_CALLBACK(on_buffer_changed), NULL);
     g_signal_connect(buffer, "mark-set", G_CALLBACK(on_mark_set), NULL);
