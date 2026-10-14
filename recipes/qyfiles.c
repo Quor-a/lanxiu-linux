@@ -1143,7 +1143,7 @@ static void chdir_to(const char *path) {
         if (isdir) ndir++; else nfile++;
     }
     g_dir_close(dir);
-    gchar *msg = g_strdup_printf(TR("位置: %s · %d 项"), path, n);
+    gchar *msg = g_strdup_printf(TR("位置: %s · %d 项（%d 文件夹 / %d 文件）"), path, n, ndir, nfile);
     if (n == 0) {
         char tmp[512];
         g_snprintf(tmp, sizeof tmp, "%s — %s", msg, TR("此文件夹为空"));
