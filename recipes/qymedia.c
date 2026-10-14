@@ -714,6 +714,23 @@ static void add_to_playlist(const char *path) {
     playlist_save();   /* 添加后自动保存 */
 }
 
+/* 窗口拖放: 拖入音频文件直接加入播放列表并播放（release 280） */
+static void on_win_drag_recv(GtkWidget *w, GdkDragContext *ctx, gint x, gint y,
+                             GtkSelectionData *data, guint info, guint t, gpointer ud) {
+    (void)w; (void)ctx; (void)x; (void)y; (void)info; (void)t; (void)ud;
+    gchar **uris = gtk_selection_data_get_uris(data);
+    if (!uris) return;
+    for (int i = 0; uris[i]; i++) {
+        gchar *path = g_filename_from_uri(uris[i], NULL, NULL);
+        if (path) {
+            add_to_playlist(path);
+            if (i == 0) play_index((int)track_list->len - 1);
+            g_free(path);
+        }
+    }
+    g_strfreev(uris);
+}
+
 /* GtkFileChooserNative 多选添加音频 */
 static void on_add_files(GtkWidget *w, gpointer ud) {
     (void)w; (void)ud;
@@ -1141,6 +1158,12 @@ static void build_ui(void) {
     qy_window_setup(GTK_WINDOW(win), 640, 380, 560, 300, FALSE);
     g_signal_connect(win, "delete-event", G_CALLBACK(on_win_delete), NULL);
     g_signal_connect(win, "key-press-event", G_CALLBACK(on_win_key_press), NULL);   /* 空格/方向键（release 278） */
+    /* 拖放音频文件到窗口播放（release 280） */
+    {
+        GtkTargetEntry dte = { (gchar *)"text/uri-list", 0, 0 };
+        gtk_drag_dest_set(win, GTK_DEST_DEFAULT_ALL, &dte, 1, GDK_ACTION_COPY);
+        g_signal_connect(win, "drag-data-received", G_CALLBACK(on_win_drag_recv), NULL);
+    }
     /* 恢复上次窗口大小（release 278） */
     {
         gchar *cp = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qymedia-win.conf", NULL);
