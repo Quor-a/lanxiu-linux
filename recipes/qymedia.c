@@ -27,6 +27,7 @@ static GtkWidget *win = NULL;
 /* ---------- 封面显示（同目录 cover.jpg/png/webp，128x128） ---------- */
 static GtkWidget *cover_stack = NULL;   /* img/empty 二选一 */
 static GtkWidget *cover_fmt_badge = NULL; /* 封面格式徽标（release 280） */
+static gboolean shuffle_enabled = FALSE;   /* 随机播放（release 280） */
 static GtkWidget *cover_img = NULL;     /* 有封面时显示 GdkPixbuf */
 static GtkWidget *cover_empty = NULL;   /* 无封面时 qy_draw_empty_state(kind="note") */
 
@@ -433,6 +434,15 @@ static void on_next_clicked(GtkWidget *w, gpointer ud) {
     (void)w; (void)ud;
     if (track_list->len == 0) return;
     if (current_index < 0) { play_index(0); return; }
+    /* 随机播放（release 280） */
+    if (shuffle_enabled && track_list->len > 1) {
+        int r;
+        do {
+            r = g_random_int_range(0, (gint)track_list->len);
+        } while (r == current_index);
+        play_index(r);
+        return;
+    }
     int next = current_index + 1;
     if (next >= (int)track_list->len) {
         if (loop_enabled)
@@ -917,6 +927,12 @@ static void on_loop_toggled(GtkToggleButton *btn, gpointer ud) {
     gtk_widget_set_tooltip_text(GTK_WIDGET(btn), loop_enabled ? TR("循环播放：开") : TR("循环播放：关"));
 }
 
+/* 随机播放开关（release 280） */
+static void on_shuffle_toggled(GtkToggleButton *btn, gpointer ud) {
+    (void)ud;
+    shuffle_enabled = gtk_toggle_button_get_active(btn);
+}
+
 /* 自动化: QYMEDIA_AUTO */
 static gboolean auto_play(gpointer p) {
     const char *path = (const char *)p;
@@ -1340,7 +1356,11 @@ static void build_ui(void) {
     gtk_box_pack_start(GTK_BOX(bar2), eq_btn, FALSE, FALSE, 0);
     GtkWidget *loop_btn = gtk_toggle_button_new_with_label(TR("循环"));
     g_signal_connect(loop_btn, "toggled", G_CALLBACK(on_loop_toggled), NULL);
+    GtkWidget *shuffle_btn = gtk_toggle_button_new_with_label(TR("随机"));
+    gtk_widget_set_tooltip_text(shuffle_btn, TR("随机播放（开/关）"));
+    g_signal_connect(shuffle_btn, "toggled", G_CALLBACK(on_shuffle_toggled), NULL);
     gtk_box_pack_start(GTK_BOX(bar2), loop_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar2), shuffle_btn, FALSE, FALSE, 0);
     GtkWidget *vol_lb = gtk_label_new(TR("音量:"));
     gtk_box_pack_start(GTK_BOX(bar2), vol_lb, FALSE, FALSE, 0);
     GtkWidget *vol_scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 100, 5);
