@@ -2241,6 +2241,161 @@ static void on_settings_search(GtkSearchEntry *se, gpointer ud) {
     g_printerr("QYSETTINGSSEARCH: %s -> (无匹配)\n", needle);
 }
 
+/* ---------- 服务管理页（release 286） ---------- */
+enum { SVC_NAME, SVC_LOAD, SVC_ACTIVE, SVC_SUB, SVC_DESC, NSVC_COLS };
+static GtkWidget *svc_tree = NULL;
+static GtkListStore *svc_store = NULL;
+static GtkWidget *svc_detail = NULL;
+static gchar *g_svc_name = NULL;
+static gboolean g_svc_active = FALSE;
+
+/* 刷新 systemd 服务列表，并尝试保留当前选中项 */
+static void svc_refresh(void) {
+    if (!svc_store || !svc_tree) return;
+    gchar *out = NULL;
+    gint st = 1;
+    if (!g_spawn_command_line_sync(
+            "systemctl list-units --type=service --all --no-legend --no-pager",
+            &out, NULL, &st, NULL) || st != 0 || !out) {
+        if (svc_detail) gtk_label_set_text(GTK_LABEL(svc_detail), TR("无法读取服务列表"));
+        g_free(out);
+        return;
+    }
+    gchar *keep = g_svc_name ? g_strdup(g_svc_name) : NULL;
+    gtk_list_store_clear(svc_store);
+    char **lines = g_strsplit(out, "\n", -1);
+    int sel_idx = -1, idx = 0;
+    for (int i = 0; lines[i]; i++) {
+        gchar *line = g_strstrip(lines[i]);
+        if (!line[0]) continue;
+        char name[256] = "", load[64] = "", active[64] = "", sub[64] = "", desc[256] = "";
+        if (sscanf(line, "%255s %63s %63s %63s %255[^\n]",
+                   name, load, active, sub, desc) >= 4) {
+            char *dot = strstr(name, ".service");
+            if (dot) *dot = 0;
+            GtkTreeIter it;
+            gtk_list_store_append(svc_store, &it);
+            gtk_list_store_set(svc_store, &it,
+                SVC_NAME, name, SVC_LOAD, load, SVC_ACTIVE, active,
+                SVC_SUB, sub, SVC_DESC, desc, -1);
+            if (keep && strcmp(name, keep) == 0) sel_idx = idx;
+            idx++;
+        }
+    }
+    g_strfreev(lines);
+    g_free(out);
+    g_free(keep);
+    if (sel_idx >= 0) {
+        GtkTreePath *p = gtk_tree_path_new_from_indices(sel_idx, -1);
+        gtk_tree_selection_select_path(
+            gtk_tree_view_get_selection(GTK_TREE_VIEW(svc_tree)), p);
+        gtk_tree_view_scroll_to_cell(GTK_TREE_VIEW(svc_tree), p, NULL, FALSE, 0, 0);
+        gtk_tree_path_free(p);
+        /* 触发详情更新 */
+        GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(svc_tree));
+        GtkTreeIter it;
+        if (gtk_tree_selection_get_selected(sel, NULL, &it)) {
+            gchar *name = NULL, *active = NULL;
+            gtk_tree_model_get(GTK_TREE_MODEL(svc_store), &it,
+                                SVC_NAME, &name, SVC_ACTIVE, &active, -1);
+            if (name) {
+                g_free(g_svc_name);
+                g_svc_name = g_strdup(name);
+            }
+            g_svc_active = active && strcmp(active, "active") == 0;
+            g_free(name); g_free(active);
+        }
+    }
+    if (svc_detail) {
+        if (g_svc_name && g_svc_name[0]) {
+            gchar *txt = g_strdup_printf("%s%s", g_svc_name,
+                g_svc_active ? TR("  (运行中)") : TR("  (未运行)"));
+            gtk_label_set_text(GTK_LABEL(svc_detail), txt);
+            g_free(txt);
+        } else {
+            gtk_label_set_text(GTK_LABEL(svc_detail), TR("选择一个服务"));
+        }
+    }
+}
+
+static void on_svc_cursor_changed(GtkTreeView *tv, gpointer ud) {
+    (void)tv; (void)ud;
+    g_free(g_svc_name);
+    g_svc_name = NULL;
+    g_svc_active = FALSE;
+    GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(svc_tree));
+    GtkTreeIter it;
+    if (!gtk_tree_selection_get_selected(sel, NULL, &it)) {
+        if (svc_detail) gtk_label_set_text(GTK_LABEL(svc_detail), TR("选择一个服务"));
+        return;
+    }
+    gchar *name = NULL, *active = NULL;
+    gtk_tree_model_get(GTK_TREE_MODEL(svc_store), &it,
+                        SVC_NAME, &name, SVC_ACTIVE, &active, -1);
+    if (name) g_svc_name = g_strdup(name);
+    g_svc_active = active && strcmp(active, "active") == 0;
+    g_free(name); g_free(active);
+    if (svc_detail) {
+        gchar *txt = g_strdup_printf("%s%s", g_svc_name ? g_svc_name : "?",
+            g_svc_active ? TR("  (运行中)") : TR("  (未运行)"));
+        gtk_label_set_text(GTK_LABEL(svc_detail), txt);
+        g_free(txt);
+    }
+}
+
+/* 执行 systemctl 动作（qysudo 提权） */
+static void svc_run_action(GtkWidget *w, gpointer ud) {
+    (void)w;
+    const char *act = (const char *)ud;
+    if (!g_svc_name || !g_svc_name[0]) return;
+    gchar *cmd = g_strdup_printf("qysudo -n systemctl %s %s.service 2>&1",
+                                   act, g_svc_name);
+    gchar *out = NULL;
+    gint st = 1;
+    g_spawn_command_line_sync(cmd, &out, NULL, &st, NULL);
+    if (svc_detail) {
+        gchar *txt = (out && out[0]) ? g_strdup(out)
+            : g_strdup_printf("%s: OK", act);
+        gtk_label_set_text(GTK_LABEL(svc_detail), txt);
+        g_free(txt);
+    }
+    g_free(out);
+    g_free(cmd);
+    svc_refresh();
+}
+
+/* 查看选中服务日志（journalctl 最近 200 行） */
+static void on_svc_log_clicked(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (!g_svc_name || !g_svc_name[0]) return;
+    gchar *cmd = g_strdup_printf("journalctl -u %s.service -n 200 --no-pager 2>&1",
+                                 g_svc_name);
+    gchar *out = NULL;
+    gint st = 1;
+    g_spawn_command_line_sync(cmd, &out, NULL, &st, NULL);
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(
+        TR("服务日志"), NULL,
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        TR("关闭"), GTK_RESPONSE_CLOSE, NULL);
+    gtk_window_set_title(GTK_WINDOW(dlg), TR("服务日志"));
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 640, 420);
+    GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw),
+                                   GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    GtkWidget *tv = gtk_text_view_new();
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(tv), FALSE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(tv), GTK_WRAP_NONE);
+    gtk_container_add(GTK_CONTAINER(sw), tv);
+    gtk_container_add(GTK_CONTAINER(gtk_dialog_get_content_area(GTK_DIALOG(dlg))), sw);
+    GtkTextBuffer *buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(tv));
+    gtk_text_buffer_set_text(buf, out ? out : TR("无日志"), -1);
+    g_free(out);
+    g_free(cmd);
+    gtk_widget_show_all(dlg);
+    gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+}
+
 static void activate(GtkApplication *app, gpointer ud) {
     qy_load_theme();
     GtkWidget *win = gtk_application_window_new(app);
@@ -4115,6 +4270,64 @@ static void activate(GtkApplication *app, gpointer ud) {
         gtk_notebook_append_page(GTK_NOTEBOOK(nb), vst, tab_with_icon(TR("启动项"), QY_ICON_GRID));
         if (g_getenv("QY_SETTINGS_AUTOSTART"))
             g_timeout_add(1850, auto_autostart_apply, NULL);
+    }
+
+    /* 服务管理页: systemd 服务列表 + 启动/停止/重启/启用 + 日志查看（release 286） */
+    {
+        GtkWidget *vsv = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+        gtk_container_set_border_width(GTK_CONTAINER(vsv), 14);
+        settings_group(GTK_BOX(vsv), TR("服务管理"));
+        GtkWidget *tip = gtk_label_new(TR("systemd 服务（点击行查看，选中后可操作）"));
+        gtk_widget_set_halign(tip, GTK_ALIGN_START);
+        qy_add_class(tip, "qy-settings-curlang");
+        gtk_box_pack_start(GTK_BOX(vsv), tip, FALSE, FALSE, 0);
+
+        svc_store = gtk_list_store_new(NSVC_COLS, G_TYPE_STRING, G_TYPE_STRING,
+                                       G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
+        svc_tree = gtk_tree_view_new_with_model(GTK_TREE_MODEL(svc_store));
+        GtkCellRenderer *sr = gtk_cell_renderer_text_new();
+        const char *stitles[NSVC_COLS] = { TR("服务"), TR("加载"), TR("状态"),
+                                           TR("子状态"), TR("描述") };
+        for (int i = 0; i < NSVC_COLS; i++) {
+            GtkTreeViewColumn *col = gtk_tree_view_column_new_with_attributes(
+                stitles[i], sr, "text", i, NULL);
+            gtk_tree_view_column_set_resizable(col, TRUE);
+            gtk_tree_view_column_set_expand(col, i == SVC_NAME || i == SVC_DESC);
+            gtk_tree_view_append_column(GTK_TREE_VIEW(svc_tree), col);
+        }
+        gtk_tree_view_set_headers_visible(GTK_TREE_VIEW(svc_tree), TRUE);
+        g_signal_connect(svc_tree, "cursor-changed", G_CALLBACK(on_svc_cursor_changed), NULL);
+        GtkWidget *ssw = gtk_scrolled_window_new(NULL, NULL);
+        gtk_widget_set_size_request(ssw, -1, 260);
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(ssw),
+                                         GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+        gtk_container_add(GTK_CONTAINER(ssw), svc_tree);
+        gtk_box_pack_start(GTK_BOX(vsv), ssw, TRUE, TRUE, 0);
+
+        svc_detail = gtk_label_new(TR("选择一个服务"));
+        gtk_label_set_xalign(GTK_LABEL(svc_detail), 0.0);
+        gtk_box_pack_start(GTK_BOX(vsv), svc_detail, FALSE, FALSE, 0);
+
+        GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+        GtkWidget *b_start = gtk_button_new_with_label(TR("启动"));
+        GtkWidget *b_stop = gtk_button_new_with_label(TR("停止"));
+        GtkWidget *b_restart = gtk_button_new_with_label(TR("重启"));
+        GtkWidget *b_enable = gtk_button_new_with_label(TR("启用"));
+        GtkWidget *b_log = gtk_button_new_with_label(TR("查看日志"));
+        g_signal_connect(b_start, "clicked", G_CALLBACK(svc_run_action), (gpointer)"start");
+        g_signal_connect(b_stop, "clicked", G_CALLBACK(svc_run_action), (gpointer)"stop");
+        g_signal_connect(b_restart, "clicked", G_CALLBACK(svc_run_action), (gpointer)"restart");
+        g_signal_connect(b_enable, "clicked", G_CALLBACK(svc_run_action), (gpointer)"enable");
+        g_signal_connect(b_log, "clicked", G_CALLBACK(on_svc_log_clicked), NULL);
+        GtkWidget *bbtns[5] = { b_start, b_stop, b_restart, b_enable, b_log };
+        for (int i = 0; i < 5; i++) {
+            qy_add_class(bbtns[i], "qy-btn");
+            gtk_box_pack_start(GTK_BOX(bar), bbtns[i], FALSE, FALSE, 0);
+        }
+        gtk_box_pack_start(GTK_BOX(vsv), bar, FALSE, FALSE, 0);
+
+        gtk_notebook_append_page(GTK_NOTEBOOK(nb), vsv, tab_with_icon(TR("服务"), QY_ICON_SETTINGS));
+        svc_refresh();
     }
 
     /* WiFi 页: 开关 + 无线网卡检测（写 /etc/qywifi.conf） */
