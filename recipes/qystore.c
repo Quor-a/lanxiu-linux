@@ -29,6 +29,7 @@ static GtkWidget *b_all = NULL, *b_inst = NULL, *b_avail = NULL;
 static GtkWidget *spinner = NULL;    /* 搜索/安装加载动画（release 256） */
 static GtkWidget *list_stack = NULL; /* 列表 / 空状态 切换 */
 static GtkWidget *empty_label = NULL; /* 空状态文字（未找到匹配的应用） */
+static GtkTreeView *g_tv = NULL;      /* 主列表视图（release 283：搜索后自动选中首行） */
 
 /* 空状态插图（cairo，深蓝底 + 橙色放大镜） */
 static gboolean empty_draw_cb(GtkWidget *w, cairo_t *cr, gpointer ud) {
@@ -475,6 +476,8 @@ static void on_act(GtkWidget *w, gpointer ud) {
     refresh_row_status();
 }
 
+static void select_first_row(void);   /* 前向声明（on_search 提前引用） */
+
 static void on_search(GtkSearchEntry *e, gpointer ud) {
     (void)ud;
     g_strlcpy(g_filter, gtk_entry_get_text(GTK_ENTRY(e)), sizeof g_filter);
@@ -484,6 +487,22 @@ static void on_search(GtkSearchEntry *e, gpointer ud) {
     }
     load_repo(g_filter, g_status_filter);
     if (spinner) gtk_spinner_stop(GTK_SPINNER(spinner));
+    select_first_row();
+}
+
+/* 搜索/筛选后自动选中首行并刷新详情卡（release 283） */
+static void select_first_row(void) {
+    if (!g_tv) return;
+    GtkTreeIter it;
+    if (gtk_tree_model_get_iter_first(GTK_TREE_MODEL(store), &it)) {
+        GtkTreePath *path = gtk_tree_model_get_path(GTK_TREE_MODEL(store), &it);
+        gtk_tree_view_set_cursor(g_tv, path, NULL, FALSE);
+        gtk_tree_path_free(path);
+        show_row(g_tv, &it);
+    } else {
+        gtk_label_set_text(GTK_LABEL(info_label), TR("选择一个软件包"));
+        gtk_button_set_label(GTK_BUTTON(btn_act), TR("安装"));
+    }
 }
 
 /* 状态筛选按钮：0 全部 / 1 已安装 / 2 可安装 */
@@ -493,6 +512,7 @@ static void on_filter_clicked(GtkWidget *w, gpointer ud) {
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(b_inst), g_status_filter == 1);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(b_avail), g_status_filter == 2);
     load_repo(g_filter, g_status_filter);
+    select_first_row();
 }
 
 /* 状态列颜色: 已安装绿 / 可安装橙 */
@@ -551,6 +571,7 @@ int main(int argc, char **argv) {
     GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
     gtk_widget_set_vexpand(sw, TRUE);
     GtkTreeView *tv = GTK_TREE_VIEW(gtk_tree_view_new_with_model(GTK_TREE_MODEL(store)));
+    g_tv = tv;   /* release 283：搜索/筛选后自动选中首行 */
     const char *titles[C_FILE] = { TR("名称"), TR("版本"), TR("大小"), TR("状态") };
     for (int c = 0; c < C_FILE - 1; c++) {
         GtkCellRenderer *r = gtk_cell_renderer_text_new();
