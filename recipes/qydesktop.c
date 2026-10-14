@@ -2438,7 +2438,9 @@ static void build_bar(void) {
     GtkWidget *clip_btn = make_tray_icon_btn(TRAY_CLIP, TR("剪贴板"), "qyclip");
     gtk_widget_set_tooltip_text(clip_btn, TR("剪贴板（打开 qyclip）"));
     gtk_box_pack_start(GTK_BOX(tray_hb), clip_btn, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(tray_hb), make_tray_icon_btn(TRAY_SHOT, TR("截图"), "qyshot"), FALSE, FALSE, 0);
+    GtkWidget *shot_btn = make_tray_icon_btn(TRAY_SHOT, TR("截图"), "qyshot");
+    gtk_widget_set_tooltip_text(shot_btn, TR("截图（打开 qyshot）"));
+    gtk_box_pack_start(GTK_BOX(tray_hb), shot_btn, FALSE, FALSE, 0);
     GtkWidget *lock_btn = make_tray_icon_btn(TRAY_LOCK, TR("锁屏"), "qylock");
     gtk_widget_set_tooltip_text(lock_btn, TR("锁屏（打开 qylock）"));
     gtk_box_pack_start(GTK_BOX(tray_hb), lock_btn, FALSE, FALSE, 0);
