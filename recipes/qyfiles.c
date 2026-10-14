@@ -16,6 +16,9 @@ static GtkWidget *status;
 static GtkWidget *disk_lb = NULL;   /* 侧边栏磁盘可用空间（release 276） */
 static GtkWidget *path_entry = NULL;  /* 路径地址栏 */
 static char cwd[4096];
+static GPtrArray *nav_back = NULL;   /* 后退历史（release 281） */
+static GPtrArray *nav_fwd = NULL;    /* 前进历史 */
+static gboolean nav_suppress = FALSE;/* 后退/前进导航中禁止记录 */
 static int in_trash = 0;   /* 当前是否处于回收站页 */
 static int g_argc = 0;     /* main 传下: --trash 检测用 */
 static char **g_argv = NULL;
@@ -1091,6 +1094,15 @@ static void chdir_to(const char *path) {
     GDir *dir = g_dir_open(path, 0, NULL);
     gint n = 0, ndir = 0, nfile = 0;
     if (!dir) return;
+    /* 导航历史（release 281） */
+    if (!nav_suppress) {
+        if (nav_back && cwd[0]) {
+            if (nav_back->len == 0 ||
+                strcmp((const char *)g_ptr_array_index(nav_back, nav_back->len - 1), cwd) != 0)
+                g_ptr_array_add(nav_back, g_strdup(cwd));
+        }
+        if (nav_fwd) g_ptr_array_set_size(nav_fwd, 0);
+    }
     /* 记住上次目录（release 270） */
     {
         gchar *cdir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
@@ -1595,6 +1607,31 @@ static void on_refresh(GtkButton *b, gpointer ud) {
     else chdir_to(cwd);
 }
 
+/* 后退/前进导航历史（release 281） */
+static void on_back(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    if (!nav_back || nav_back->len == 0) return;
+    if (!nav_fwd) nav_fwd = g_ptr_array_new_with_free_func(g_free);
+    if (cwd[0]) g_ptr_array_add(nav_fwd, g_strdup(cwd));
+    gchar *target = (gchar *)g_ptr_array_steal_index(nav_back, nav_back->len - 1);
+    nav_suppress = TRUE;
+    chdir_to(target);
+    nav_suppress = FALSE;
+    g_free(target);
+}
+
+static void on_forward(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    if (!nav_fwd || nav_fwd->len == 0) return;
+    if (!nav_back) nav_back = g_ptr_array_new_with_free_func(g_free);
+    if (cwd[0]) g_ptr_array_add(nav_back, g_strdup(cwd));
+    gchar *target = (gchar *)g_ptr_array_steal_index(nav_fwd, nav_fwd->len - 1);
+    nav_suppress = TRUE;
+    chdir_to(target);
+    nav_suppress = FALSE;
+    g_free(target);
+}
+
 static void on_up(GtkButton *b, gpointer ud) {
     if (in_trash) { chdir_to("/"); return; }
     gchar *parent = g_path_get_dirname(cwd);
@@ -2052,6 +2089,8 @@ static void on_tab_switch(GtkNotebook *nb, GtkWidget *page, guint page_num, gpoi
 
 static void activate(GtkApplication *app, gpointer ud) {
     load_theme();
+    nav_back = g_ptr_array_new_with_free_func(g_free);
+    nav_fwd = g_ptr_array_new_with_free_func(g_free);
     GtkWidget *win = gtk_application_window_new(app);
     gtk_window_set_title(GTK_WINDOW(win), TR("澜岫文件管理器"));
     qy_make_titlebar(GTK_WINDOW(win), TR("澜岫文件管理器"));
@@ -2140,6 +2179,12 @@ static void activate(GtkApplication *app, gpointer ud) {
     g_signal_connect(path_entry, "activate", G_CALLBACK(on_path_activate), NULL);
     gtk_box_pack_start(GTK_BOX(pathbar), path_entry, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), pathbar, FALSE, FALSE, 2);
+    GtkWidget *b_back = qy_icon_button(QY_ICON_BACK, 18, TR("后退"), NULL);
+    add_class(b_back, "qy-btn");
+    g_signal_connect(b_back, "clicked", G_CALLBACK(on_back), NULL);
+    GtkWidget *b_fwd = qy_icon_button(QY_ICON_NEXT, 18, TR("前进"), NULL);
+    add_class(b_fwd, "qy-btn");
+    g_signal_connect(b_fwd, "clicked", G_CALLBACK(on_forward), NULL);
     GtkWidget *b_ref = qy_icon_button(QY_ICON_REFRESH, 18, TR("刷新"), NULL);
     add_class(b_ref, "qy-btn");
     g_signal_connect(b_ref, "clicked", G_CALLBACK(on_refresh), NULL);
