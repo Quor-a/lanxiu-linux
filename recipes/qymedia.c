@@ -99,6 +99,11 @@ static void lyric_font_apply(void);                       /* 前向声明（歌�
 static void on_clear_playlist(GtkWidget *w, gpointer ud); /* 前向声明（右键菜单用） */
 static void playlist_save(void);                          /* 前向声明（add_to_playlist 自动保存用） */
 static void add_to_playlist(const char *path);            /* 前向声明（on_track_remove 提前引用） */
+static void playlist_row_add(const char *path, guint seq);                        /* 前向声明（拖拽重建用） */
+static void on_playlist_drag_get(GtkWidget *w, GdkDragContext *ctx, GtkSelectionData *data,
+                                 guint info, guint t, gpointer ud);               /* 前向声明（拖拽排序） */
+static void on_playlist_drag_recv(GtkWidget *w, GdkDragContext *ctx, gint x, gint y,
+                                  GtkSelectionData *data, guint info, guint t, gpointer ud); /* 前向声明（拖拽排序） */
 
 /* 检查 PATH 中是否存在程序（g_find_program_in_path 返回需 g_free） */
 static gboolean has_program(const char *name) {
@@ -614,16 +619,50 @@ static gboolean on_track_row_press(GtkWidget *row, GdkEventButton *ev, gpointer 
     return TRUE;
 }
 
-static void add_to_playlist(const char *path) {
-    if (!path || !path[0]) return;
-    for (guint i = 0; i < track_list->len; i++) {
-        if (strcmp((const char *)g_ptr_array_index(track_list, i), path) == 0)
-            return;
+/* 拖拽源: 输出曲目路径（release 280 拖拽排序） */
+static void on_playlist_drag_get(GtkWidget *w, GdkDragContext *ctx, GtkSelectionData *data,
+                                 guint info, guint t, gpointer ud) {
+    (void)ctx; (void)info; (void)t; (void)ud;
+    const char *path = g_object_get_data(G_OBJECT(w), "track-path");
+    if (path) gtk_selection_data_set_text(data, path, -1);
+}
+
+/* 拖拽目标: 把源曲目移动到当前行位置并重建列表（release 280） */
+static void on_playlist_drag_recv(GtkWidget *w, GdkDragContext *ctx, gint x, gint y,
+                                  GtkSelectionData *data, guint info, guint t, gpointer ud) {
+    (void)w; (void)ctx; (void)x; (void)y; (void)info; (void)t; (void)ud;
+    gchar *src = (gchar *)gtk_selection_data_get_text(data);
+    if (!src) return;
+    const char *dst = g_object_get_data(G_OBJECT(w), "track-path");
+    if (dst && strcmp(src, dst) != 0) {
+        int si = -1, di = -1;
+        for (guint i = 0; i < track_list->len; i++) {
+            const char *p = (const char *)g_ptr_array_index(track_list, i);
+            if (si < 0 && strcmp(p, src) == 0) si = (int)i;
+            if (di < 0 && strcmp(p, dst) == 0) di = (int)i;
+        }
+        if (si >= 0 && di >= 0) {
+            gchar *sp = (gchar *)g_ptr_array_steal_index(track_list, si);
+            if (di > si) di--;
+            g_ptr_array_insert(track_list, di, sp);
+            /* 重建列表 UI（track_list 已更新，只重画行） */
+            GList *ch = gtk_container_get_children(GTK_CONTAINER(playlist));
+            for (GList *l = ch; l; l = l->next) gtk_widget_destroy(GTK_WIDGET(l->data));
+            g_list_free(ch);
+            for (guint i = 0; i < track_list->len; i++)
+                playlist_row_add((const char *)g_ptr_array_index(track_list, i), i + 1);
+            playlist_save();
+        }
     }
-    g_ptr_array_add(track_list, g_strdup(path));
+    g_free(src);
+}
+
+/* 纯 UI: 添加一行播放列表（不修改 track_list，重建用） */
+static void playlist_row_add(const char *path, guint seq) {
+    if (!path || !path[0]) return;
     gchar *base = g_path_get_basename(path);
     GtkWidget *row = gtk_list_box_row_new();
-    gchar *numbered = g_strdup_printf("%u. %s", track_list->len, base);
+    gchar *numbered = g_strdup_printf("%u. %s", seq, base);
     GtkWidget *lbl = gtk_label_new(numbered);
     g_free(numbered);
     g_free(base);
@@ -644,6 +683,23 @@ static void add_to_playlist(const char *path) {
     g_object_set_data_full(G_OBJECT(row), "track-path", g_strdup(path), g_free);
     gtk_list_box_insert(GTK_LIST_BOX(playlist), row, -1);
     g_signal_connect(row, "button-press-event", G_CALLBACK(on_track_row_press), NULL);
+    /* 拖拽排序（release 280） */
+    GtkTargetEntry te = { (gchar *)"text/plain", 0, 0 };
+    gtk_drag_source_set(row, GDK_BUTTON1_MASK, &te, 1, GDK_ACTION_MOVE);
+    gtk_drag_dest_set(row, GTK_DEST_DEFAULT_ALL, &te, 1, GDK_ACTION_MOVE);
+    g_signal_connect(row, "drag-data-get", G_CALLBACK(on_playlist_drag_get), NULL);
+    g_signal_connect(row, "drag-data-received", G_CALLBACK(on_playlist_drag_recv), NULL);
+}
+
+/* 添加曲目到播放列表（去重 + 持久化） */
+static void add_to_playlist(const char *path) {
+    if (!path || !path[0]) return;
+    for (guint i = 0; i < track_list->len; i++) {
+        if (strcmp((const char *)g_ptr_array_index(track_list, i), path) == 0)
+            return;
+    }
+    g_ptr_array_add(track_list, g_strdup(path));
+    playlist_row_add(path, track_list->len);
     playlist_save();   /* 添加后自动保存 */
 }
 
