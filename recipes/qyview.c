@@ -689,6 +689,7 @@ static gboolean on_scroll(GtkWidget *w, GdkEventScroll *ev, gpointer ud) {
     return TRUE;
 }
 
+static void on_open_dialog(void);   /* 前向声明（Ctrl+O 打开图片） */
 static gboolean on_key(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
     /* F11 全屏切换 */
     if (ev->keyval == GDK_KEY_F11) {
@@ -710,6 +711,11 @@ static gboolean on_key(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
     /* 空格: 播放/暂停幻灯片 */
     if (ev->keyval == GDK_KEY_space) {
         toggle_slideshow();
+        return TRUE;
+    }
+    /* Ctrl+O: 打开图片（release 281） */
+    if ((ev->state & GDK_CONTROL_MASK) && (ev->keyval == GDK_KEY_o || ev->keyval == GDK_KEY_O)) {
+        on_open_dialog();
         return TRUE;
     }
     /* i: 切换右侧属性/EXIF 侧栏 */
@@ -764,6 +770,30 @@ static gboolean on_button(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
         queue_all_views();
     }
     return FALSE;
+}
+
+/* Ctrl+O: 选择图片打开（release 281） */
+static void on_open_dialog(void) {
+    GtkWidget *dlg = gtk_file_chooser_native_new(TR("打开图片"), GTK_WINDOW(g_win),
+                                                 GTK_FILE_CHOOSER_ACTION_OPEN, TR("打开"), TR("取消"));
+    GtkFileFilter *f = gtk_file_filter_new();
+    gtk_file_filter_set_name(f, TR("图片文件"));
+    gtk_file_filter_add_mime_type(f, "image/*");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dlg), f);
+    if (gtk_native_dialog_run(GTK_NATIVE_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
+        gchar *path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
+        if (path) {
+            scan_dir(path);
+            for (guint i = 0; i < dir_files->len; i++) {
+                if (strcmp((const char *)g_ptr_array_index(dir_files, i), path) == 0) {
+                    load_by_index(GTK_WIDGET(g_da), (int)i);
+                    break;
+                }
+            }
+            g_free(path);
+        }
+    }
+    gtk_widget_destroy(dlg);
 }
 
 static void activate(GtkApplication *app, gpointer ud) {
