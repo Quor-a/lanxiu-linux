@@ -637,6 +637,84 @@ static void do_prop(GtkButton *b, gpointer ud) {
     g_free(name);
 }
 
+/* ---------- 压缩 / 解压（release 283） ---------- */
+
+/* 判断文件名是否为常见压缩包 */
+static gboolean is_archive_name(const char *name) {
+    if (!name) return FALSE;
+    const char *dot = strrchr(name, '.');
+    if (!dot) return FALSE;
+    return g_ascii_strcasecmp(dot, ".zip") == 0 ||
+           g_ascii_strcasecmp(dot, ".tar") == 0 ||
+           g_ascii_strcasecmp(dot, ".gz") == 0 ||
+           g_ascii_strcasecmp(dot, ".tgz") == 0 ||
+           g_ascii_strcasecmp(dot, ".bz2") == 0 ||
+           g_ascii_strcasecmp(dot, ".tbz2") == 0 ||
+           g_ascii_strcasecmp(dot, ".xz") == 0 ||
+           g_ascii_strcasecmp(dot, ".7z") == 0 ||
+           g_ascii_strcasecmp(dot, ".rar") == 0;
+}
+
+/* 压缩选中的文件/目录为同目录下 name.tar.gz */
+static void do_compress(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    gchar *name;
+    selected_name(&name);
+    if (!name) { gtk_label_set_text(GTK_LABEL(status), TR("请先选择一个文件")); return; }
+    gchar *full = g_build_filename(cwd, name, NULL);
+    gchar *qfull = g_shell_quote(full);
+    gchar *out = g_strdup_printf("%s.tar.gz", full);
+    gchar *qout = g_shell_quote(out);
+    gchar *cmd = g_strdup_printf("tar -czf %s %s", qout, qfull);
+    gchar *msg = g_strdup_printf(TR("压缩 %s…"), name);
+    gtk_label_set_text(GTK_LABEL(status), msg);
+    g_free(msg);
+    int rc = system(cmd);
+    g_free(cmd); g_free(qout); g_free(qfull);
+    gtk_label_set_text(GTK_LABEL(status), rc == 0 ? TR("已压缩为 .tar.gz") : TR("压缩失败"));
+    g_free(out); g_free(full); g_free(name);
+    chdir_to(cwd);
+}
+
+/* 解压压缩包到当前目录 */
+static void do_extract(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    gchar *name;
+    selected_name(&name);
+    if (!name) { gtk_label_set_text(GTK_LABEL(status), TR("请先选择一个压缩包")); return; }
+    gchar *full = g_build_filename(cwd, name, NULL);
+    gchar *qfull = g_shell_quote(full);
+    gchar *qcwd = g_shell_quote(cwd);
+    const char *dot = strrchr(name, '.');
+    int rc = -1;
+    if (dot && g_ascii_strcasecmp(dot, ".zip") == 0) {
+        gchar *cmd = g_strdup_printf("unzip -o %s -d %s", qfull, qcwd);
+        rc = system(cmd);
+        g_free(cmd);
+    } else if (dot && (g_ascii_strcasecmp(dot, ".gz") == 0 ||
+                       g_ascii_strcasecmp(dot, ".tgz") == 0 ||
+                       g_ascii_strcasecmp(dot, ".tar") == 0 ||
+                       g_ascii_strcasecmp(dot, ".bz2") == 0 ||
+                       g_ascii_strcasecmp(dot, ".tbz2") == 0 ||
+                       g_ascii_strcasecmp(dot, ".xz") == 0)) {
+        gchar *cmd = g_strdup_printf("tar -xf %s -C %s", qfull, qcwd);
+        rc = system(cmd);
+        g_free(cmd);
+    } else if (dot && (g_ascii_strcasecmp(dot, ".7z") == 0 ||
+                       g_ascii_strcasecmp(dot, ".rar") == 0)) {
+        gchar *cmd = g_strdup_printf("7z x -y -o%s %s", qcwd, qfull);
+        rc = system(cmd);
+        g_free(cmd);
+    } else {
+        gtk_label_set_text(GTK_LABEL(status), TR("暂不支持该压缩格式"));
+        g_free(qfull); g_free(qcwd); g_free(full); g_free(name);
+        return;
+    }
+    gtk_label_set_text(GTK_LABEL(status), rc == 0 ? TR("已解压到当前目录") : TR("解压失败"));
+    g_free(qfull); g_free(qcwd); g_free(full); g_free(name);
+    chdir_to(cwd);
+}
+
 /* 侧边栏磁盘可用空间（release 276） */
 static gboolean update_disk_label(gpointer p) {
     (void)p;
@@ -933,9 +1011,17 @@ static void show_context_menu(GdkEvent *trigger) {
         add_menuitem(menu, TR("重命名"), G_CALLBACK(do_rename));
         add_menuitem(menu, TR("删除"), G_CALLBACK(do_delete));
         add_menuitem(menu, TR("属性"), G_CALLBACK(do_prop));
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+        /* 压缩 / 解压（release 283） */
+        gchar *sel = NULL;
+        selected_name(&sel);
+        add_menuitem(menu, TR("压缩为 tar.gz"), G_CALLBACK(do_compress));
+        if (sel && is_archive_name(sel))
+            add_menuitem(menu, TR("解压到当前目录"), G_CALLBACK(do_extract));
+        g_free(sel);
     }
     gtk_widget_show_all(menu);
-    g_printerr("QYFILESDBG: context menu ready (%d items)\n", in_trash ? 4 : 7);
+    g_printerr("QYFILESDBG: context menu ready\n");
     /* Wayland 下必须将菜单 attach 到窗口，否则临时窗口无法定位/显示 */
     gtk_menu_attach_to_widget(GTK_MENU(menu), view, NULL);
     if (trigger)
