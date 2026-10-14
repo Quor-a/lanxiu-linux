@@ -333,6 +333,12 @@ static gboolean on_key_press(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
         save_current_note();
         return TRUE;
     }
+    /* Ctrl+Shift+S: 导出为文本（release 281） */
+    if ((ev->state & (GDK_CONTROL_MASK | GDK_SHIFT_MASK)) == (GDK_CONTROL_MASK | GDK_SHIFT_MASK) &&
+        (ev->keyval == GDK_KEY_s || ev->keyval == GDK_KEY_S)) {
+        on_export_clicked(NULL, NULL);
+        return TRUE;
+    }
     if ((ev->state & GDK_CONTROL_MASK) &&
         (ev->keyval == GDK_KEY_n || ev->keyval == GDK_KEY_N)) {
         on_new_clicked(NULL, NULL);
