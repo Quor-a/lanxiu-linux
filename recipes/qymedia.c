@@ -103,6 +103,7 @@ static void lyric_font_apply(void);                       /* 前向声明（歌�
 static void on_clear_playlist(GtkWidget *w, gpointer ud); /* 前向声明（右键菜单用） */
 static void on_remove_selected(GtkMenuItem *mi, gpointer ud); /* 前向声明（多选批量移除） */
 static void on_track_reset_count(GtkMenuItem *mi, gpointer ud); /* 前向声明（重置播放计数，release 287） */
+static void on_clear_all_counts(GtkMenuItem *mi, gpointer ud);   /* 前向声明（清空全部计数，release 291） */
 static void playlist_save(void);                          /* 前向声明（add_to_playlist 自动保存用） */
 static void add_to_playlist(const char *path);            /* 前向声明（on_track_remove 提前引用） */
 static void playlist_row_add(const char *path, guint seq);                        /* 前向声明（拖拽重建用） */
@@ -632,6 +633,9 @@ static gboolean on_track_row_press(GtkWidget *row, GdkEventButton *ev, gpointer 
     GtkWidget *mi_cnt = gtk_menu_item_new_with_label(TR("重置播放计数"));
     g_signal_connect(mi_cnt, "activate", G_CALLBACK(on_track_reset_count), (gpointer)g_strdup(path));
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_cnt);
+    GtkWidget *mi_all = gtk_menu_item_new_with_label(TR("清空全部播放计数"));
+    g_signal_connect(mi_all, "activate", G_CALLBACK(on_clear_all_counts), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_all);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
     GtkWidget *mi_clr = gtk_menu_item_new_with_label(TR("清空播放列表"));
     g_signal_connect(mi_clr, "activate", G_CALLBACK(on_clear_playlist), NULL);
@@ -963,6 +967,17 @@ static void on_track_reset_count(GtkMenuItem *mi, gpointer ud) {
         }
     }
     g_free(ud);
+}
+
+/* 清空全部播放计数（release 291） */
+static void on_clear_all_counts(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    if (play_counts) g_hash_table_remove_all(play_counts);
+    counts_save();
+    for (guint i = 0; i < track_list->len; i++)
+        playlist_row_refresh((const char *)g_ptr_array_index(track_list, i), i + 1, 0);
+    if (status_label)
+        gtk_label_set_text(GTK_LABEL(status_label), TR("已清空全部播放计数"));
 }
 
 /* 播放计数排序比较器：按播放次数降序（release 284） */
