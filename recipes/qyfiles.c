@@ -79,6 +79,8 @@ static GtkWidget *b_cp = NULL, *b_prop = NULL;
 static GtkWidget *b_res = NULL, *b_pur = NULL, *b_emp = NULL;
 static GtkWidget *b_bm = NULL;   /* 添加书签按钮（release 256） */
 static GtkWidget *book_list = NULL; /* 侧边栏书签 GtkListBox */
+static int icon_size = 48;             /* 图标大小（release 295） */
+static GtkWidget *zoom_combo = NULL;   /* 图标大小选择 */
 
 /* 网络挂载（release: SMB/CIFS + SSHFS） */
 static GtkWidget *b_mount = NULL;       /* 工具栏「挂载」按钮 */
@@ -1453,7 +1455,7 @@ static QyIconId icon_id_for(const char *name, gboolean isdir) {
 }
 
 static GdkPixbuf *load_icon_for(const char *name, gboolean isdir) {
-    return qy_icon_pixbuf(icon_id_for(name, isdir), 48, NULL);
+    return qy_icon_pixbuf(icon_id_for(name, isdir), icon_size, NULL);   /* 大小可调（release 295） */
 }
 
 /* ---------- 右侧预览面板 ---------- */
@@ -2244,6 +2246,22 @@ static gboolean on_tab_middle_press(GtkWidget *w, GdkEventButton *ev, gpointer u
     return TRUE;
 }
 
+/* 图标大小切换（release 295） */
+static void on_zoom_changed(GtkComboBox *combo, gpointer ud) {
+    (void)ud;
+    const char *id = gtk_combo_box_get_active_id(combo);
+    if (id) icon_size = atoi(id);
+    gchar *path = g_build_filename(g_get_home_dir(), ".config/lanxiu/qyfiles-zoom.conf", NULL);
+    gchar *dir = g_path_get_dirname(path);
+    g_mkdir_with_parents(dir, 0755);
+    g_free(dir);
+    gchar val[16];
+    g_snprintf(val, sizeof val, "%d", icon_size);
+    g_file_set_contents(path, val, -1, NULL);
+    g_free(path);
+    if (cwd[0]) chdir_to(cwd);   /* 重新填充当前目录以应用新大小 */
+}
+
 static void activate(GtkApplication *app, gpointer ud) {
     load_theme();
     nav_back = g_ptr_array_new_with_free_func(g_free);
@@ -2430,6 +2448,25 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_widget_set_size_request(search_entry, 220, -1);
     gtk_entry_set_placeholder_text(GTK_ENTRY(search_entry), TR("搜索当前目录"));
     g_signal_connect(search_entry, "search-changed", G_CALLBACK(on_search_changed), NULL);
+    /* 图标大小下拉（release 295） */
+    zoom_combo = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(zoom_combo), "32", "32");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(zoom_combo), "48", "48");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(zoom_combo), "64", "64");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(zoom_combo), "96", "96");
+    g_signal_connect(zoom_combo, "changed", G_CALLBACK(on_zoom_changed), NULL);
+    gchar *zp = g_build_filename(g_get_home_dir(), ".config/lanxiu/qyfiles-zoom.conf", NULL);
+    gchar *zv = NULL;
+    if (g_file_get_contents(zp, &zv, NULL, NULL) && zv && zv[0]) {
+        int want = atoi(zv);
+        if (want >= 24) icon_size = want;
+        for (int zi = 0; zi < 4; zi++) {
+            gtk_combo_box_set_active(GTK_COMBO_BOX(zoom_combo), zi);
+            if (icon_size == atoi(gtk_combo_box_get_active_id(GTK_COMBO_BOX(zoom_combo)))) break;
+        }
+    }
+    g_free(zv); g_free(zp);
+    gtk_box_pack_end(GTK_BOX(hbox), zoom_combo, FALSE, FALSE, 0);
     /* 类型过滤下拉（release 264） */
     GtkWidget *ftype_combo = gtk_combo_box_text_new();
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(ftype_combo), "all", TR("全部"));
