@@ -34,6 +34,8 @@ static GtkWidget *alarm_hour = NULL;      /* 时 GtkSpinButton */
 static GtkWidget *alarm_min  = NULL;      /* 分 GtkSpinButton */
 static gchar *alarm_fired_min = NULL;    /* 已触发过的分钟 HH:MM（避免同分钟重复触发） */
 static gchar *snooze_at = NULL;          /* 贪睡目标时刻 HH:MM（release 294） */
+static GtkWidget *alarm_vol = NULL;      /* 闹钟音量 GtkScale 0-100（release 302） */
+static int alarm_vol_value = 80;         /* 闹钟音量值，默认 80（release 302） */
 
 /* ---------- 世界时钟 ---------- */
 typedef struct { char *city; int offset; } WorldCity;
@@ -207,6 +209,57 @@ static void alarm_load(void) {
     g_free(path);
 }
 
+/* ---------- 闹钟音量（release 302） ---------- */
+static char *alarm_vol_path(void) {
+    return g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qyclock-alarmvol", NULL);
+}
+
+static void alarm_vol_save(void) {
+    char *dir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0700);
+    g_free(dir);
+    char *path = alarm_vol_path();
+    char buf[16];
+    g_snprintf(buf, sizeof buf, "%d", alarm_vol_value);
+    g_file_set_contents(path, buf, -1, NULL);
+    g_free(path);
+}
+
+static void alarm_vol_load(void) {
+    char *path = alarm_vol_path();
+    gchar *content = NULL;
+    if (g_file_get_contents(path, &content, NULL, NULL)) {
+        int v = content ? atoi(content) : -1;
+        if (v >= 0 && v <= 100) {
+            alarm_vol_value = v;
+            if (alarm_vol)
+                gtk_range_set_value(GTK_RANGE(alarm_vol), v);
+        }
+    }
+    g_free(content);
+    g_free(path);
+}
+
+/* 应用闹钟音量到系统：先试 Master，失败回退 PCM（异步 shell，不阻塞 UI） */
+static void alarm_vol_apply(void) {
+    gchar *cmd = g_strdup_printf("amixer -q set Master %d%% || amixer -q set PCM %d%%",
+                                   alarm_vol_value, alarm_vol_value);
+    GError *err = NULL;
+    if (!g_spawn_command_line_async(cmd, &err)) {
+        g_printerr("qyclock: amixer 调用失败: %s\n", err ? err->message : "?");
+        g_clear_error(&err);
+    }
+    g_free(cmd);
+}
+
+/* 滑块变化：保存并立即应用音量 */
+static void on_alarm_vol_changed(GtkRange *range, gpointer ud) {
+    (void)ud;
+    alarm_vol_value = (int)gtk_range_get_value(range);
+    alarm_vol_save();
+    alarm_vol_apply();
+}
+
 /* 到点提醒：优先 qynotify，不可用则弹 GtkDialog（release 294：支持稍后 5 分钟） */
 static void show_alarm_dialog(const char *hhmm) {
     GtkWidget *dlg = gtk_dialog_new_with_buttons(TR("闹钟"), NULL,
@@ -231,6 +284,8 @@ static void show_alarm_dialog(const char *hhmm) {
 }
 
 static void alarm_fire(const char *hhmm) {
+    /* 响铃前先应用闹钟音量（release 302） */
+    alarm_vol_apply();
     gchar *cmd = g_strdup_printf("qynotify 闹钟提醒:%s", hhmm);
     GError *err = NULL;
     if (!g_spawn_command_line_async(cmd, &err)) {
@@ -508,6 +563,20 @@ static GtkWidget *build_alarm_page(void) {
     gtk_box_pack_start(GTK_BOX(row), alarm_min, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(row), add, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(page), row, FALSE, FALSE, 0);
+
+    /* 闹钟音量滑块（release 302）：范围 0~100，默认 80，随动 amixer */
+    GtkWidget *volrow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *vollabel = gtk_label_new(TR("闹钟音量:"));
+    alarm_vol = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0, 100, 1);
+    gtk_scale_set_digits(GTK_SCALE(alarm_vol), 0);
+    gtk_scale_set_value_pos(GTK_SCALE(alarm_vol), GTK_POS_RIGHT);
+    gtk_range_set_value(GTK_RANGE(alarm_vol), alarm_vol_value);
+    gtk_widget_set_hexpand(alarm_vol, TRUE);
+    qy_add_class(alarm_vol, "qy-clock-btn");
+    g_signal_connect(alarm_vol, "value-changed", G_CALLBACK(on_alarm_vol_changed), NULL);
+    gtk_box_pack_start(GTK_BOX(volrow), vollabel, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(volrow), alarm_vol, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(page), volrow, FALSE, FALSE, 0);
 
     /* 闹钟列表 */
     GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
@@ -803,6 +872,7 @@ int main(int argc, char **argv) {
     world_tick(NULL);
     cal_select_today();
     alarm_load();
+    alarm_vol_load();   /* 读取并设置闹钟音量（release 302） */
     timer_reset_display();
 
     /* 自动化: QYCLOCK_SW=start 启动后自动开始秒表 */

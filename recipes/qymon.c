@@ -50,6 +50,7 @@ static GtkWidget *cpu_label = NULL, *mem_label = NULL, *info_label = NULL;
 static GtkWidget *gpu_label = NULL;   /* GPU 信息 #qymon-gpu */
 static GtkWidget *title_label = NULL;
 static GtkWidget *disk_label = NULL;
+static GtkWidget *disk_progress = NULL; /* 磁盘使用率进度条（release 302） */
 static GtkWidget *proc_label = NULL;   /* 内存占用 TOP 5 进程列表 */
 static GtkWidget *proc_info_label = NULL; /* 进程列表信息（数量/操作提示） */
 static GtkListStore *proc_store = NULL;   /* 全量进程列表 */
@@ -67,6 +68,20 @@ static GHashTable *cpu_prev = NULL;   /* gint64* pid -> ProcCpuSample* */
 static long clk_tck = 0;
 
 enum { P_PID, P_NAME, P_MEM, P_CPU, N_PCOLS };
+
+/* 磁盘使用率进度条（release 302）：fraction + 文本 + 高占用红色样式 */
+static void set_disk_progress(double disk) {
+    if (!disk_progress) return;
+    gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(disk_progress), disk);
+    gchar *ptext = g_strdup_printf(TR("已用 %d%%"), (int)(disk * 100 + 0.5));
+    gtk_progress_bar_set_text(GTK_PROGRESS_BAR(disk_progress), ptext);
+    g_free(ptext);
+    if (disk > 0.90)
+        add_class(disk_progress, "qy-disk-warn");
+    else
+        gtk_style_context_remove_class(gtk_widget_get_style_context(disk_progress),
+                                       "qy-disk-warn");
+}
 
 /* 进程行 CPU% 格式化（GtkCellRendererText data func） */
 static void cpu_cell_data_func(GtkTreeViewColumn *col, GtkCellRenderer *r,
@@ -642,6 +657,8 @@ static gboolean tick(gpointer ud) {
     }
     g_snprintf(big, sizeof big, TR("磁盘 %d%%"), (int)(disk * 100 + 0.5));
     if (disk_label) gtk_label_set_text(GTK_LABEL(disk_label), big);
+    /* 同步更新磁盘使用率进度条（release 302） */
+    set_disk_progress(disk);
     /* CPU 温度: 标签显示「CPU 温度: NN°C」，每 2s 追加一个历史点 */
     double temp = read_cpu_temp();
     if (temp > 0) {
@@ -1183,8 +1200,27 @@ static void activate(GtkApplication *app, gpointer ud) {
     mem_label = gtk_label_new(lbl);
     add_class(mem_label, "qy-mon-mem");
     g_snprintf(lbl, sizeof lbl, "%s 0%%", TR("磁盘"));
+    /* 磁盘大数字 + 使用率进度条（release 302） */
+    GtkWidget *disk_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     disk_label = gtk_label_new(lbl);
     add_class(disk_label, "qy-mon-disk");
+    disk_progress = gtk_progress_bar_new();
+    gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(disk_progress), TRUE);
+    gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(disk_progress), 0.0);
+    gtk_widget_set_size_request(disk_progress, 120, -1);
+    gtk_box_pack_start(GTK_BOX(disk_box), disk_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(disk_box), disk_progress, FALSE, FALSE, 0);
+    /* 启动时初始化进度条为当前根分区使用率 */
+    {
+        struct statvfs sv0;
+        double disk0 = 0.0;
+        if (statvfs("/", &sv0) == 0 && sv0.f_blocks > 0) {
+            disk0 = 1.0 - (double)sv0.f_bavail / (double)sv0.f_blocks;
+            if (disk0 < 0) disk0 = 0;
+            if (disk0 > 1) disk0 = 1;
+        }
+        set_disk_progress(disk0);
+    }
     g_snprintf(lbl, sizeof lbl, "%s --", TR("温度"));
     temp_label = gtk_label_new(lbl);
     add_class(temp_label, "qy-mon-temp");
@@ -1195,7 +1231,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_widget_set_name(io_label, "qymon-io");        /* #qymon-io（release 288） */
     gtk_box_pack_start(GTK_BOX(hrow), cpu_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hrow), mem_label, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(hrow), disk_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(hrow), disk_box, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hrow), temp_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hrow), io_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), hrow, FALSE, FALSE, 0);

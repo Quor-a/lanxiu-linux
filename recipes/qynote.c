@@ -532,6 +532,28 @@ static void on_save_clicked(GtkButton *b, gpointer ud) {
     save_current_note();
 }
 
+/* 插入当前日期时间到光标位置，随后保存（release 302） */
+static void on_insert_time_clicked(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    GtkTextBuffer *buf = gtk_text_view_get_buffer(textview);
+
+    /* 本地时间，格式 YYYY-MM-DD HH:MM */
+    GDateTime *dt = g_date_time_new_now_local();
+    gchar *stamp = g_date_time_format(dt, "%Y-%m-%d %H:%M");
+    g_date_time_unref(dt);
+
+    /* 取当前光标位置（缓冲区为空/无光标时，insert mark 位于开头，自然插到开头） */
+    GtkTextIter iter;
+    gtk_text_buffer_get_iter_at_mark(buf, &iter, gtk_text_buffer_get_insert(buf));
+    gtk_text_buffer_insert(buf, &iter, stamp, -1);
+    gtk_text_buffer_place_cursor(buf, &iter);   /* iter 已位于插入文本之后 */
+
+    g_free(stamp);
+
+    save_current_note();
+    gtk_widget_grab_focus(GTK_WIDGET(textview));
+}
+
 /* 笔记搜索：按文件名过滤列表（release 276） */
 static void on_search_changed(GtkSearchEntry *se, gpointer ud) {
     (void)se; (void)ud;
@@ -703,6 +725,9 @@ int main(int argc, char **argv) {
     GtkWidget *b_exp = gtk_button_new_with_label(TR("导出"));
     qy_add_class(b_exp, "qy-btn");
     g_signal_connect(b_exp, "clicked", G_CALLBACK(on_export_clicked), NULL);
+    GtkWidget *b_time = gtk_button_new_with_label(TR("插入时间"));
+    qy_add_class(b_time, "qy-btn");
+    g_signal_connect(b_time, "clicked", G_CALLBACK(on_insert_time_clicked), NULL);
     b_sort = gtk_toggle_button_new_with_label(TR("按时间排序"));
     qy_add_class(b_sort, "qy-btn");
     g_signal_connect(b_sort, "toggled", G_CALLBACK(on_sort_toggled), NULL);
@@ -715,6 +740,7 @@ int main(int argc, char **argv) {
     gtk_box_pack_start(GTK_BOX(toolbar), b_del, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), b_save, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), b_exp, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(toolbar), b_time, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), b_sort, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), status_lb, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), count_lb, FALSE, FALSE, 0);

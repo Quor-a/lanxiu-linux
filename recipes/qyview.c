@@ -36,6 +36,7 @@ static GtkWidget *file_label = NULL;   /* 左下角文件名 */
 static GtkWidget *g_da = NULL;          /* 绘图区（幻灯片定时器回调用） */
 static guint slide_timer = 0;           /* 幻灯片定时器 id */
 static gboolean slide_on = FALSE;      /* 幻灯片是否运行 */
+static gboolean dark_bg = FALSE;      /* 查看/幻灯片背景色（release 302） */
 
 /* ---------- 幻灯片淡入淡出（GtkStack 双绘图区交替） ---------- */
 static GtkWidget *g_stack = NULL;     /* GtkStack（CROSSFADE 过渡） */
@@ -779,9 +780,48 @@ static void on_fullscreen(GtkButton *b, gpointer ud) {
     toggle_fullscreen();
 }
 
+/* ---------- 查看/幻灯片背景色（release 302） ---------- */
+/* 配置文件: ~/.config/lanxiu/qyview-bg.conf，内容 1=深色 / 0=浅色 */
+static gchar *bg_conf_path(void) {
+    gchar *dir = g_build_filename(g_get_user_config_dir(), "lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    gchar *cfg = g_build_filename(dir, "qyview-bg.conf", NULL);
+    g_free(dir);
+    return cfg;
+}
+
+static void bg_save_pref(void) {
+    gchar *cfg = bg_conf_path();
+    g_file_set_contents(cfg, dark_bg ? "1\n" : "0\n", -1, NULL);
+    g_free(cfg);
+}
+
+static void bg_load_pref(void) {
+    gchar *cfg = bg_conf_path();
+    gchar *contents = NULL;
+    if (g_file_get_contents(cfg, &contents, NULL, NULL)) {
+        dark_bg = (contents && g_strstrip(contents)[0] == '1');
+    }
+    g_free(contents);
+    g_free(cfg);
+}
+
+/* 背景切换按钮回调：切换深色/浅色背景并重绘绘图区（幻灯片不受影响） */
+static void on_bg_toggled(GtkToggleButton *btn, gpointer ud) {
+    (void)ud;
+    dark_bg = gtk_toggle_button_get_active(btn);
+    bg_save_pref();
+    if (g_da) gtk_widget_queue_draw(g_da);
+    queue_all_views();
+}
+
 static gboolean on_draw(GtkWidget *da, cairo_t *cr, gpointer ud) {
     GtkAllocation a; gtk_widget_get_allocation(da, &a);
-    cairo_set_source_rgb(cr, 0.1, 0.1, 0.12);
+    /* release 302: 背景色按 dark_bg 分支（浅色 #f5f5f5 / 深色 #222222） */
+    if (dark_bg)
+        cairo_set_source_rgb(cr, 0x22 / 255.0, 0x22 / 255.0, 0x22 / 255.0);
+    else
+        cairo_set_source_rgb(cr, 0xf5 / 255.0, 0xf5 / 255.0, 0xf5 / 255.0);
     cairo_paint(cr);
     GdkPixbuf *pb = view_get_pixbuf(da);
     if (!pb) return FALSE;
@@ -957,6 +997,7 @@ static void on_win_drag_recv(GtkWidget *w, GdkDragContext *ctx, gint x, gint y,
 
 static void activate(GtkApplication *app, gpointer ud) {
     qy_load_theme();
+    bg_load_pref();   /* release 302: 启动加载背景色偏好 */
     GtkWidget *win = gtk_application_window_new(app);
     g_win = GTK_WINDOW(win);
     gtk_window_set_title(GTK_WINDOW(win), "澜岫图片查看器");
@@ -994,11 +1035,21 @@ static void activate(GtkApplication *app, gpointer ud) {
     qy_add_class(b_batch, "qy-view-bar-btn");
     g_signal_connect(b_batch, "clicked", G_CALLBACK(on_batch_convert), NULL);
 
+    /* 背景切换按钮（release 302）：深色/浅色背景切换，状态同步自配置 */
+    GtkWidget *b_bg = gtk_toggle_button_new_with_label(TR("深色背景"));
+    qy_add_class(b_bg, "qy-view-bar-btn");
+    gtk_widget_set_tooltip_text(b_bg, TR("切换深色/浅色背景"));
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(b_bg), dark_bg);
+    g_signal_connect(b_bg, "toggled", G_CALLBACK(on_bg_toggled), NULL);
+
     gtk_box_pack_start(GTK_BOX(topbar), b_saveas, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(topbar), save_fmt_combo, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(topbar), gtk_separator_new(GTK_ORIENTATION_VERTICAL),
                        FALSE, FALSE, 4);
     gtk_box_pack_start(GTK_BOX(topbar), b_batch, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(topbar), gtk_separator_new(GTK_ORIENTATION_VERTICAL),
+                       FALSE, FALSE, 4);
+    gtk_box_pack_start(GTK_BOX(topbar), b_bg, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), topbar, FALSE, FALSE, 0);
 
     GtkWidget *overlay = gtk_overlay_new();
