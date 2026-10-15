@@ -53,6 +53,7 @@ static QyFilesTab *cur_tab = NULL;
 static GtkWidget *search_entry = NULL; /* 搜索框（各标签共享控件，文本随标签切换） */
 
 static void update_tab_label(void);
+static gboolean on_tab_middle_press(GtkWidget *w, GdkEventButton *ev, gpointer ud); /* 前向声明（中键关闭标签，release 292） */
 
 /* v2.0 主题 + 工具栏状态按钮 */
 static void load_theme(void) {
@@ -2137,14 +2138,17 @@ static QyFilesTab *create_tab(const char *path) {
     g_signal_connect(iv, "item-activated", G_CALLBACK(on_icon_activated), NULL);
     g_signal_connect(iv, "selection-changed", G_CALLBACK(on_view_cursor_changed), NULL);
 
-    /* 标签页标题 = 目录 basename，tooltip = 完整路径 */
+    /* 标签页标题 = 目录 basename，tooltip = 完整路径（release 292：中键关闭） */
     const char *dir = (path && path[0]) ? path : "/";
     gchar *base = g_path_get_basename(dir);
     GtkWidget *lbl = gtk_label_new((base && base[0]) ? base : "/");
     gtk_widget_set_tooltip_text(lbl, dir);
     g_free(base);
+    GtkWidget *lbl_eb = gtk_event_box_new();
+    gtk_container_add(GTK_CONTAINER(lbl_eb), lbl);
+    g_signal_connect(lbl_eb, "button-press-event", G_CALLBACK(on_tab_middle_press), t);
 
-    int page_idx = gtk_notebook_append_page(GTK_NOTEBOOK(notebook), st, lbl);
+    int page_idx = gtk_notebook_append_page(GTK_NOTEBOOK(notebook), st, lbl_eb);
 
     g_strlcpy(t->path, dir, sizeof t->path);
     t->in_trash = 0;
@@ -2216,6 +2220,28 @@ static void on_tab_switch(GtkNotebook *nb, GtkWidget *page, guint page_num, gpoi
     if (in_trash) chdir_trash(); else chdir_to(cwd);
     if (preview_revealer && gtk_revealer_get_reveal_child(GTK_REVEALER(preview_revealer)))
         update_preview();
+}
+
+/* 中键点击标签关闭该页（release 292） */
+static gboolean on_tab_middle_press(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w;
+    QyFilesTab *tab = (QyFilesTab *)ud;
+    if (ev->type != GDK_BUTTON_PRESS || ev->button != 2 || !notebook) return FALSE;
+    int n = gtk_notebook_get_n_pages(GTK_NOTEBOOK(notebook));
+    if (n <= 1) return TRUE;   /* 至少保留一个标签 */
+    int cur = gtk_notebook_get_current_page(GTK_NOTEBOOK(notebook));
+    for (int i = 0; i < n; i++) {
+        GtkWidget *page = gtk_notebook_get_nth_page(GTK_NOTEBOOK(notebook), i);
+        if (page && g_object_get_data(G_OBJECT(page), "tab") == tab) {
+            int target = i > 0 ? i - 1 : 1;
+            if (cur == i)
+                gtk_notebook_set_current_page(GTK_NOTEBOOK(notebook), target);
+            gtk_notebook_remove_page(GTK_NOTEBOOK(notebook), i);
+            g_free(tab);
+            return TRUE;
+        }
+    }
+    return TRUE;
 }
 
 static void activate(GtkApplication *app, gpointer ud) {
