@@ -18,6 +18,10 @@ static GtkWidget *count_label = NULL;
 static GtkWidget *status_label = NULL;
 static GtkListBox *wifi_list = NULL;        /* #qynet-wifi-list */
 static GtkWidget *wifi_status_label = NULL; /* 「未检测到无线网卡」等提示 */
+static GtkWidget *disconn_btn = NULL;        /* 以太网「断开」按钮（release 298） */
+
+/* 以太网接口枚举（release 298）：定义在 refresh_list 之后 */
+static gboolean has_eth_iface(void);
 
 /* ---------- 实时流量曲线 ---------- */
 #define RATE_HISTORY 60
@@ -248,6 +252,9 @@ static void refresh_list(void) {
         gtk_label_set_text(GTK_LABEL(count_label), txt);
         g_free(txt);
     }
+    /* 无以太网接口时禁用「断开」按钮（release 298） */
+    if (disconn_btn)
+        gtk_widget_set_sensitive(disconn_btn, has_eth_iface());
 }
 
 /* 读取 DNS 服务器（release 275）：/etc/resolv.conf nameserver 前 2 个 */
@@ -303,6 +310,71 @@ static void do_connect(GtkWidget *w, gpointer ud) {
         gtk_label_set_text(GTK_LABEL(status_label), s);
         g_free(s);
     }
+}
+
+/* ---------- 以太网断开（release 298） ---------- */
+
+/* 获取第一个以太网接口（非 lo、非 wlan/wl/wifi；枚举失败回退 eth0） */
+static const char *find_eth_iface(void) {
+    static char buf[64] = "eth0";
+    GtkTreeIter it;
+    if (gtk_tree_model_get_iter_first(GTK_TREE_MODEL(store), &it)) {
+        do {
+            gchar *name = NULL;
+            gtk_tree_model_get(GTK_TREE_MODEL(store), &it, C_IF, &name, -1);
+            gboolean is_wifi = name && (strncmp(name, "wlan", 4) == 0 ||
+                                        strncmp(name, "wl", 2) == 0 ||
+                                        strncmp(name, "wifi", 4) == 0);
+            if (name && strcmp(name, "lo") != 0 && !is_wifi) {
+                g_strlcpy(buf, name, sizeof buf);
+                g_free(name);
+                return buf;
+            }
+            g_free(name);
+        } while (gtk_tree_model_iter_next(GTK_TREE_MODEL(store), &it));
+    }
+    return buf;
+}
+
+/* 是否存在以太网接口（非 lo、非 wlan/wl/wifi） */
+static gboolean has_eth_iface(void) {
+    GtkTreeIter it;
+    if (gtk_tree_model_get_iter_first(GTK_TREE_MODEL(store), &it)) {
+        do {
+            gchar *name = NULL;
+            gtk_tree_model_get(GTK_TREE_MODEL(store), &it, C_IF, &name, -1);
+            gboolean is_wifi = name && (strncmp(name, "wlan", 4) == 0 ||
+                                        strncmp(name, "wl", 2) == 0 ||
+                                        strncmp(name, "wifi", 4) == 0);
+            gboolean is_eth = name && strcmp(name, "lo") != 0 && !is_wifi;
+            g_free(name);
+            if (is_eth) return TRUE;
+        } while (gtk_tree_model_iter_next(GTK_TREE_MODEL(store), &it));
+    }
+    return FALSE;
+}
+
+/* 断开以太网：确认后 ip link down，并刷新状态（release 298） */
+static void do_disconnect(GtkWidget *w, gpointer ud) {
+    (void)w;
+    const char *ifname = ud ? (const char *)ud : find_eth_iface();
+    if (!ifname || !ifname[0]) return;
+    gchar *msg = g_strdup_printf(TR("确认断开以太网 %s?"), ifname);
+    GtkWidget *cdlg = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION,
+                                             GTK_BUTTONS_YES_NO, "%s", msg);
+    g_free(msg);
+    int cans = gtk_dialog_run(GTK_DIALOG(cdlg));
+    gtk_widget_destroy(cdlg);
+    if (cans != GTK_RESPONSE_YES) return;
+    char cmd[256];
+    snprintf(cmd, sizeof cmd, "ip link set dev %s down 2>/dev/null", ifname);
+    g_spawn_command_line_async(cmd, NULL);
+    if (status_label) {
+        gchar *s = g_strdup_printf(TR("已断开 %s"), ifname);
+        gtk_label_set_text(GTK_LABEL(status_label), s);
+        g_free(s);
+    }
+    g_timeout_add(3000, (GSourceFunc)refresh_list, NULL);
 }
 
 /* ---------- WiFi 热点连接（wpa_supplicant + udhcpc） ---------- */
@@ -693,6 +765,10 @@ int main(int argc, char **argv) {
     GtkWidget *b_conn = gtk_button_new_with_label(TR("连接"));
     qy_add_class(b_conn, "qy-btn");
     g_signal_connect(b_conn, "clicked", G_CALLBACK(do_connect), NULL);
+    GtkWidget *b_disconn = gtk_button_new_with_label(TR("断开"));
+    qy_add_class(b_disconn, "qy-btn");
+    g_signal_connect(b_disconn, "clicked", G_CALLBACK(do_disconnect), NULL);
+    disconn_btn = b_disconn;
     GtkWidget *b_refresh = gtk_button_new_with_label(TR("刷新"));
     gtk_widget_set_tooltip_text(b_refresh, TR("重新扫描网络接口"));
     qy_add_class(b_refresh, "qy-btn");
@@ -707,6 +783,7 @@ int main(int argc, char **argv) {
     gtk_widget_set_tooltip_text(status_eb, TR("点击复制当前状态信息"));
     g_signal_connect(status_eb, "button-press-event", G_CALLBACK(on_status_clicked), NULL);
     gtk_box_pack_start(GTK_BOX(hb), b_conn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(hb), b_disconn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hb), b_refresh, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hb), b_wifi, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hb), count_label, FALSE, FALSE, 0);

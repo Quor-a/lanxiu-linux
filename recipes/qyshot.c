@@ -24,16 +24,35 @@ static GtkWidget *delay_combo = NULL;   /* 延时选择 */
 static GtkWidget *format_combo = NULL; /* 保存格式选择 */
 static gboolean auto_copy = FALSE;     /* 截图后自动复制到剪贴板（release 292） */
 static GtkWidget *b_autocopy = NULL;   /* 自动复制开关按钮 */
+static GtkWidget *quality_spin = NULL; /* JPEG 质量滑块（release 298） */
+static int jpeg_quality = 85;          /* JPEG 保存质量（release 298） */
 
 static void on_fmt_changed(GtkComboBox *combo, gpointer ud) {
     (void)ud;
     const char *id = gtk_combo_box_get_active_id(combo);
     if (!id) return;
+    /* release 298: 质量控件仅在 JPEG 格式下可用 */
+    if (quality_spin)
+        gtk_widget_set_sensitive(quality_spin, strcmp(id, "jpeg") == 0);
     gchar *dir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
     g_mkdir_with_parents(dir, 0755);
     g_free(dir);
     gchar *path = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qyshot-fmt", NULL);
     g_file_set_contents(path, id, -1, NULL);
+    g_free(path);
+}
+
+/* 质量滑块变化：更新全局质量并持久化（release 298） */
+static void on_quality_changed(GtkSpinButton *spin, gpointer ud) {
+    (void)ud;
+    jpeg_quality = gtk_spin_button_get_value_as_int(spin);
+    gchar *path = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qyshot-quality", NULL);
+    gchar *dir = g_path_get_dirname(path);
+    g_mkdir_with_parents(dir, 0755);
+    g_free(dir);
+    gchar *val = g_strdup_printf("%d", jpeg_quality);
+    g_file_set_contents(path, val, -1, NULL);
+    g_free(val);
     g_free(path);
 }
 static char last_path[512] = "";
@@ -198,10 +217,14 @@ static gboolean write_bmp(GdkPixbuf *pb, const char *path, GError **err) {
     return TRUE;
 }
 
-/* 按格式保存 pixbuf；JPEG 质量 85，BMP 优先 gdk-pixbuf 写入、失败时手动兜底 */
+/* 按格式保存 pixbuf；JPEG 质量由滑块决定（release 298），BMP 优先 gdk-pixbuf 写入、失败时手动兜底 */
 static gboolean save_pixbuf(GdkPixbuf *pb, const char *path, const char *fmt, GError **err) {
-    if (!strcmp(fmt, "jpeg"))
-        return gdk_pixbuf_save(pb, path, "jpeg", err, "quality", "85", NULL);
+    if (!strcmp(fmt, "jpeg")) {
+        gchar *quality = g_strdup_printf("%d", jpeg_quality);
+        gboolean ok = gdk_pixbuf_save(pb, path, "jpeg", err, "quality", quality, NULL);
+        g_free(quality);
+        return ok;
+    }
     if (!strcmp(fmt, "bmp")) {
         if (gdk_pixbuf_save(pb, path, "bmp", err, NULL))
             return TRUE;
@@ -649,6 +672,30 @@ static void activate(GtkApplication *app, gpointer ud) {
     g_free(fmt_path);
     g_signal_connect(format_combo, "changed", G_CALLBACK(on_fmt_changed), NULL);
     gtk_box_pack_start(GTK_BOX(ctl), format_combo, FALSE, FALSE, 0);
+
+    /* 质量滑块（release 298）：仅 JPEG 格式可用，值持久化到 qyshot-quality */
+    gtk_box_pack_start(GTK_BOX(ctl), gtk_label_new(TR("质量:")), FALSE, FALSE, 0);
+    quality_spin = gtk_spin_button_new_with_range(1, 100, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(quality_spin), jpeg_quality);
+    gtk_entry_set_width_chars(GTK_ENTRY(quality_spin), 3);
+    qy_add_class(quality_spin, "qy-shot-combo");
+    gtk_box_pack_start(GTK_BOX(ctl), quality_spin, FALSE, FALSE, 0);
+    /* 启动加载上次质量（release 298） */
+    {
+        gchar *qpath = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qyshot-quality", NULL);
+        gchar *qval = NULL;
+        if (g_file_get_contents(qpath, &qval, NULL, NULL)) {
+            int v = atoi(g_strstrip(qval));
+            if (v >= 1 && v <= 100) {
+                jpeg_quality = v;
+                gtk_spin_button_set_value(GTK_SPIN_BUTTON(quality_spin), v);
+            }
+            g_free(qval);
+        }
+        g_free(qpath);
+    }
+    g_signal_connect(quality_spin, "value-changed", G_CALLBACK(on_quality_changed), NULL);
+    on_fmt_changed(GTK_COMBO_BOX(format_combo), NULL);
     gtk_box_pack_start(GTK_BOX(vbox), ctl, FALSE, FALSE, 0);
 
     /* 按钮行 */

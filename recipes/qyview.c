@@ -383,20 +383,92 @@ static gboolean is_batch_img(const char *name) {
 /* 批量转换对话框的 UI 状态（工作线程通过 g_idle_add 更新主线程控件） */
 typedef struct {
     gchar *src;              /* 源目录 */
-    gchar *dst;              /* 目标目录 */
     gchar *fmt;              /* 目标格式 id */
     gchar *ext;              /* 目标扩展名 */
     GtkWidget *dlg;           /* 批量转换对话框 */
     GtkWidget *combo;         /* 目标格式下拉 */
+    GtkWidget *spin;          /* 缩放 %（release 298） */
+    GtkWidget *dirbtn;        /* 输出目录选择（release 298） */
+    GtkWidget *clearbtn;      /* 恢复「原目录」的小按钮 */
     GtkWidget *bar;           /* GtkProgressBar */
     GtkWidget *status;        /* 状态标签 */
     GThread *thread;         /* 工作线程 */
+    int scale;                /* 缩放百分比（25~200，100=不缩放） */
+    gchar *outdir;            /* 输出目录，NULL/空=原目录 */
     int total;
     int done;
     gboolean finished;
     gboolean thread_started;
     gboolean thread_done;
 } BatchUi;
+
+/* ---------- 批量转换偏好持久化（release 298） ---------- */
+/* 配置文件: ~/.config/lanxiu/qyview-batch.conf，两行：scale=100 / outdir=/path */
+static gchar *batch_conf_path(void) {
+    gchar *dir = g_build_filename(g_get_user_config_dir(), "lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    gchar *cfg = g_build_filename(dir, "qyview-batch.conf", NULL);
+    g_free(dir);
+    return cfg;
+}
+
+static void batch_save_prefs(int scale, const char *outdir) {
+    gchar *cfg = batch_conf_path();
+    gchar *txt = g_strdup_printf("scale=%d\noutdir=%s\n", scale, outdir ? outdir : "");
+    g_file_set_contents(cfg, txt, -1, NULL);
+    g_free(txt);
+    g_free(cfg);
+}
+
+static void batch_load_prefs(int *scale, gchar **outdir) {
+    *scale = 100;
+    *outdir = NULL;
+    gchar *cfg = batch_conf_path();
+    gchar *contents = NULL;
+    if (g_file_get_contents(cfg, &contents, NULL, NULL)) {
+        gchar **lines = g_strsplit(contents, "\n", -1);
+        for (int i = 0; lines && lines[i]; i++) {
+            gchar *line = g_strstrip(lines[i]);
+            if (g_str_has_prefix(line, "scale=")) {
+                int v = atoi(line + strlen("scale="));
+                if (v >= 25 && v <= 200) *scale = v;
+            } else if (g_str_has_prefix(line, "outdir=")) {
+                const char *v = line + strlen("outdir=");
+                if (v[0] && g_file_test(v, G_FILE_TEST_IS_DIR))
+                    *outdir = g_strdup(v);
+            }
+        }
+        g_strfreev(lines);
+    }
+    g_free(contents);
+    g_free(cfg);
+}
+
+/* 在 GtkFileChooserButton 内部找到显示当前目录名的 GtkLabel（release 298） */
+static GtkWidget *find_label_child(GtkWidget *w) {
+    if (GTK_IS_LABEL(w)) return w;
+    if (GTK_IS_CONTAINER(w)) {
+        GList *ch = gtk_container_get_children(GTK_CONTAINER(w));
+        for (GList *l = ch; l; l = l->next) {
+            GtkWidget *r = find_label_child(GTK_WIDGET(l->data));
+            if (r) { g_list_free(ch); return r; }
+        }
+        g_list_free(ch);
+    }
+    return NULL;
+}
+
+static void batch_set_dirbtn_empty_label(GtkWidget *btn) {
+    if (gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(btn))) return;
+    GtkWidget *lbl = find_label_child(btn);
+    if (lbl) gtk_label_set_text(GTK_LABEL(lbl), TR("原目录"));
+}
+
+/* 未选择输出目录时，让按钮显示「原目录」而不是 (None) */
+static void on_batch_dirbtn_changed(GtkFileChooser *fc, gpointer p) {
+    BatchUi *ui = (BatchUi *)p;
+    batch_set_dirbtn_empty_label(ui->dirbtn);
+}
 
 /* 工作线程回调：在主线程更新进度/完成状态 */
 static gboolean batch_update_idle(gpointer p) {
@@ -420,6 +492,9 @@ static gboolean batch_update_idle(gpointer p) {
                                                                 GTK_RESPONSE_CLOSE);
         if (close) gtk_widget_set_sensitive(close, TRUE);
         gtk_widget_set_sensitive(ui->combo, TRUE);
+        gtk_widget_set_sensitive(ui->spin, TRUE);
+        gtk_widget_set_sensitive(ui->dirbtn, TRUE);
+        gtk_widget_set_sensitive(ui->clearbtn, TRUE);
     }
     return ui->finished ? G_SOURCE_REMOVE : G_SOURCE_CONTINUE;
 }
@@ -435,6 +510,9 @@ static gpointer batch_worker(gpointer p) {
             if (is_batch_img(n)) g_ptr_array_add(files, g_strdup(n));
         g_dir_close(dir);
     }
+    /* 实际输出目录：未指定输出目录时写到源目录（原目录） */
+    const char *outdir = (ui->outdir && ui->outdir[0]) ? ui->outdir : ui->src;
+    const int pct = ui->scale;
     ui->total = (int)files->len;
     for (guint i = 0; i < files->len; i++) {
         const char *name = (const char *)files->pdata[i];
@@ -442,20 +520,36 @@ static gpointer batch_worker(gpointer p) {
         GError *err = NULL;
         GdkPixbuf *pb = gdk_pixbuf_new_from_file(srcp, &err);
         if (pb) {
-            gchar *noext = g_strdup(name);
-            char *dot = strrchr(noext, '.');
-            if (dot) *dot = 0;
-            gchar *outname = g_strdup_printf("%s.%s", noext, ui->ext);
-            gchar *dstp = g_build_filename(ui->dst, outname, NULL);
-            if (!gdk_pixbuf_save(pb, dstp, ui->fmt, &err, NULL)) {
-                if (err) {
-                    g_printerr("qyview batch: %s -> %s: %s\n", name, outname, err->message);
-                    g_clear_error(&err);
-                }
+            /* 按百分比缩放（release 298）：100% 时直接使用原图 */
+            GdkPixbuf *savepb = pb;
+            if (pct != 100) {
+                int w = gdk_pixbuf_get_width(pb);
+                int h = gdk_pixbuf_get_height(pb);
+                int nw = (int)((gint64)w * pct / 100);
+                int nh = (int)((gint64)h * pct / 100);
+                if (nw < 1) nw = 1;
+                if (nh < 1) nh = 1;
+                savepb = gdk_pixbuf_scale_simple(pb, nw, nh, GDK_INTERP_BILINEAR);
             }
-            g_free(noext);
-            g_free(outname);
-            g_free(dstp);
+            if (savepb) {
+                gchar *noext = g_strdup(name);
+                char *dot = strrchr(noext, '.');
+                if (dot) *dot = 0;
+                gchar *outname = g_strdup_printf("%s.%s", noext, ui->ext);
+                gchar *dstp = g_build_filename(outdir, outname, NULL);
+                if (!gdk_pixbuf_save(savepb, dstp, ui->fmt, &err, NULL)) {
+                    if (err) {
+                        g_printerr("qyview batch: %s -> %s: %s\n", name, outname, err->message);
+                        g_clear_error(&err);
+                    }
+                }
+                g_free(noext);
+                g_free(outname);
+                g_free(dstp);
+            } else {
+                g_printerr("qyview batch: %s: scale failed\n", name);
+            }
+            if (savepb != pb) g_object_unref(savepb);
             g_object_unref(pb);
         } else {
             if (err) {
@@ -489,7 +583,15 @@ static void on_batch_response(GtkDialog *dlg, gint resp, gpointer p) {
         if (!id || !id[0]) id = "png";
         ui->fmt = g_strdup(id);
         ui->ext = g_strdup((!strcmp(id, "jpeg")) ? "jpg" : id);
+        ui->scale = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(ui->spin));
+        g_free(ui->outdir);
+        ui->outdir = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(ui->dirbtn));
+        /* 记忆缩放与输出目录偏好（release 298） */
+        batch_save_prefs(ui->scale, ui->outdir);
         gtk_widget_set_sensitive(ui->combo, FALSE);
+        gtk_widget_set_sensitive(ui->spin, FALSE);
+        gtk_widget_set_sensitive(ui->dirbtn, FALSE);
+        gtk_widget_set_sensitive(ui->clearbtn, FALSE);
         GtkWidget *close = gtk_dialog_get_widget_for_response(dlg, GTK_RESPONSE_CLOSE);
         if (close) gtk_widget_set_sensitive(close, FALSE);
         if (ui->bar) gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(ui->bar), 0.0);
@@ -507,23 +609,27 @@ static void on_batch_destroy(GtkWidget *w, gpointer p) {
     if (ui->thread_started && !ui->thread_done && ui->thread)
         g_thread_join(ui->thread);
     g_free(ui->src);
-    g_free(ui->dst);
     g_free(ui->fmt);
     g_free(ui->ext);
+    g_free(ui->outdir);
     g_free(ui);
 }
 
-/* 选择源/目标目录后弹出批量转换对话框 */
-static void show_batch_dialog(const char *src, const char *dst) {
+/* 选择源目录后弹出批量转换对话框（release 298：加入缩放%与输出目录选择） */
+static void show_batch_dialog(const char *src) {
     BatchUi *ui = g_new0(BatchUi, 1);
     ui->src = g_strdup(src);
-    ui->dst = g_strdup(dst);
+
+    /* 恢复上次的缩放与输出目录偏好（release 298） */
+    int scale = 100;
+    gchar *outdir = NULL;
+    batch_load_prefs(&scale, &outdir);
 
     GtkWidget *dlg = gtk_dialog_new_with_buttons(TR("批量转换"), g_win, GTK_DIALOG_MODAL,
                                                  TR("开始转换"), GTK_RESPONSE_ACCEPT,
                                                  TR("关闭"), GTK_RESPONSE_CLOSE, NULL);
     ui->dlg = dlg;
-    gtk_window_set_default_size(GTK_WINDOW(dlg), 360, -1);
+    gtk_window_set_default_size(GTK_WINDOW(dlg), 400, -1);
 
     GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
@@ -541,6 +647,38 @@ static void show_batch_dialog(const char *src, const char *dst) {
     gtk_box_pack_start(GTK_BOX(frow), ui->combo, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(box), frow, FALSE, FALSE, 0);
 
+    /* 缩放百分比（release 298）：25~200，步进 5，默认 100（不缩放） */
+    GtkWidget *srow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *sl = gtk_label_new(TR("缩放 %"));
+    ui->spin = gtk_spin_button_new_with_range(25, 200, 5);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(ui->spin), scale);
+    gtk_widget_set_tooltip_text(ui->spin, TR("200 表示放大 2 倍"));
+    gtk_box_pack_start(GTK_BOX(srow), sl, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(srow), ui->spin, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(box), srow, FALSE, FALSE, 0);
+
+    /* 输出目录（release 298）：留空=原目录，转换时仍写源目录 */
+    GtkWidget *drow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *dl = gtk_label_new(TR("输出目录"));
+    ui->dirbtn = gtk_file_chooser_button_new(TR("选择输出目录"),
+                                             GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER);
+    gtk_file_chooser_button_set_title(GTK_FILE_CHOOSER_BUTTON(ui->dirbtn), TR("原目录"));
+    g_signal_connect(ui->dirbtn, "selection-changed",
+                     G_CALLBACK(on_batch_dirbtn_changed), ui);
+    batch_set_dirbtn_empty_label(ui->dirbtn);
+    if (outdir)
+        gtk_file_chooser_set_filename(GTK_FILE_CHOOSER(ui->dirbtn), outdir);
+    gtk_box_pack_start(GTK_BOX(drow), dl, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(drow), ui->dirbtn, TRUE, TRUE, 0);
+    ui->clearbtn = gtk_button_new_with_label(TR("原目录"));
+    gtk_widget_set_tooltip_text(ui->clearbtn, TR("输出到原图所在目录"));
+    g_signal_connect_swapped(ui->clearbtn, "clicked",
+                             G_CALLBACK(gtk_file_chooser_unselect_all), ui->dirbtn);
+    gtk_box_pack_start(GTK_BOX(drow), ui->clearbtn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), drow, FALSE, FALSE, 0);
+
+    g_free(outdir);
+
     ui->bar = gtk_progress_bar_new();
     gtk_progress_bar_set_show_text(GTK_PROGRESS_BAR(ui->bar), FALSE);
     gtk_box_pack_start(GTK_BOX(box), ui->bar, FALSE, FALSE, 0);
@@ -550,13 +688,15 @@ static void show_batch_dialog(const char *src, const char *dst) {
     gtk_box_pack_start(GTK_BOX(box), ui->status, FALSE, FALSE, 0);
 
     gtk_widget_show_all(content);
+    /* 控件显示后 GTK 才会生成内部标签，此时再设置空选择时的「原目录」文案 */
+    batch_set_dirbtn_empty_label(ui->dirbtn);
     g_signal_connect(dlg, "response", G_CALLBACK(on_batch_response), ui);
     g_signal_connect(dlg, "delete-event", G_CALLBACK(on_batch_delete), ui);
     g_signal_connect(dlg, "destroy", G_CALLBACK(on_batch_destroy), ui);
     gtk_widget_show(dlg);
 }
 
-/* 批量转换入口：依次选择源目录、目标目录，再弹对话框选格式并执行 */
+/* 批量转换入口：选择源目录，再弹对话框选格式/缩放/输出目录并执行（release 298） */
 static void on_batch_convert(GtkButton *b, gpointer ud) {
     (void)b; (void)ud;
     GtkFileChooserNative *dlg = gtk_file_chooser_native_new(TR("选择源目录"), g_win,
@@ -568,18 +708,8 @@ static void on_batch_convert(GtkButton *b, gpointer ud) {
     g_object_unref(dlg);
     if (!src) return;
 
-    dlg = gtk_file_chooser_native_new(TR("选择目标目录"), g_win,
-                                      GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER,
-                                      TR("选择"), TR("取消"));
-    res = gtk_native_dialog_run(GTK_NATIVE_DIALOG(dlg));
-    gchar *dst = (res == GTK_RESPONSE_ACCEPT) ?
-                 gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg)) : NULL;
-    g_object_unref(dlg);
-    if (!dst) { g_free(src); return; }
-
-    show_batch_dialog(src, dst);
+    show_batch_dialog(src);
     g_free(src);
-    g_free(dst);
 }
 
 /* ---------- 幻灯片 ---------- */

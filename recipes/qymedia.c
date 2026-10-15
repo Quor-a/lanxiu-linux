@@ -104,6 +104,7 @@ static void on_clear_playlist(GtkWidget *w, gpointer ud); /* 前向声明（右�
 static void on_remove_selected(GtkMenuItem *mi, gpointer ud); /* 前向声明（多选批量移除） */
 static void on_track_reset_count(GtkMenuItem *mi, gpointer ud); /* 前向声明（重置播放计数，release 287） */
 static void on_clear_all_counts(GtkMenuItem *mi, gpointer ud);   /* 前向声明（清空全部计数，release 291） */
+static void on_clean_invalid(GtkWidget *w, gpointer ud); /* 前向声明（清理失效项，release 298） */
 static void playlist_save(void);                          /* 前向声明（add_to_playlist 自动保存用） */
 static void add_to_playlist(const char *path);            /* 前向声明（on_track_remove 提前引用） */
 static void playlist_row_add(const char *path, guint seq);                        /* 前向声明（拖拽重建用） */
@@ -1070,6 +1071,79 @@ static void on_clear_playlist(GtkWidget *w, gpointer ud) {
     playlist_save();   /* 清空后持久化（空列表） */
 }
 
+/* 工具栏「清理失效项」：检查并移除播放列表中已不存在的文件（release 298） */
+static void on_clean_invalid(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (!track_list || track_list->len == 0) {
+        gtk_label_set_text(GTK_LABEL(status_label), TR("没有失效的文件"));
+        return;
+    }
+    /* 统计失效文件数量 */
+    guint n = 0;
+    for (guint i = 0; i < track_list->len; i++) {
+        const char *p = (const char *)g_ptr_array_index(track_list, i);
+        if (!g_file_test(p, G_FILE_TEST_EXISTS))
+            n++;
+    }
+    if (n == 0) {
+        gtk_label_set_text(GTK_LABEL(status_label), TR("没有失效的文件"));
+        return;
+    }
+    /* 确认对话框（参照 on_clear_playlist） */
+    gchar *msg = g_strdup_printf(TR("发现 %u 个失效文件，从播放列表移除？"), n);
+    GtkWidget *dlg = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(w)),
+                                            GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION,
+                                            GTK_BUTTONS_YES_NO, "%s", msg);
+    g_free(msg);
+    int ans = gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+    if (ans != GTK_RESPONSE_YES) return;
+
+    /* 当前播放的曲目是否也被移除（其文件已不存在） */
+    gboolean current_removed = (current_file && !g_file_test(current_file, G_FILE_TEST_EXISTS));
+
+    /* 倒序遍历移除失效项（track_list 带 g_free free_func，remove_index 会释放字符串） */
+    for (guint i = track_list->len; i > 0; i--) {
+        const char *p = (const char *)g_ptr_array_index(track_list, i - 1);
+        if (!g_file_test(p, G_FILE_TEST_EXISTS))
+            g_ptr_array_remove_index(track_list, i - 1);
+    }
+
+    /* 重建播放列表 UI（track_list 已更新，只重画行） */
+    GList *ch = gtk_container_get_children(GTK_CONTAINER(playlist));
+    for (GList *l = ch; l; l = l->next)
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(ch);
+    for (guint i = 0; i < track_list->len; i++)
+        playlist_row_add((const char *)g_ptr_array_index(track_list, i), i + 1);
+
+    /* 调整 current_index：当前曲目被移除则停止播放并置 -1；否则按路径重新定位 */
+    if (current_removed) {
+        stop_player();
+        current_index = -1;
+        g_free(current_file);
+        current_file = NULL;
+        gtk_label_set_text(GTK_LABEL(file_label), TR("未选择音频"));
+        cover_update(NULL);
+    } else if (current_file) {
+        current_index = -1;
+        for (guint i = 0; i < track_list->len; i++) {
+            if (strcmp((const char *)g_ptr_array_index(track_list, i), current_file) == 0) {
+                current_index = (int)i;
+                break;
+            }
+        }
+    } else {
+        current_index = -1;
+    }
+    if (current_index >= 0) highlight_current_row();
+
+    playlist_save();   /* 清理后持久化 */
+    gchar *st = g_strdup_printf(TR("已移除 %u 个失效文件"), n);
+    gtk_label_set_text(GTK_LABEL(status_label), st);
+    g_free(st);
+}
+
 /* 双击播放 */
 static void on_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer ud) {
     (void)box; (void)ud;
@@ -1461,15 +1535,19 @@ static void build_ui(void) {
     qy_add_class(b_sort, "qy-btn");
     GtkWidget *b_m3u = gtk_button_new_with_label(TR("导出 M3U"));
     qy_add_class(b_m3u, "qy-btn");
+    GtkWidget *b_clean = gtk_button_new_with_label(TR("清理失效项"));
+    qy_add_class(b_clean, "qy-btn");
     g_signal_connect(b_add, "clicked", G_CALLBACK(on_add_files), NULL);
     g_signal_connect(b_save, "clicked", G_CALLBACK(on_save_playlist), NULL);
     g_signal_connect(b_clear, "clicked", G_CALLBACK(on_clear_playlist), NULL);
     g_signal_connect(b_sort, "clicked", G_CALLBACK(on_sort_by_count), NULL);
     g_signal_connect(b_m3u, "clicked", G_CALLBACK(on_export_m3u), NULL);
+    g_signal_connect(b_clean, "clicked", G_CALLBACK(on_clean_invalid), NULL);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_add, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_save, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_sort, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_m3u, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(pl_bar), b_clean, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_clear, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(left_vbox), pl_bar, FALSE, FALSE, 0);
 
