@@ -197,6 +197,15 @@ static gboolean fetch_done(gpointer data) {
 static void start_fetch(const char *city) {
     if (fetch_busy) return;
     if (!city || !city[0]) return;
+    /* release 289: 记住上次查询城市 */
+    {
+        gchar *path = g_build_filename(g_get_home_dir(), ".config/lanxiu/qyweather-city.conf", NULL);
+        gchar *dir = g_path_get_dirname(path);
+        g_mkdir_with_parents(dir, 0755);
+        g_free(dir);
+        g_file_set_contents(path, city, -1, NULL);
+        g_free(path);
+    }
     fetch_busy = TRUE;
     gtk_label_set_text(GTK_LABEL(err_lb), TR("正在查询..."));
     gtk_widget_show(err_lb);
@@ -300,11 +309,25 @@ int main(int argc, char **argv) {
     gtk_widget_show_all(win);
     gtk_widget_hide(err_lb);
 
-    /* 初始查询默认城市 */
+    /* 初始查询默认城市（release 289：优先记忆的上次城市） */
     const char *city = g_getenv("QYWEATHER_CITY");
-    if (!city || !city[0]) city = "北京";
-    gtk_entry_set_text(GTK_ENTRY(entry), city);
-    start_fetch(city);
+    if (city && city[0]) {
+        gtk_entry_set_text(GTK_ENTRY(entry), city);
+        start_fetch(city);
+    } else {
+        gchar *path = g_build_filename(g_get_home_dir(), ".config/lanxiu/qyweather-city.conf", NULL);
+        gchar *content = NULL;
+        if (g_file_get_contents(path, &content, NULL, NULL) && content && content[0]) {
+            gchar *saved = g_strstrip(content);
+            gtk_entry_set_text(GTK_ENTRY(entry), saved);
+            start_fetch(saved);
+        } else {
+            gtk_entry_set_text(GTK_ENTRY(entry), TR("北京"));
+            start_fetch(TR("北京"));
+        }
+        g_free(content);
+        g_free(path);
+    }
 
     gtk_main();
     curl_global_cleanup();
