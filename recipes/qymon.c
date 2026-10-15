@@ -38,6 +38,12 @@ static GtkWidget *io_da = NULL;    /* 磁盘 IO 曲线 #qymon-io */
 static GtkWidget *io_label = NULL; /* 磁盘 IO 大数字 */
 static gint64 io_prev_rd = -1, io_prev_wr = -1, io_prev_us = 0;
 static char line_buf[256];
+
+/* ---------- 曲线图例点击开关（release 300） ---------- */
+#define NCURVES 6
+static gboolean curve_show[NCURVES] = {TRUE, TRUE, TRUE, TRUE, TRUE, TRUE};
+static GtkWidget *curve_toggle[NCURVES] = {NULL, NULL, NULL, NULL, NULL, NULL};
+static GtkWidget *main_da = NULL;   /* 主曲线区（CPU/内存/磁盘/网络） */
 static long prev_total = 0, prev_idle = 0;
 static unsigned long mem_total_kb = 1;
 static GtkWidget *cpu_label = NULL, *mem_label = NULL, *info_label = NULL;
@@ -718,10 +724,10 @@ static gboolean on_draw(GtkWidget *da, cairo_t *cr, gpointer ud) {
     }
     cairo_stroke(cr);
     if (hist_n > 1) {
-        draw_series(cr, cpu_hist, hist_n, 0.95, 0.55, 0.15, w, h / 2 - 4);   /* CPU 橙 */
-        draw_series(cr, mem_hist, hist_n, 0.45, 0.65, 0.95, w, h / 2 - 4);   /* MEM 蓝 */
-        draw_series(cr, disk_hist, hist_n, 0.20, 0.83, 0.60, w, h / 2 - 4); /* DISK 绿 */
-        draw_series(cr, net_hist, hist_n, 0.18, 0.76, 0.76, w, h / 2 - 4); /* NET 青（禁紫） */
+        if (curve_show[0]) draw_series(cr, cpu_hist, hist_n, 0.95, 0.55, 0.15, w, h / 2 - 4);   /* CPU 橙 */
+        if (curve_show[1]) draw_series(cr, mem_hist, hist_n, 0.45, 0.65, 0.95, w, h / 2 - 4);   /* MEM 蓝 */
+        if (curve_show[2]) draw_series(cr, disk_hist, hist_n, 0.20, 0.83, 0.60, w, h / 2 - 4); /* DISK 绿 */
+        if (curve_show[3]) draw_series(cr, net_hist, hist_n, 0.18, 0.76, 0.76, w, h / 2 - 4); /* NET 青（禁紫） */
     }
     /* 图例文字（带彩色方块） */
     cairo_set_font_size(cr, 12);
@@ -777,6 +783,8 @@ static gboolean on_temp_draw(GtkWidget *da, cairo_t *cr, gpointer ud) {
         cairo_move_to(cr, 0, y); cairo_line_to(cr, w, y);
     }
     cairo_stroke(cr);
+    /* 曲线隐藏时只保留背景/网格（release 300） */
+    if (!curve_show[4]) return FALSE;
     if (temp_hist_n < 2) {
         /* 数据不足时仅显示当前温度文字 */
         if (temp_hist_n == 1) {
@@ -832,6 +840,8 @@ static gboolean on_io_draw(GtkWidget *da, cairo_t *cr, gpointer ud) {
         cairo_move_to(cr, 0, y); cairo_line_to(cr, w, y);
     }
     cairo_stroke(cr);
+    /* 曲线隐藏时只保留背景/网格（release 300） */
+    if (!curve_show[5]) return FALSE;
     if (io_hist_n < 2) return FALSE;
     double imin = 1000000, imax = -1000000;
     for (int i = 0; i < io_hist_n; i++) {
@@ -1055,8 +1065,98 @@ static void on_proc_refresh(GtkWidget *w, gpointer ud) {
     refresh_proc_list();
 }
 
+/* ---------- 曲线图例点击开关（release 300） ----------
+ * 顶部一排 GtkToggleButton（带彩色圆点标签），点击显示/隐藏对应曲线。
+ * 状态持久化到 ~/.config/lanxiu/qymon-curves.conf（每行 1/0，共 6 行）。 */
+static const char *curve_name(int i) {
+    switch (i) {
+        case 0: return "CPU";
+        case 1: return TR("内存");
+        case 2: return TR("磁盘");
+        case 3: return TR("网络");
+        case 4: return TR("温度");
+        default: return "IO";
+    }
+}
+
+static const char *curve_color(int i) {
+    switch (i) {
+        case 0: return "#f28c26";   /* CPU 橙 */
+        case 1: return "#73a6f2";  /* MEM 蓝 */
+        case 2: return "#33d499";     /* DISK 绿 */
+        case 3: return "#2ec2c2";    /* NET 青 */
+        case 4: return "#ff5c1a";    /* TEMP 橙红 */
+        default: return "#59ccf2";   /* IO 浅蓝 */
+    }
+}
+
+static gchar *curve_config_path(void) {
+    return g_build_filename(g_get_user_config_dir(), "lanxiu", "qymon-curves.conf", NULL);
+}
+
+/* 启动时加载曲线开关状态（每行 1/0，共 6 行） */
+static void curve_load_config(void) {
+    gchar *path = curve_config_path();
+    FILE *f = fopen(path, "r");
+    if (f) {
+        for (int i = 0; i < NCURVES; i++) {
+            int v = 1;
+            if (fscanf(f, "%d", &v) == 1)
+                curve_show[i] = v != 0;
+        }
+        fclose(f);
+    }
+    g_free(path);
+}
+
+/* 切换时写盘 */
+static void curve_save_config(void) {
+    gchar *dir = g_build_filename(g_get_user_config_dir(), "lanxiu", NULL);
+    gchar *path = g_build_filename(dir, "qymon-curves.conf", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    FILE *f = fopen(path, "w");
+    if (f) {
+        for (int i = 0; i < NCURVES; i++)
+            fprintf(f, "%d\n", curve_show[i] ? 1 : 0);
+        fclose(f);
+    }
+    g_free(path);
+    g_free(dir);
+}
+
+/* 曲线开关按钮回调：更新 curve_show[] 并重绘对应曲线区 */
+static void on_curve_toggled(GtkWidget *btn, gpointer ud) {
+    int i = GPOINTER_TO_INT(ud);
+    if (i < 0 || i >= NCURVES) return;
+    curve_show[i] = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(btn));
+    if (i <= 3) {
+        if (main_da) gtk_widget_queue_draw(main_da);
+    } else if (i == 4) {
+        if (temp_da) gtk_widget_queue_draw(temp_da);
+    } else {
+        if (io_da) gtk_widget_queue_draw(io_da);
+    }
+    curve_save_config();
+}
+
+/* 构造一个曲线开关按钮：彩色圆点 + 名称，激活状态与 curve_show[] 同步 */
+static GtkWidget *curve_toggle_new(int i) {
+    GtkWidget *btn = gtk_toggle_button_new();
+    GtkWidget *lbl = gtk_label_new(NULL);
+    gchar *markup = g_strdup_printf("<span foreground='%s'>●</span> %s",
+                                    curve_color(i), curve_name(i));
+    gtk_label_set_markup(GTK_LABEL(lbl), markup);
+    g_free(markup);
+    gtk_container_add(GTK_CONTAINER(btn), lbl);
+    /* 先按配置设置激活状态，再连接信号，避免启动时触发保存 */
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(btn), curve_show[i]);
+    g_signal_connect(btn, "toggled", G_CALLBACK(on_curve_toggled), GINT_TO_POINTER(i));
+    return btn;
+}
+
 static void activate(GtkApplication *app, gpointer ud) {
     qy_load_theme();
+    curve_load_config();   /* 加载曲线开关状态（release 300） */
     GtkWidget *win = gtk_application_window_new(app);
     gtk_window_set_title(GTK_WINDOW(win), TR("澜岫系统监视器"));
     gtk_window_set_default_size(GTK_WINDOW(win), 640, 600);
@@ -1100,11 +1200,20 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(hrow), io_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), hrow, FALSE, FALSE, 0);
 
+    /* 曲线图例开关行（release 300）：点击按钮显示/隐藏对应曲线 */
+    GtkWidget *legend_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    for (int i = 0; i < NCURVES; i++) {
+        curve_toggle[i] = curve_toggle_new(i);
+        gtk_box_pack_start(GTK_BOX(legend_bar), curve_toggle[i], FALSE, FALSE, 0);
+    }
+    gtk_box_pack_start(GTK_BOX(vbox), legend_bar, FALSE, FALSE, 0);
+
     /* 实时曲线区（固定高度，下方让位给进程列表） */
     GtkWidget *da = gtk_drawing_area_new();
     gtk_widget_set_size_request(da, -1, 140);
     g_signal_connect(da, "draw", G_CALLBACK(on_draw), NULL);
     gtk_box_pack_start(GTK_BOX(vbox), da, FALSE, FALSE, 0);
+    main_da = da;   /* 曲线开关需要重绘主曲线区（release 300） */
 
     /* 温度曲线区（深蓝底 + 橙线 #FF5C1A，60 点历史；无 thermal_zone 时隐藏） */
     temp_da = gtk_drawing_area_new();
@@ -1231,6 +1340,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     if (read_cpu_temp() < 0) {
         if (temp_label) gtk_widget_set_visible(temp_label, FALSE);
         if (temp_da) gtk_widget_set_visible(temp_da, FALSE);
+        if (curve_toggle[4]) gtk_widget_set_visible(curve_toggle[4], FALSE);
     }
 }
 

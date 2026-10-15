@@ -24,8 +24,12 @@ static gboolean sort_mtime = FALSE;   /* 按修改时间排序（release 293） 
 static GtkWidget *b_sort = NULL;      /* 排序开关按钮 */
 static gchar *current_path   = NULL;   /* 当前打开笔记的绝对路径 */
 static gboolean loading_list = FALSE;
+static GHashTable *pinned_notes = NULL;   /* 置顶笔记集合：文件名→TRUE（release 300） */
 
 static void refresh_note_list(void);   /* 前向声明 */
+static void on_pin_clicked(GtkButton *btn, gpointer ud);   /* 前向声明（release 300） */
+static void load_pinned_notes(void);   /* 前向声明（release 300） */
+static void save_pin_config(void);     /* 前向声明（release 300） */
 
 /* ---------- 路径与文件工具 ---------- */
 static gchar *notes_dir(void) {
@@ -132,8 +136,20 @@ static void save_current_note(void) {
 
     GError *err = NULL;
     if (g_file_set_contents(target, content, -1, &err)) {
-        if (current_path && strcmp(current_path, target) != 0)
+        if (current_path && strcmp(current_path, target) != 0) {
             g_remove(current_path);
+            /* release 300: 笔记改名后迁移置顶状态到新文件名 */
+            load_pinned_notes();
+            gchar *old_base = g_path_get_basename(current_path);
+            gchar *new_base = g_path_get_basename(target);
+            if (g_hash_table_contains(pinned_notes, old_base)) {
+                g_hash_table_remove(pinned_notes, old_base);
+                g_hash_table_add(pinned_notes, g_strdup(new_base));
+                save_pin_config();
+            }
+            g_free(old_base);
+            g_free(new_base);
+        }
         g_free(current_path);
         current_path = g_strdup(target);
         long wc = g_utf8_strlen(content, -1);
@@ -155,12 +171,6 @@ static void save_current_note(void) {
 }
 
 /* ---------- 列表刷新（保留当前选中） ---------- */
-static gint sort_paths(gconstpointer a, gconstpointer b) {
-    const char *pa = *(const char *const *)a;
-    const char *pb = *(const char *const *)b;
-    return g_utf8_collate(pa, pb);
-}
-
 /* 按修改时间排序（新→旧，release 293） */
 static gint sort_mtime_cmp(gconstpointer a, gconstpointer b) {
     const char *pa = *(const char *const *)a;
@@ -170,6 +180,91 @@ static gint sort_mtime_cmp(gconstpointer a, gconstpointer b) {
     if (g_stat(pb, &sb) != 0) return 1;
     if (sa.st_mtime == sb.st_mtime) return 0;
     return sa.st_mtime > sb.st_mtime ? -1 : 1;
+}
+
+/* ---------- 便签置顶（release 300） ----------
+ * 配置: ~/.config/lanxiu/qynote-pin.conf，每行一个笔记文件名（basename）。
+ * 置顶集合保存在全局 GHashTable（pinned_notes）中，切换后写回配置文件。
+ */
+static gchar *pin_config_path(void) {
+    return g_build_filename(g_get_user_config_dir(), "lanxiu", "qynote-pin.conf", NULL);
+}
+
+/* 加载置顶配置到全局哈希表（只加载一次） */
+static void load_pinned_notes(void) {
+    if (pinned_notes) return;
+    pinned_notes = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    gchar *cfg = pin_config_path();
+    gchar *contents = NULL;
+    if (g_file_get_contents(cfg, &contents, NULL, NULL)) {
+        gchar **lines = g_strsplit(contents, "\n", -1);
+        for (gchar **p = lines; p && *p; p++) {
+            gchar *line = g_strstrip(*p);
+            if (line[0])
+                g_hash_table_add(pinned_notes, g_strdup(line));
+        }
+        g_strfreev(lines);
+    }
+    g_free(contents);
+    g_free(cfg);
+}
+
+/* 把当前置顶集合写回配置文件（每行一个文件名） */
+static void save_pin_config(void) {
+    if (!pinned_notes) return;
+    gchar *dir = g_build_filename(g_get_user_config_dir(), "lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    g_free(dir);
+    gchar *cfg = pin_config_path();
+    GString *s = g_string_new(NULL);
+    GHashTableIter it;
+    gpointer key;
+    g_hash_table_iter_init(&it, pinned_notes);
+    while (g_hash_table_iter_next(&it, &key, NULL))
+        g_string_append_printf(s, "%s\n", (const char *)key);
+    g_file_set_contents(cfg, s->str, s->len, NULL);
+    g_string_free(s, TRUE);
+    g_free(cfg);
+}
+
+/* 切换某笔记（按 basename）的置顶状态并持久化 */
+static void toggle_pin(const char *basename) {
+    load_pinned_notes();
+    if (g_hash_table_contains(pinned_notes, basename))
+        g_hash_table_remove(pinned_notes, basename);
+    else
+        g_hash_table_add(pinned_notes, g_strdup(basename));
+    save_pin_config();
+}
+
+/* release 300: 置顶优先排序 —— 置顶便签始终排在最前，其余按原规则（名称）排序 */
+static gint sort_paths_pinned(gconstpointer a, gconstpointer b) {
+    const char *pa = *(const char *const *)a;
+    const char *pb = *(const char *const *)b;
+    gchar *ba = g_path_get_basename(pa);
+    gchar *bb = g_path_get_basename(pb);
+    gboolean pa_pin = ba && g_hash_table_contains(pinned_notes, ba);
+    gboolean pb_pin = bb && g_hash_table_contains(pinned_notes, bb);
+    g_free(ba);
+    g_free(bb);
+    if (pa_pin != pb_pin)
+        return pa_pin ? -1 : 1;
+    return g_utf8_collate(pa, pb);
+}
+
+/* release 300: 置顶优先 + 按修改时间排序 */
+static gint sort_mtime_pinned(gconstpointer a, gconstpointer b) {
+    const char *pa = *(const char *const *)a;
+    const char *pb = *(const char *const *)b;
+    gchar *ba = g_path_get_basename(pa);
+    gchar *bb = g_path_get_basename(pb);
+    gboolean pa_pin = ba && g_hash_table_contains(pinned_notes, ba);
+    gboolean pb_pin = bb && g_hash_table_contains(pinned_notes, bb);
+    g_free(ba);
+    g_free(bb);
+    if (pa_pin != pb_pin)
+        return pa_pin ? -1 : 1;
+    return sort_mtime_cmp(a, b);
 }
 
 /* 搜索结果高亮（release 297）：把标题中所有匹配关键字的子串用 Pango markup 高亮。
@@ -219,6 +314,7 @@ static gchar *highlight_title_markup(const char *title, const char *query) {
 
 static void refresh_note_list(void) {
     loading_list = TRUE;
+    load_pinned_notes();   /* release 300: 确保置顶集合已加载 */
 
     GList *ch = gtk_container_get_children(GTK_CONTAINER(listbox));
     for (GList *it = ch; it; it = it->next) gtk_widget_destroy(GTK_WIDGET(it->data));
@@ -237,12 +333,14 @@ static void refresh_note_list(void) {
             }
         }
         g_dir_close(d);
-        g_ptr_array_sort(files, sort_mtime ? sort_mtime_cmp : sort_paths);
+        g_ptr_array_sort(files, sort_mtime ? sort_mtime_pinned : sort_paths_pinned);
 
         for (guint i = 0; i < files->len; i++) {
             const char *full = g_ptr_array_index(files, i);
             gchar *title = read_first_line(full);
             GtkWidget *row = gtk_list_box_row_new();
+            /* release 300: 行内横向布局 = 标题 label（可伸展） + 置顶按钮（右侧） */
+            GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
             GtkWidget *lbl = gtk_label_new(NULL);
             gtk_label_set_xalign(GTK_LABEL(lbl), 0.0);
             gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
@@ -255,8 +353,27 @@ static void refresh_note_list(void) {
             } else {
                 gtk_label_set_text(GTK_LABEL(lbl), title[0] ? title : TR("无标题"));
             }
-            gtk_container_add(GTK_CONTAINER(row), lbl);
+            gtk_box_pack_start(GTK_BOX(hbox), lbl, TRUE, TRUE, 0);
+
+            /* release 300: 置顶小按钮，点击切换置顶状态；已置顶显示激活样式与「取消置顶」提示 */
+            gchar *base = g_path_get_basename(full);
+            gboolean is_pinned = g_hash_table_contains(pinned_notes, base);
+            GtkWidget *pin_btn = gtk_button_new_from_icon_name("go-up-symbolic", GTK_ICON_SIZE_MENU);
+            gtk_button_set_relief(GTK_BUTTON(pin_btn), GTK_RELIEF_NONE);
+            qy_add_class(pin_btn, "qy-note-pin");
+            if (is_pinned) {
+                qy_add_class(pin_btn, "qy-note-pin-active");
+                gtk_button_set_relief(GTK_BUTTON(pin_btn), GTK_RELIEF_NORMAL);
+                gtk_widget_set_tooltip_text(pin_btn, TR("取消置顶"));
+            } else {
+                gtk_widget_set_tooltip_text(pin_btn, TR("置顶"));
+            }
+            gtk_box_pack_end(GTK_BOX(hbox), pin_btn, FALSE, FALSE, 0);
+            g_free(base);
+
+            gtk_container_add(GTK_CONTAINER(row), hbox);
             g_object_set_data_full(G_OBJECT(row), "note-path", g_strdup(full), g_free);
+            g_signal_connect(pin_btn, "clicked", G_CALLBACK(on_pin_clicked), row);
             gtk_list_box_insert(listbox, row, -1);
             g_free(title);
             count++;
@@ -332,6 +449,12 @@ static void on_delete_clicked(GtkButton *b, gpointer ud) {
                                             "%s", msg);
     if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_YES) {
         g_remove(current_path);
+        /* release 300: 删除时同步从置顶配置中移除该文件名 */
+        load_pinned_notes();
+        gchar *base = g_path_get_basename(current_path);
+        if (g_hash_table_remove(pinned_notes, base))
+            save_pin_config();
+        g_free(base);
         g_free(current_path);
         current_path = NULL;
         GtkTextBuffer *buf = gtk_text_view_get_buffer(textview);
@@ -342,6 +465,19 @@ static void on_delete_clicked(GtkButton *b, gpointer ud) {
     gtk_widget_destroy(dlg);
     g_free(msg);
     g_free(title);
+}
+
+/* 置顶按钮：切换该笔记的置顶状态并持久化，随后重建列表（release 300） */
+static void on_pin_clicked(GtkButton *b, gpointer ud) {
+    (void)b;
+    GtkWidget *row = GTK_WIDGET(ud);
+    if (!row) return;
+    const char *path = g_object_get_data(G_OBJECT(row), "note-path");
+    if (!path) return;
+    gchar *base = g_path_get_basename(path);
+    toggle_pin(base);
+    g_free(base);
+    refresh_note_list();
 }
 
 /* 导出笔记为 UTF-8 文本 / Markdown（release 275/285） */

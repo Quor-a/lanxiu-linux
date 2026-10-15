@@ -388,6 +388,57 @@ static void on_autocopy_toggled(GtkWidget *w, gpointer ud) {
                            auto_copy ? TR("已开启：截图后自动复制到剪贴板") : TR("已关闭自动复制"));
 }
 
+/* 打开截图文件夹（release 300）：使用与保存截图相同的目录逻辑。
+ * 优先使用最近一次保存路径的目录，否则使用默认图片目录；
+ * 目录不存在则创建；打开失败时在状态栏显示错误，不崩溃。 */
+static void on_open_folder(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    gchar *dir = NULL;
+    if (last_path[0]) {
+        dir = g_path_get_dirname(last_path);
+    } else {
+        const char *pics = g_get_user_special_dir(G_USER_DIRECTORY_PICTURES);
+        if (pics && pics[0])
+            dir = g_strdup(pics);
+        else
+            dir = g_strdup(g_get_home_dir());
+    }
+    if (!dir || !dir[0]) {
+        gtk_label_set_text(GTK_LABEL(status_label), TR("无法确定截图文件夹"));
+        g_free(dir);
+        return;
+    }
+    if (g_mkdir_with_parents(dir, 0755) != 0) {
+        char st[320];
+        g_snprintf(st, sizeof st, "%s: %s", TR("无法创建截图文件夹"), dir);
+        gtk_label_set_text(GTK_LABEL(status_label), st);
+        g_free(dir);
+        return;
+    }
+    GError *err = NULL;
+    gchar *uri = g_filename_to_uri(dir, NULL, &err);
+    if (!uri) {
+        char st[480];
+        g_snprintf(st, sizeof st, "%s: %s",
+                   TR("打开截图文件夹失败"), err ? err->message : TR("未知错误"));
+        gtk_label_set_text(GTK_LABEL(status_label), st);
+        g_clear_error(&err);
+        g_free(dir);
+        return;
+    }
+    if (gtk_show_uri_on_window(NULL, uri, GDK_CURRENT_TIME, &err)) {
+        gtk_label_set_text(GTK_LABEL(status_label), TR("已打开截图文件夹"));
+    } else {
+        char st[480];
+        g_snprintf(st, sizeof st, "%s: %s",
+                   TR("打开截图文件夹失败"), err ? err->message : TR("无默认文件管理器"));
+        gtk_label_set_text(GTK_LABEL(status_label), st);
+        g_clear_error(&err);
+    }
+    g_free(uri);
+    g_free(dir);
+}
+
 /* ---------- 区域截图（X11） ----------
  * X11：全屏抓取根窗口为 pixbuf，弹出全屏无边框选择窗口，鼠标拖选矩形，
  *      松开后裁剪选中区域并进入现有保存流程。
@@ -695,6 +746,11 @@ static void activate(GtkApplication *app, gpointer ud) {
         g_free(qpath);
     }
     g_signal_connect(quality_spin, "value-changed", G_CALLBACK(on_quality_changed), NULL);
+    /* release 300: 打开截图文件夹按钮（默认目录与保存截图一致） */
+    GtkWidget *b_open_folder = gtk_button_new_with_label(TR("打开文件夹"));
+    qy_add_class(b_open_folder, "qy-shot-combo");
+    g_signal_connect(b_open_folder, "clicked", G_CALLBACK(on_open_folder), NULL);
+    gtk_box_pack_start(GTK_BOX(ctl), b_open_folder, FALSE, FALSE, 0);
     on_fmt_changed(GTK_COMBO_BOX(format_combo), NULL);
     gtk_box_pack_start(GTK_BOX(vbox), ctl, FALSE, FALSE, 0);
 
