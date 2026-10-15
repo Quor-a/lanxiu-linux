@@ -4621,17 +4621,17 @@ static void activate(GtkApplication *app, gpointer ud) {
         gtk_widget_set_size_request(ac_l, 150, -1);
         gtk_widget_set_halign(ac_l, GTK_ALIGN_START);
         g_accent_combo = gtk_combo_box_text_new();
-        const char *accents[] = { "orange", "purple", "blue", "green" };
-        const char *accent_labels[] = { "橙色", "紫色", "蓝色", "绿色" };
+        const char *accents[] = { "orange" };   /* 禁紫合规：仅锁橙（release 291） */
+        const char *accent_labels[] = { "橙色" };
         int cur_ac_idx = 0;
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < G_N_ELEMENTS(accents); i++) {
             gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(g_accent_combo), TR(accent_labels[i]));
             if (strcmp(accents[i], cur_accent) == 0) cur_ac_idx = i;
         }
         gtk_combo_box_set_active(GTK_COMBO_BOX(g_accent_combo), cur_ac_idx);
         const char *env_ac = g_getenv("QY_SETTINGS_ACCENT");
         if (env_ac) {
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < G_N_ELEMENTS(accents); i++)
                 if (strcmp(accents[i], env_ac) == 0)
                     gtk_combo_box_set_active(GTK_COMBO_BOX(g_accent_combo), i);
         }
