@@ -20,6 +20,8 @@ static GtkWidget *count_lb   = NULL;   /* 实时字数/行数统计（release 28
 static GtkWidget *search_entry = NULL;   /* 笔记搜索框（release 276） */
 static GtkWidget *stack      = NULL;
 static GtkWidget *placeholder = NULL;
+static gboolean sort_mtime = FALSE;   /* 按修改时间排序（release 293） */
+static GtkWidget *b_sort = NULL;      /* 排序开关按钮 */
 static gchar *current_path   = NULL;   /* 当前打开笔记的绝对路径 */
 static gboolean loading_list = FALSE;
 
@@ -159,6 +161,17 @@ static gint sort_paths(gconstpointer a, gconstpointer b) {
     return g_utf8_collate(pa, pb);
 }
 
+/* 按修改时间排序（新→旧，release 293） */
+static gint sort_mtime_cmp(gconstpointer a, gconstpointer b) {
+    const char *pa = *(const char *const *)a;
+    const char *pb = *(const char *const *)b;
+    GStatBuf sa, sb;
+    if (g_stat(pa, &sa) != 0) return -1;
+    if (g_stat(pb, &sb) != 0) return 1;
+    if (sa.st_mtime == sb.st_mtime) return 0;
+    return sa.st_mtime > sb.st_mtime ? -1 : 1;
+}
+
 static void refresh_note_list(void) {
     loading_list = TRUE;
 
@@ -179,7 +192,7 @@ static void refresh_note_list(void) {
             }
         }
         g_dir_close(d);
-        g_ptr_array_sort(files, sort_paths);
+        g_ptr_array_sort(files, sort_mtime ? sort_mtime_cmp : sort_paths);
 
         for (guint i = 0; i < files->len; i++) {
             const char *full = g_ptr_array_index(files, i);
@@ -445,6 +458,22 @@ static void update_count(GtkTextBuffer *b, gpointer ud) {
 }
 
 /* ---------- UI ---------- */
+/* 排序开关：按修改时间 / 按名称（release 293） */
+static void on_sort_toggled(GtkWidget *w, gpointer ud) {
+    (void)ud;
+    sort_mtime = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
+    gchar *path = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qynote-sort.conf", NULL);
+    gchar *dir = g_path_get_dirname(path);
+    g_mkdir_with_parents(dir, 0755);
+    g_free(dir);
+    g_file_set_contents(path, sort_mtime ? "1" : "0", -1, NULL);
+    g_free(path);
+    refresh_note_list();
+    if (status_lb)
+        gtk_label_set_text(GTK_LABEL(status_lb),
+                           sort_mtime ? TR("已按修改时间排序（新在前）") : TR("已按名称排序"));
+}
+
 int main(int argc, char **argv) {
     gtk_init(&argc, &argv);
     qy_load_theme();
@@ -482,6 +511,9 @@ int main(int argc, char **argv) {
     GtkWidget *b_exp = gtk_button_new_with_label(TR("导出"));
     qy_add_class(b_exp, "qy-btn");
     g_signal_connect(b_exp, "clicked", G_CALLBACK(on_export_clicked), NULL);
+    b_sort = gtk_toggle_button_new_with_label(TR("按时间排序"));
+    qy_add_class(b_sort, "qy-btn");
+    g_signal_connect(b_sort, "toggled", G_CALLBACK(on_sort_toggled), NULL);
     status_lb = gtk_label_new("");
     qy_add_class(status_lb, "qy-note-status");
     gtk_widget_set_halign(status_lb, GTK_ALIGN_START);
@@ -491,9 +523,19 @@ int main(int argc, char **argv) {
     gtk_box_pack_start(GTK_BOX(toolbar), b_del, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), b_save, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), b_exp, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(toolbar), b_sort, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), status_lb, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), count_lb, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), toolbar, FALSE, FALSE, 0);
+    /* release 293: 恢复排序偏好 */
+    {
+        gchar *sp = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qynote-sort.conf", NULL);
+        gchar *sv = NULL;
+        if (g_file_get_contents(sp, &sv, NULL, NULL) && sv && sv[0] == '1')
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(b_sort), TRUE);
+        g_free(sv);
+        g_free(sp);
+    }
 
     /* 主体：左列表 + 右编辑区 */
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
