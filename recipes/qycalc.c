@@ -54,12 +54,16 @@ static double parse_term(void) {
     for (;;) {
         skip_sp();
         char op = *ep;
-        if (op == '*' || op == '/') {
+        if (op == '*' || op == '/' || op == '%') {
             ep++;
             double rhs = parse_number();
             if (op == '*') v *= rhs;
-            else if (rhs == 0) { ep_error = 1; return 0; }
-            else v /= rhs;
+            else if (op == '/') {
+                if (rhs == 0) { ep_error = 1; return 0; }
+                v /= rhs;
+            } else {
+                v = v * rhs / 100.0;   /* %：百分比（release 290） */
+            }
         } else break;
     }
     return v;
@@ -598,13 +602,14 @@ int main(int argc, char **argv) {
     gtk_grid_attach(GTK_GRID(grid), calc_button("2", "2", G_CALLBACK(on_num_clicked)), 1, 3, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), calc_button("3", "3", G_CALLBACK(on_num_clicked)), 2, 3, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), calc_button("-", "-", G_CALLBACK(on_op_clicked)), 3, 3, 1, 1);
-    /* 行 4: 0 . = + */
+    /* 行 4: 0 . % = */
     gtk_grid_attach(GTK_GRID(grid), calc_button("0", "0", G_CALLBACK(on_num_clicked)), 0, 4, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), calc_button(".", ".", G_CALLBACK(on_op_clicked)), 1, 4, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), calc_button("%", "%", G_CALLBACK(on_op_clicked)), 2, 4, 1, 1);
     GtkWidget *eq = gtk_button_new_with_label("=");
     qy_add_class(eq, "qy-btn qy-btn-accent");
     g_signal_connect(eq, "clicked", G_CALLBACK(on_equal_clicked), NULL);
-    gtk_grid_attach(GTK_GRID(grid), eq, 2, 4, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), eq, 3, 4, 2, 1);
 
     /* 科学模式按钮区（默认隐藏，点「科学模式」展开） */
     sci_grid = gtk_grid_new();
