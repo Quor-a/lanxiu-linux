@@ -6,7 +6,7 @@
 
 name = "qydesktop"
 version = "0.1.0"
-release = 295
+release = 296
 summary = "澜岫桌面 shell（GTK3 单窗口 + 主题）"
 license = "MIT"
 
