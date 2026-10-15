@@ -29,6 +29,14 @@ static double temp_hist[NTEMP]; /* 温度历史（°C） */
 static int temp_hist_n = 0;
 static int temp_tick = 0;       /* 每 2 次 tick（2s）追加一个温度点 */
 static GtkWidget *temp_da = NULL;  /* 温度曲线 #qymon-temp */
+
+/* ---------- 磁盘 IO 吞吐曲线（release 288） ---------- */
+#define NIO 60                      /* 磁盘 IO 历史点数（每 tick 一点） */
+static double io_hist[NIO];
+static int io_hist_n = 0;
+static GtkWidget *io_da = NULL;    /* 磁盘 IO 曲线 #qymon-io */
+static GtkWidget *io_label = NULL; /* 磁盘 IO 大数字 */
+static gint64 io_prev_rd = -1, io_prev_wr = -1, io_prev_us = 0;
 static char line_buf[256];
 static long prev_total = 0, prev_idle = 0;
 static unsigned long mem_total_kb = 1;
@@ -436,6 +444,40 @@ static gboolean read_net_speed(double *rx_kbs, double *tx_kbs) {
     return TRUE;
 }
 
+/* 磁盘 IO 吞吐（KB/s）：/proc/diskstats 所有磁盘 read+write 扇区差分（release 288） */
+static void read_disk_io_speed(double *kb_s) {
+    *kb_s = 0;
+    FILE *f = fopen("/proc/diskstats", "r");
+    if (!f) return;
+    gint64 rd = 0, wr = 0;
+    char line[512];
+    while (fgets(line, sizeof line, f)) {
+        unsigned major = 0, minor = 0;
+        char name[64] = "";
+        unsigned long long rd_io = 0, rm = 0, rd_sec = 0, rt = 0;
+        unsigned long long wr_io = 0, wm = 0, wr_sec = 0;
+        if (sscanf(line, "%u %u %63s %llu %llu %llu %llu %llu %llu %llu",
+                   &major, &minor, name, &rd_io, &rm, &rd_sec, &rt,
+                   &wr_io, &wm, &wr_sec) >= 10) {
+            rd += (gint64)rd_sec;
+            wr += (gint64)wr_sec;
+        }
+    }
+    fclose(f);
+    gint64 now = g_get_monotonic_time();
+    if (io_prev_rd >= 0 && now > io_prev_us) {
+        double dt = (double)(now - io_prev_us) / 1000000.0;
+        if (dt > 0) {
+            double sectors = (double)((rd - io_prev_rd) + (wr - io_prev_wr));
+            if (sectors < 0) sectors = 0;
+            *kb_s = sectors * 512.0 / 1024.0 / dt;   /* 每扇区 512B */
+        }
+    }
+    io_prev_rd = rd;
+    io_prev_wr = wr;
+    io_prev_us = now;
+}
+
 static gboolean tick(gpointer ud) {
     /* --- CPU: /proc/stat 首行 cpu  user nice system idle iowait irq softirq steal --- */
     FILE *f = fopen("/proc/stat", "r");
@@ -608,6 +650,24 @@ static gboolean tick(gpointer ud) {
     }
     if (temp_label) gtk_label_set_text(GTK_LABEL(temp_label), big);
     if (temp_da) gtk_widget_queue_draw(temp_da);
+
+    /* --- 磁盘 IO 吞吐曲线（release 288） --- */
+    {
+        double io_kbs = 0;
+        read_disk_io_speed(&io_kbs);
+        if (io_hist_n < NIO) {
+            io_hist[io_hist_n++] = io_kbs;
+        } else {
+            memmove(io_hist, io_hist + 1, sizeof(double) * (NIO - 1));
+            io_hist[NIO - 1] = io_kbs;
+        }
+        if (io_label) {
+            gchar *s = g_strdup_printf("%s %.0f KB/s", TR("磁盘IO"), io_kbs);
+            gtk_label_set_text(GTK_LABEL(io_label), s);
+            g_free(s);
+        }
+        if (io_da) gtk_widget_queue_draw(io_da);
+    }
     /* 窗口标题实时显示 CPU 使用率 */
     GtkWidget *win = gtk_widget_get_toplevel(GTK_WIDGET(ud));
     if (win && GTK_IS_WINDOW(win)) {
@@ -747,6 +807,47 @@ static gboolean on_temp_draw(GtkWidget *da, cairo_t *cr, gpointer ud) {
     cairo_set_font_size(cr, 11);
     cairo_set_source_rgb(cr, 0.95, 0.55, 0.15);
     cairo_move_to(cr, w - 70, 16);
+    cairo_show_text(cr, txt);
+    return FALSE;
+}
+
+/* 磁盘 IO 吞吐曲线（release 288）：浅蓝线，动态范围，右上角当前 KB/s */
+static gboolean on_io_draw(GtkWidget *da, cairo_t *cr, gpointer ud) {
+    (void)ud;
+    GtkAllocation a;
+    gtk_widget_get_allocation(da, &a);
+    int w = a.width, h = a.height;
+    cairo_set_source_rgb(cr, 0.06, 0.09, 0.16);
+    cairo_paint(cr);
+    cairo_set_source_rgb(cr, 0.20, 0.23, 0.30);
+    cairo_set_line_width(cr, 1);
+    for (int i = 1; i <= 2; i++) {
+        double y = h - (double)i / 3.0 * (h - 10) - 3;
+        cairo_move_to(cr, 0, y); cairo_line_to(cr, w, y);
+    }
+    cairo_stroke(cr);
+    if (io_hist_n < 2) return FALSE;
+    double imin = 1000000, imax = -1000000;
+    for (int i = 0; i < io_hist_n; i++) {
+        if (io_hist[i] < imin) imin = io_hist[i];
+        if (io_hist[i] > imax) imax = io_hist[i];
+    }
+    if (imax - imin < 8.0) { imin = imin > 4 ? imin - 4 : 0; imax += 4; }
+    cairo_set_source_rgb(cr, 0.35, 0.80, 0.95);   /* 浅蓝 */
+    cairo_set_line_width(cr, 1.8);
+    int started = 0;
+    for (int i = 0; i < io_hist_n; i++) {
+        double x = (double)i / (double)(NIO - 1) * w;
+        double y = h - (io_hist[i] - imin) / (imax - imin) * (h - 12) - 4;
+        if (!started) { cairo_move_to(cr, x, y); started = 1; }
+        else cairo_line_to(cr, x, y);
+    }
+    cairo_stroke(cr);
+    char txt[64];
+    g_snprintf(txt, sizeof txt, "%.0f KB/s", io_hist[io_hist_n - 1]);
+    cairo_set_font_size(cr, 11);
+    cairo_set_source_rgb(cr, 0.35, 0.80, 0.95);
+    cairo_move_to(cr, w - 96, 16);
     cairo_show_text(cr, txt);
     return FALSE;
 }
@@ -914,10 +1015,15 @@ static void activate(GtkApplication *app, gpointer ud) {
     temp_label = gtk_label_new(lbl);
     add_class(temp_label, "qy-mon-temp");
     gtk_widget_set_name(temp_label, "qymon-temp");   /* #qymon-temp */
+    g_snprintf(lbl, sizeof lbl, "%s --", TR("磁盘IO"));
+    io_label = gtk_label_new(lbl);
+    add_class(io_label, "qy-mon-temp");
+    gtk_widget_set_name(io_label, "qymon-io");        /* #qymon-io（release 288） */
     gtk_box_pack_start(GTK_BOX(hrow), cpu_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hrow), mem_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hrow), disk_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hrow), temp_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(hrow), io_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), hrow, FALSE, FALSE, 0);
 
     /* 实时曲线区（固定高度，下方让位给进程列表） */
@@ -931,6 +1037,12 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_widget_set_size_request(temp_da, -1, 72);
     g_signal_connect(temp_da, "draw", G_CALLBACK(on_temp_draw), NULL);
     gtk_box_pack_start(GTK_BOX(vbox), temp_da, FALSE, FALSE, 0);
+
+    /* 磁盘 IO 曲线区（release 288：/proc/diskstats 吞吐，60 点历史） */
+    io_da = gtk_drawing_area_new();
+    gtk_widget_set_size_request(io_da, -1, 72);
+    g_signal_connect(io_da, "draw", G_CALLBACK(on_io_draw), NULL);
+    gtk_box_pack_start(GTK_BOX(vbox), io_da, FALSE, FALSE, 0);
 
     /* 内存占用 TOP 5 进程列表（快速视图） */
     proc_label = gtk_label_new(NULL);
