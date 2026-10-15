@@ -778,6 +778,139 @@ static gboolean auto_autostart_apply(gpointer p) {
     return G_SOURCE_REMOVE;
 }
 
+/* ---------- 启动项: 自定义命令（release 303） ---------- */
+/* /etc/qyautostart.conf 中新增 cmd:<命令行> 形式，qynotifd 启动时执行。
+ * 辅助函数与 UI 放在启动项页：读取/添加/删除 cmd: 行。 */
+
+static GtkWidget *g_ast_cmd_box = NULL; /* 自定义命令列表容器 */
+
+/* 读取配置文件中的所有 cmd: 自定义命令（返回 NULL 结尾数组，需 g_strfreev） */
+static gchar **autostart_cmd_load(void) {
+    GPtrArray *arr = g_ptr_array_new();
+    gchar *content = NULL;
+    gsize len = 0;
+    if (g_file_get_contents(AUTOSTART_CONF, &content, &len, NULL) && content) {
+        gchar **lines = g_strsplit(content, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            gchar *line = g_strstrip(lines[i]);
+            if (g_str_has_prefix(line, "cmd:")) {
+                const char *cmd = line + 4;
+                if (cmd[0]) g_ptr_array_add(arr, g_strdup(cmd));
+            }
+        }
+        g_strfreev(lines);
+    }
+    g_free(content);
+    g_ptr_array_add(arr, NULL);
+    return (gchar **)g_ptr_array_free(arr, FALSE);
+}
+
+/* 重写 /etc/qyautostart.conf：保留原有 app=on/off 等非 cmd 行，
+ * cmd: 行按 cmds（NULL 结尾）整体重建。 */
+static void autostart_cmd_save(const gchar *const *cmds) {
+    gchar *content = NULL;
+    gsize len = 0;
+    GString *out = g_string_new(NULL);
+    if (g_file_get_contents(AUTOSTART_CONF, &content, &len, NULL) && content) {
+        gchar **lines = g_strsplit(content, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            if (!lines[i][0]) continue;             /* 空行省略 */
+            if (g_str_has_prefix(lines[i], "cmd:")) continue; /* cmd 行重建 */
+            g_string_append_printf(out, "%s\n", lines[i]);
+        }
+        g_strfreev(lines);
+    }
+    g_free(content);
+    for (int i = 0; cmds && cmds[i]; i++)
+        g_string_append_printf(out, "cmd:%s\n", cmds[i]);
+    g_file_set_contents(AUTOSTART_CONF, out->str, out->len, NULL);
+    g_string_free(out, TRUE);
+}
+
+static void autostart_cmd_remove(GtkWidget *btn, gpointer ud);
+
+/* 刷新自定义命令列表（从配置文件读取 cmd: 行并逐行显示） */
+static void autostart_cmd_refresh(void) {
+    if (!g_ast_cmd_box) return;
+    GList *kids = gtk_container_get_children(GTK_CONTAINER(g_ast_cmd_box));
+    for (GList *it = kids; it; it = it->next)
+        gtk_widget_destroy(GTK_WIDGET(it->data));
+    g_list_free(kids);
+
+    gchar **cmds = autostart_cmd_load();
+    if (!cmds || !cmds[0]) {
+        GtkWidget *empty = gtk_label_new(TR("暂无自定义命令"));
+        gtk_widget_set_halign(empty, GTK_ALIGN_START);
+        qy_add_class(empty, "qy-dim");
+        gtk_box_pack_start(GTK_BOX(g_ast_cmd_box), empty, FALSE, FALSE, 0);
+        g_strfreev(cmds);
+        return;
+    }
+    for (int i = 0; cmds[i]; i++) {
+        GtkWidget *r = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        GtkWidget *l = gtk_label_new(cmds[i]);
+        gtk_widget_set_halign(l, GTK_ALIGN_START);
+        gtk_label_set_selectable(GTK_LABEL(l), TRUE);
+        gtk_box_pack_start(GTK_BOX(r), l, TRUE, TRUE, 0);
+        GtkWidget *del = gtk_button_new_with_label(TR("删除"));
+        qy_add_class(del, "qy-btn");
+        g_signal_connect_data(del, "clicked", G_CALLBACK(autostart_cmd_remove),
+                              g_strdup(cmds[i]), (GClosureNotify)g_free, 0);
+        gtk_box_pack_start(GTK_BOX(r), del, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(g_ast_cmd_box), r, FALSE, FALSE, 0);
+    }
+    g_strfreev(cmds);
+}
+
+/* 添加自定义命令：读现有内容，追加 cmd:<命令> 一行；输入为空则提示 */
+static void autostart_cmd_add(GtkWidget *btn, gpointer ud) {
+    GtkWidget *entry = GTK_WIDGET(ud);
+    gchar *cmd = g_strdup(gtk_entry_get_text(GTK_ENTRY(entry)));
+    g_strstrip(cmd);
+    if (!cmd[0]) {
+        GtkWidget *parent = gtk_widget_get_toplevel(btn);
+        if (!GTK_IS_WINDOW(parent)) parent = NULL;
+        GtkWidget *dlg = gtk_message_dialog_new(
+            parent ? GTK_WINDOW(parent) : NULL, GTK_DIALOG_MODAL,
+            GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
+            "%s", TR("请输入要添加的开机启动命令"));
+        gtk_dialog_run(GTK_DIALOG(dlg));
+        gtk_widget_destroy(dlg);
+        g_free(cmd);
+        return;
+    }
+    gchar *content = NULL;
+    gsize len = 0;
+    g_file_get_contents(AUTOSTART_CONF, &content, &len, NULL);
+    GString *out = g_string_new(content ? content : "");
+    g_free(content);
+    if (out->len > 0 && out->str[out->len - 1] != '\n')
+        g_string_append_c(out, '\n');
+    g_string_append_printf(out, "cmd:%s\n", cmd);
+    g_file_set_contents(AUTOSTART_CONF, out->str, out->len, NULL);
+    g_string_free(out, TRUE);
+    g_free(cmd);
+    gtk_entry_set_text(GTK_ENTRY(entry), "");
+    autostart_cmd_refresh();
+}
+
+/* 删除自定义命令：重写配置文件，去掉对应 cmd: 行（保留其他行） */
+static void autostart_cmd_remove(GtkWidget *btn, gpointer ud) {
+    (void)btn;
+    const char *target = (const char *)ud;
+    gchar **cmds = autostart_cmd_load();
+    GPtrArray *keep = g_ptr_array_new();
+    for (int i = 0; cmds && cmds[i]; i++)
+        if (strcmp(cmds[i], target) != 0)
+            g_ptr_array_add(keep, g_strdup(cmds[i]));
+    g_ptr_array_add(keep, NULL);
+    gchar **keep_arr = (gchar **)g_ptr_array_free(keep, FALSE);
+    autostart_cmd_save((const gchar *const *)keep_arr);
+    g_strfreev(keep_arr);
+    g_strfreev(cmds);
+    autostart_cmd_refresh();
+}
+
 /* ---------- 笔和Ink: 开关写 /etc/qypen.conf ---------- */
 #define PEN_CONF "/etc/qypen.conf"
 static int g_pen_loading = 0;
@@ -4273,6 +4406,26 @@ static void activate(GtkApplication *app, gpointer ud) {
             gtk_box_pack_start(GTK_BOX(r), sw, FALSE, FALSE, 0);
             gtk_box_pack_start(GTK_BOX(vst), r, FALSE, FALSE, 0);
         }
+
+        /* 自定义命令区域（release 303）: cmd:<命令行> 追加/删除 */
+        settings_group(GTK_BOX(vst), TR("自定义命令"));
+        GtkWidget *cmd_add_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        GtkWidget *cmd_entry = gtk_entry_new();
+        gtk_entry_set_placeholder_text(GTK_ENTRY(cmd_entry),
+                                       TR("输入开机启动命令，如 /usr/bin/xxx"));
+        gtk_entry_set_width_chars(GTK_ENTRY(cmd_entry), 36);
+        gtk_box_pack_start(GTK_BOX(cmd_add_row), cmd_entry, TRUE, TRUE, 0);
+        GtkWidget *cmd_add_btn = gtk_button_new_with_label(TR("添加"));
+        qy_add_class(cmd_add_btn, "qy-btn");
+        g_signal_connect(cmd_add_btn, "clicked", G_CALLBACK(autostart_cmd_add), cmd_entry);
+        g_signal_connect(cmd_entry, "activate", G_CALLBACK(autostart_cmd_add), cmd_entry);
+        gtk_box_pack_start(GTK_BOX(cmd_add_row), cmd_add_btn, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(vst), cmd_add_row, FALSE, FALSE, 0);
+
+        g_ast_cmd_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+        gtk_box_pack_start(GTK_BOX(vst), g_ast_cmd_box, FALSE, FALSE, 0);
+        autostart_cmd_refresh();
+
         gtk_notebook_append_page(GTK_NOTEBOOK(nb), vst, tab_with_icon(TR("启动项"), QY_ICON_GRID));
         if (g_getenv("QY_SETTINGS_AUTOSTART"))
             g_timeout_add(1850, auto_autostart_apply, NULL);

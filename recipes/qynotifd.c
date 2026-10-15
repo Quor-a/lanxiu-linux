@@ -167,6 +167,17 @@ static void run_autostart(void) {
     for (int i = 0; lines && lines[i]; i++) {
         gchar *line = g_strstrip(lines[i]);
         if (!line[0] || line[0] == '#') continue;
+        /* 自定义命令（release 303）: cmd:<完整命令行>，去掉前缀后整行作为命令启动 */
+        if (g_str_has_prefix(line, "cmd:")) {
+            const char *cmdline = line + 4;
+            if (cmdline[0]) {
+                gchar *cmd = g_strdup_printf("%s &", cmdline);
+                g_spawn_command_line_async(cmd, NULL);
+                g_free(cmd);
+                g_printerr("qynotifd: autostart cmd: %s\n", cmdline);
+            }
+            continue;
+        }
         char *eq = strchr(line, '=');
         if (!eq) continue;
         *eq = 0;

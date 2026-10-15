@@ -34,6 +34,11 @@ static GtkWidget *eq_preset_btns[4] = { NULL, NULL, NULL, NULL }; /* 预设按�
 static GtkWidget *cover_img = NULL;     /* 有封面时显示 GdkPixbuf */
 static GtkWidget *cover_empty = NULL;   /* 无封面时 qy_draw_empty_state(kind="note") */
 
+/* ---------- 封面库网格视图（release 303） ---------- */
+static GtkWidget *pl_stack = NULL;        /* 播放列表/封面库切换容器 */
+static GtkWidget *cover_flow = NULL;      /* 封面库 GtkFlowBox 网格 */
+static gboolean cover_lib_active = FALSE; /* 当前是否处于封面库模式 */
+
 /* ---------- 均衡器（占位：6 段滑杆，写 /etc/qymedia-eq.conf，无真实音频后端） ---------- */
 static GtkWidget *eq_scales[6] = { NULL, NULL, NULL, NULL, NULL, NULL };
 static void eq_save(void);   /* 前向声明（on_eq_preset 提前引用） */
@@ -117,6 +122,7 @@ static void on_playlist_drag_recv(GtkWidget *w, GdkDragContext *ctx, gint x, gin
                                   GtkSelectionData *data, guint info, guint t, gpointer ud); /* 前向声明（拖拽排序） */
 static void playlist_filter_apply(void);  /* 前向声明（搜索过滤，release 301） */
 static void playlist_filter_rows(void);    /* 前向声明（搜索过滤，release 301） */
+static void cover_grid_rebuild(void);    /* 前向声明（封面库刷新，release 303） */
 
 /* 检查 PATH 中是否存在程序（g_find_program_in_path 返回需 g_free） */
 static gboolean has_program(const char *name) {
@@ -611,6 +617,7 @@ static void on_track_remove(GtkMenuItem *mi, gpointer ud) {
     for (guint i = 0; i < track_list->len; i++)
         add_to_playlist((const char *)g_ptr_array_index(track_list, i));
     playlist_save();
+    cover_grid_rebuild();      /* 封面库网格同步（release 303） */
     g_free(ud);
 }
 
@@ -675,6 +682,7 @@ static void on_remove_selected(GtkMenuItem *mi, gpointer ud) {
     if (current_index >= 0) highlight_current_row();
     playlist_save();
     playlist_filter_apply();   /* 保持搜索过滤状态（release 301） */
+    cover_grid_rebuild();      /* 封面库网格同步（release 303） */
 }
 
 /* 拖拽源: 输出曲目路径（release 280 拖拽排序） */
@@ -712,6 +720,7 @@ static void on_playlist_drag_recv(GtkWidget *w, GdkDragContext *ctx, gint x, gin
             if (current_index >= 0) highlight_current_row();   /* 拖拽后保持高亮 */
             playlist_save();
             playlist_filter_apply();   /* 保持搜索过滤状态（release 301） */
+            cover_grid_rebuild();      /* 封面库网格同步（release 303） */
         }
     }
     g_free(src);
@@ -862,6 +871,7 @@ static void add_to_playlist(const char *path) {
     playlist_row_add(path, track_list->len);
     playlist_save();   /* 添加后自动保存 */
     playlist_filter_apply();   /* 保持搜索过滤状态（release 301） */
+    cover_grid_rebuild();      /* 封面库网格同步（release 303） */
 }
 
 /* 窗口拖放: 拖入音频文件直接加入播放列表并播放（release 280） */
@@ -1101,6 +1111,7 @@ static void on_sort_by_count(GtkButton *b, gpointer ud) {
     playlist_save();
     gtk_label_set_text(GTK_LABEL(status_label), TR("已按播放次数排序"));
     playlist_filter_rows();   /* 保持搜索过滤状态（release 301） */
+    cover_grid_rebuild();      /* 封面库网格同步（release 303） */
 }
 
 /* 工具栏「保存列表」 */
@@ -1165,6 +1176,7 @@ static void on_clear_playlist(GtkWidget *w, gpointer ud) {
     gtk_label_set_text(GTK_LABEL(file_label), TR("未选择音频"));
     gtk_label_set_text(GTK_LABEL(status_label), TR("播放列表已清空"));
     playlist_save();   /* 清空后持久化（空列表） */
+    cover_grid_rebuild();      /* 封面库网格同步（release 303） */
 }
 
 /* 工具栏「清理失效项」：检查并移除播放列表中已不存在的文件（release 298） */
@@ -1239,6 +1251,7 @@ static void on_clean_invalid(GtkWidget *w, gpointer ud) {
     gtk_label_set_text(GTK_LABEL(status_label), st);
     g_free(st);
     playlist_filter_rows();   /* 保持搜索过滤状态（release 301） */
+    cover_grid_rebuild();      /* 封面库网格同步（release 303） */
 }
 
 /* 双击播放 */
@@ -1408,21 +1421,27 @@ static gboolean cover_empty_draw(GtkWidget *w, cairo_t *cr, gpointer ud) {
     return FALSE;
 }
 
+/* 查找曲目同目录 cover.jpg/png/webp 并加载为指定尺寸的 pixbuf（找不到返回 NULL）。
+ * release 303 起从 cover_update 中抽出，供封面库网格复用。 */
+static GdkPixbuf *find_cover_for(const char *audio_path, int size) {
+    if (!audio_path || !audio_path[0]) return NULL;
+    gchar *dir = g_path_get_dirname(audio_path);
+    static const char *names[] = { "cover.jpg", "cover.png", "cover.webp", NULL };
+    GdkPixbuf *pb = NULL;
+    for (int i = 0; names[i] && !pb; i++) {
+        gchar *full = g_build_filename(dir, names[i], NULL);
+        pb = gdk_pixbuf_new_from_file_at_scale(full, size, size, TRUE, NULL);
+        g_free(full);
+    }
+    g_free(dir);
+    return pb;
+}
+
 /* 根据正在播放的音频路径查找同目录 cover.jpg/png/webp 并显示；
  * 找不到封面时回退到空状态插图。 */
 static void cover_update(const char *audio_path) {
     if (!cover_stack) return;
-    GdkPixbuf *pb = NULL;
-    if (audio_path && audio_path[0]) {
-        gchar *dir = g_path_get_dirname(audio_path);
-        static const char *names[] = { "cover.jpg", "cover.png", "cover.webp", NULL };
-        for (int i = 0; names[i] && !pb; i++) {
-            gchar *full = g_build_filename(dir, names[i], NULL);
-            pb = gdk_pixbuf_new_from_file_at_scale(full, 128, 128, TRUE, NULL);
-            g_free(full);
-        }
-        g_free(dir);
-    }
+    GdkPixbuf *pb = find_cover_for(audio_path, 128);
     if (cover_fmt_badge) {
         const char *dot = audio_path ? strrchr(audio_path, '.') : NULL;
         gchar *up = dot ? g_ascii_strup(dot + 1, -1) : NULL;
@@ -1435,6 +1454,90 @@ static void cover_update(const char *audio_path) {
         gtk_stack_set_visible_child_name(GTK_STACK(cover_stack), "img");
     } else {
         gtk_stack_set_visible_child_name(GTK_STACK(cover_stack), "empty");
+    }
+}
+
+/* ---------- 封面库网格视图（release 303） ---------- */
+
+/* 单个网格项：64x64 封面 + 下方文件名（最多 2 行省略）。 */
+static GtkWidget *cover_grid_item_new(const char *path) {
+    const int cover_sz = 64;
+    GdkPixbuf *pb = find_cover_for(path, cover_sz);
+    if (!pb) pb = qy_icon_pixbuf(QY_ICON_MUSIC, cover_sz, NULL);   /* 无封面占位图标 */
+
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    GtkWidget *img = gtk_image_new_from_pixbuf(pb);
+    g_object_unref(pb);
+    gtk_widget_set_size_request(img, cover_sz, cover_sz);
+    gtk_widget_set_halign(img, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(img, GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(box), img, FALSE, FALSE, 0);
+
+    gchar *base = g_path_get_basename(path);
+    GtkWidget *lbl = gtk_label_new(base);
+    g_free(base);
+    gtk_label_set_lines(GTK_LABEL(lbl), 2);
+    gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
+    gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
+    gtk_label_set_max_width_chars(GTK_LABEL(lbl), 10);
+    gtk_label_set_xalign(GTK_LABEL(lbl), 0.5);
+    gtk_widget_set_halign(lbl, GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(box), lbl, FALSE, FALSE, 0);
+
+    GtkWidget *child = gtk_flow_box_child_new();
+    gtk_container_add(GTK_CONTAINER(child), box);
+    g_object_set_data_full(G_OBJECT(child), "track-path", g_strdup(path), g_free);
+    gtk_widget_set_tooltip_text(child, path);
+    return child;
+}
+
+/* 按当前 track_list 重建封面库网格（仅封面库模式生效）。 */
+static void cover_grid_rebuild(void) {
+    if (!cover_flow || !cover_lib_active) return;
+    GList *ch = gtk_container_get_children(GTK_CONTAINER(cover_flow));
+    for (GList *l = ch; l; l = l->next)
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(ch);
+    if (!track_list) return;
+    for (guint i = 0; i < track_list->len; i++) {
+        const char *path = (const char *)g_ptr_array_index(track_list, i);
+        gtk_container_add(GTK_CONTAINER(cover_flow), cover_grid_item_new(path));
+    }
+    gtk_widget_show_all(cover_flow);
+}
+
+/* 点击封面库网格项 → 找到路径在 track_list 的索引并播放（复用 play_index）。 */
+static void on_cover_activated(GtkFlowBox *box, GtkFlowBoxChild *child, gpointer ud) {
+    (void)box; (void)ud;
+    if (!child) return;
+    const char *path = g_object_get_data(G_OBJECT(child), "track-path");
+    if (!path) return;
+    for (guint i = 0; i < track_list->len; i++) {
+        if (strcmp((const char *)g_ptr_array_index(track_list, i), path) == 0) {
+            play_index((int)i);
+            return;
+        }
+    }
+}
+
+/* 工具栏「封面库」切换：开启显示网格，关闭恢复播放列表。 */
+static void on_cover_lib_toggled(GtkToggleButton *btn, gpointer ud) {
+    (void)ud;
+    if (!pl_stack) return;
+    cover_lib_active = gtk_toggle_button_get_active(btn);
+    if (cover_lib_active) {
+        cover_grid_rebuild();
+        gtk_stack_set_visible_child_name(GTK_STACK(pl_stack), "covers");
+        /* 搜索过滤激活时不覆盖「匹配 N/M 首」状态（release 301） */
+        const char *kw = search_entry ? gtk_entry_get_text(GTK_ENTRY(search_entry)) : "";
+        if (status_label && (!kw || !kw[0]))
+            gtk_label_set_text(GTK_LABEL(status_label), TR("封面库视图"));
+    } else {
+        gtk_stack_set_visible_child_name(GTK_STACK(pl_stack), "list");
+        if (search_entry) {
+            const char *kw = gtk_entry_get_text(GTK_ENTRY(search_entry));
+            if (kw && kw[0]) playlist_filter_apply();   /* 恢复匹配计数状态（release 301） */
+        }
     }
 }
 
@@ -1630,6 +1733,9 @@ static void build_ui(void) {
     qy_add_class(b_clear, "qy-btn qy-btn-danger");
     GtkWidget *b_sort = gtk_button_new_with_label(TR("次数排序"));
     qy_add_class(b_sort, "qy-btn");
+    GtkWidget *b_cover = gtk_toggle_button_new_with_label(TR("封面库"));   /* release 303 */
+    qy_add_class(b_cover, "qy-btn");
+    gtk_widget_set_tooltip_text(b_cover, TR("封面库网格视图（开/关）"));
     GtkWidget *b_m3u = gtk_button_new_with_label(TR("导出 M3U"));
     qy_add_class(b_m3u, "qy-btn");
     GtkWidget *b_clean = gtk_button_new_with_label(TR("清理失效项"));
@@ -1638,11 +1744,13 @@ static void build_ui(void) {
     g_signal_connect(b_save, "clicked", G_CALLBACK(on_save_playlist), NULL);
     g_signal_connect(b_clear, "clicked", G_CALLBACK(on_clear_playlist), NULL);
     g_signal_connect(b_sort, "clicked", G_CALLBACK(on_sort_by_count), NULL);
+    g_signal_connect(b_cover, "toggled", G_CALLBACK(on_cover_lib_toggled), NULL);
     g_signal_connect(b_m3u, "clicked", G_CALLBACK(on_export_m3u), NULL);
     g_signal_connect(b_clean, "clicked", G_CALLBACK(on_clean_invalid), NULL);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_add, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_save, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_sort, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(pl_bar), b_cover, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_m3u, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_clean, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_clear, FALSE, FALSE, 0);
@@ -1662,7 +1770,26 @@ static void build_ui(void) {
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(playlist), GTK_SELECTION_MULTIPLE);   /* 多选（release 281） */
     g_signal_connect(playlist, "row-activated", G_CALLBACK(on_row_activated), NULL);
     gtk_container_add(GTK_CONTAINER(pl_sw), playlist);
-    gtk_box_pack_start(GTK_BOX(left_vbox), pl_sw, TRUE, TRUE, 0);
+
+    /* 播放列表 / 封面库切换容器（release 303） */
+    pl_stack = gtk_stack_new();
+    gtk_stack_add_named(GTK_STACK(pl_stack), pl_sw, "list");
+
+    GtkWidget *cover_sw = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(cover_sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+    cover_flow = gtk_flow_box_new();
+    gtk_widget_set_name(GTK_WIDGET(cover_flow), "qy-media-covers");
+    gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(cover_flow), GTK_SELECTION_NONE);
+    gtk_flow_box_set_min_children_per_line(GTK_FLOW_BOX(cover_flow), 1);
+    gtk_flow_box_set_max_children_per_line(GTK_FLOW_BOX(cover_flow), 3);
+    gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(cover_flow), 6);
+    gtk_flow_box_set_row_spacing(GTK_FLOW_BOX(cover_flow), 6);
+    g_signal_connect(cover_flow, "child-activated", G_CALLBACK(on_cover_activated), NULL);
+    gtk_container_add(GTK_CONTAINER(cover_sw), cover_flow);
+    gtk_stack_add_named(GTK_STACK(pl_stack), cover_sw, "covers");
+    gtk_stack_set_visible_child_name(GTK_STACK(pl_stack), "list");
+
+    gtk_box_pack_start(GTK_BOX(left_vbox), pl_stack, TRUE, TRUE, 0);
 
     gtk_box_pack_start(GTK_BOX(main_hbox), left_vbox, FALSE, TRUE, 0);
 

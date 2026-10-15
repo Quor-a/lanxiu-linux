@@ -10,6 +10,7 @@
 #include <gtk/gtk.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 enum { C_IF, C_STATE, C_IP, C_MAC, N_COLS };
 
@@ -824,6 +825,136 @@ static void on_wifi_forget_clicked(GtkWidget *w, gpointer ud) {
     refresh_list();
 }
 
+/* ---------- 代理设置（release 303） ---------- */
+static GtkWidget *proxy_switch = NULL;      /* 「启用系统代理」开关 */
+static GtkWidget *proxy_host_entry = NULL;  /* 代理主机输入框 */
+static GtkWidget *proxy_port_spin = NULL;   /* 代理端口输入框 */
+
+/* 保存代理配置到 /etc/environment。
+ * root 运行时直接写；普通用户先把内容写到 /tmp，再经 qysudo 提权覆盖，
+ * 用临时脚本避免 shell 引号转义问题。 */
+static void proxy_save_clicked(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    gboolean enabled = gtk_switch_get_active(GTK_SWITCH(proxy_switch));
+    const char *host0 = gtk_entry_get_text(GTK_ENTRY(proxy_host_entry));
+    int port = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(proxy_port_spin));
+
+    GString *content = g_string_new(NULL);
+    if (enabled) {
+        gchar *host = g_strstrip(g_strdup(host0));
+        if (!host[0]) {
+            g_free(host);
+            g_string_free(content, TRUE);
+            if (status_label)
+                gtk_label_set_text(GTK_LABEL(status_label), TR("请先填写代理主机"));
+            return;
+        }
+        g_string_append_printf(content,
+            "http_proxy=http://%s:%d/\n"
+            "https_proxy=http://%s:%d/\n"
+            "HTTP_PROXY=http://%s:%d/\n"
+            "HTTPS_PROXY=http://%s:%d/\n"
+            "no_proxy=localhost,127.0.0.1,::1\n",
+            host, port, host, port, host, port, host, port);
+        g_free(host);
+    } else {
+        /* 关闭系统代理：只保留 no_proxy，避免残留 http_proxy 等变量 */
+        g_string_append(content, "no_proxy=localhost,127.0.0.1,::1\n");
+    }
+
+    /* 1) root 运行时直接写 /etc/environment */
+    GError *err = NULL;
+    if (g_file_set_contents("/etc/environment", content->str, content->len, &err)) {
+        g_string_free(content, TRUE);
+        if (status_label)
+            gtk_label_set_text(GTK_LABEL(status_label), TR("代理设置已保存（重启应用后生效）"));
+        return;
+    }
+    g_clear_error(&err);
+
+    /* 2) 非 root：内容写入 /tmp，用 qysudo 提权覆盖 /etc/environment */
+    g_file_set_contents("/tmp/qyproxy.env", content->str, content->len, NULL);
+    g_string_free(content, TRUE);
+    g_file_set_contents("/tmp/qyproxy-apply.sh",
+                         "#!/bin/sh\ncat /tmp/qyproxy.env > /etc/environment\n",
+                         -1, NULL);
+    chmod("/tmp/qyproxy-apply.sh", 0755);
+
+    gchar *cmd = g_strdup("qysudo sh /tmp/qyproxy-apply.sh");
+    gchar *out = NULL, *errout = NULL;
+    gint st = 1;
+    gboolean ok = g_spawn_command_line_sync(cmd, &out, &errout, &st, NULL);
+    if (ok && st == 0) {
+        if (status_label)
+            gtk_label_set_text(GTK_LABEL(status_label), TR("代理设置已保存（重启应用后生效）"));
+    } else {
+        const char *raw = (errout && errout[0]) ? errout : out;
+        gchar *msg = (raw && raw[0]) ? g_strstrip(g_strdup(raw))
+                                     : g_strdup(TR("代理设置保存失败（需要 root 权限）"));
+        if (status_label)
+            gtk_label_set_text(GTK_LABEL(status_label), msg);
+        g_free(msg);
+    }
+    g_free(out);
+    g_free(errout);
+    g_free(cmd);
+}
+
+/* 启动时读取 /etc/environment 中的 http_proxy 并回填 UI：
+ * 解析 http://主机:端口/，找到则开启开关并填入主机/端口；否则开关关闭。 */
+static void proxy_load_from_env(void) {
+    gchar *data = NULL;
+    if (!g_file_get_contents("/etc/environment", &data, NULL, NULL) || !data)
+        return;
+    gboolean found = FALSE;
+    gchar host[256] = "";
+    int port = 8080;
+    char *line = data;
+    while (line && *line && !found) {
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = 0;
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        const char *val = NULL;
+        if (strncmp(p, "http_proxy=", 11) == 0)
+            val = p + 11;
+        else if (strncmp(p, "HTTP_PROXY=", 11) == 0)
+            val = p + 11;
+        if (val && strncmp(val, "http://", 7) == 0) {
+            const char *h = val + 7;
+            const char *colon = strchr(h, ':');
+            const char *slash = strchr(h, '/');
+            if (colon && (!slash || colon < slash)) {
+                /* 主机:端口 */
+                size_t hn = (size_t)(colon - h);
+                if (hn >= sizeof host) hn = sizeof host - 1;
+                memcpy(host, h, hn);
+                host[hn] = 0;
+                int pp = atoi(colon + 1);
+                if (pp >= 1 && pp <= 65535) port = pp;
+                found = TRUE;
+            } else {
+                /* 只有主机（无端口） */
+                size_t hn = slash ? (size_t)(slash - h) : strlen(h);
+                if (hn >= sizeof host) hn = sizeof host - 1;
+                memcpy(host, h, hn);
+                host[hn] = 0;
+                found = TRUE;
+            }
+        }
+        line = nl ? nl + 1 : NULL;
+    }
+    g_free(data);
+
+    if (found && host[0]) {
+        gtk_switch_set_active(GTK_SWITCH(proxy_switch), TRUE);
+        gtk_entry_set_text(GTK_ENTRY(proxy_host_entry), host);
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(proxy_port_spin), port);
+    } else {
+        gtk_switch_set_active(GTK_SWITCH(proxy_switch), FALSE);
+    }
+}
+
 /* 自动化: QYNET_WIFI=SSID|密码 */
 static gboolean auto_wifi(gpointer p) {
     char *arg = (char *)p;
@@ -900,6 +1031,51 @@ int main(int argc, char **argv) {
     gtk_container_add(GTK_CONTAINER(sw), tv);
     gtk_box_pack_start(GTK_BOX(vbox), sw, TRUE, TRUE, 0);
 
+    /* 代理设置分组 (release 303): 开关 + 主机/端口 + 保存 */
+    GtkWidget *proxy_frame = gtk_frame_new(TR("代理设置"));
+    gtk_widget_set_margin_top(proxy_frame, 6);
+    GtkWidget *proxy_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_container_set_border_width(GTK_CONTAINER(proxy_vbox), 8);
+    gtk_container_add(GTK_CONTAINER(proxy_frame), proxy_vbox);
+
+    GtkWidget *proxy_sw_h = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *proxy_sw_lbl = gtk_label_new(TR("启用系统代理"));
+    gtk_widget_set_halign(proxy_sw_lbl, GTK_ALIGN_START);
+    gtk_widget_set_hexpand(proxy_sw_lbl, TRUE);
+    proxy_switch = gtk_switch_new();
+    gtk_box_pack_start(GTK_BOX(proxy_sw_h), proxy_sw_lbl, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(proxy_sw_h), proxy_switch, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(proxy_vbox), proxy_sw_h, FALSE, FALSE, 0);
+
+    GtkWidget *proxy_host_h = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *proxy_host_lbl = gtk_label_new(TR("主机"));
+    gtk_widget_set_halign(proxy_host_lbl, GTK_ALIGN_START);
+    gtk_widget_set_size_request(proxy_host_lbl, 48, -1);
+    proxy_host_entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(proxy_host_entry), "proxy.example.com");
+    gtk_widget_set_hexpand(proxy_host_entry, TRUE);
+    gtk_box_pack_start(GTK_BOX(proxy_host_h), proxy_host_lbl, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(proxy_host_h), proxy_host_entry, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(proxy_vbox), proxy_host_h, FALSE, FALSE, 0);
+
+    GtkWidget *proxy_port_h = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *proxy_port_lbl = gtk_label_new(TR("端口"));
+    gtk_widget_set_halign(proxy_port_lbl, GTK_ALIGN_START);
+    gtk_widget_set_size_request(proxy_port_lbl, 48, -1);
+    proxy_port_spin = gtk_spin_button_new_with_range(1, 65535, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(proxy_port_spin), 8080);
+    gtk_box_pack_start(GTK_BOX(proxy_port_h), proxy_port_lbl, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(proxy_port_h), proxy_port_spin, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(proxy_vbox), proxy_port_h, FALSE, FALSE, 0);
+
+    GtkWidget *b_proxy_save = gtk_button_new_with_label(TR("保存"));
+    qy_add_class(b_proxy_save, "qy-btn");
+    gtk_widget_set_halign(b_proxy_save, GTK_ALIGN_END);
+    g_signal_connect(b_proxy_save, "clicked", G_CALLBACK(proxy_save_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(proxy_vbox), b_proxy_save, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(vbox), proxy_frame, FALSE, FALSE, 0);
+
     /* 底部: 连接/刷新按钮 + 状态 */
     GtkWidget *hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget *b_conn = gtk_button_new_with_label(TR("连接"));
@@ -950,6 +1126,7 @@ int main(int argc, char **argv) {
 
     gtk_widget_show_all(win);
     refresh_list();
+    proxy_load_from_env();                /* 回填已保存的代理设置（release 303） */
     wifi_scan();                          /* 启动时扫描一次 WiFi */
     rate_tick(NULL);                      /* 立即采样一次 */
     g_timeout_add_seconds(1, rate_tick, NULL);

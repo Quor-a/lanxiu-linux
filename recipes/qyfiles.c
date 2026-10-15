@@ -85,6 +85,12 @@ static GtkWidget *b_res = NULL, *b_pur = NULL, *b_emp = NULL;
 static GtkWidget *b_bm = NULL;   /* 添加书签按钮（release 256） */
 static GtkWidget *book_list = NULL; /* 侧边栏书签 GtkListBox */
 static GtkWidget *recent_list = NULL;  /* 侧边栏「最近」GtkListBox（release 301） */
+/* 侧边栏「设备」分组（release 303：可移动设备挂载） */
+static GtkWidget *device_box = NULL;      /* 设备分组整体容器 */
+static GtkWidget *device_list = NULL;    /* 设备行 GtkListBox */
+static GtkWidget *device_none_lb = NULL;    /* 「无移动设备」灰色提示 */
+static GtkWidget *device_sep = NULL;     /* 设备分组上方的分隔线 */
+static GPtrArray *device_entries = NULL;  /* QyDevice* 数组 */
 static GPtrArray *recent_paths = NULL; /* 最近访问路径，最新在前，最多 6 个 */
 static int icon_size = 48;             /* 图标大小（release 295） */
 static GtkWidget *zoom_combo = NULL;   /* 图标大小选择 */
@@ -1042,6 +1048,291 @@ static void on_recent_clear_clicked(GtkButton *b, gpointer ud) {
     (void)b; (void)ud;
     recent_clear();
     gtk_label_set_text(GTK_LABEL(status), TR("已清除最近记录"));
+}
+
+/* ---------- 侧边栏「设备」分组（release 303：可移动设备挂载） ---------- */
+typedef struct {
+    char name[256];        /* 块设备名（如 sdb1），对应 /dev/<name> */
+    char label[256];       /* 显示标签：LABEL 或设备名 */
+    char mountpoint[4096]; /* 挂载点，空=未挂载 */
+    char size[64];         /* 大小字符串（如 14.5G） */
+    char type[32];         /* part / disk */
+} QyDevice;
+
+/* 解析 lsblk -rno 输出的一行。
+ * 空 LABEL / 挂载点表现为连续空格，按单空格切分可得到空 token：
+ *   "sda1  /boot  1G part"  -> [sda1,"",/boot,"",1G,part]
+ *   "sdb1   10G part"       -> [sdb1,"","",10G,part] */
+static void device_parse_lsblk_line(const char *line) {
+    if (!line || !line[0]) return;
+    char name[256] = "", label[256] = "", mp[4096] = "", size[64] = "", type[32] = "";
+    gchar **t = g_strsplit(line, " ", -1);
+    int n = 0;
+    while (t && t[n]) n++;
+    if (n >= 1) g_strlcpy(name, t[0], sizeof name);
+    if (n >= 2) g_strlcpy(label, t[1], sizeof label);
+    if (n >= 3) g_strlcpy(mp, t[2], sizeof mp);
+    if (n >= 4) g_strlcpy(size, t[3], sizeof size);
+    if (n >= 5) g_strlcpy(type, t[4], sizeof type);
+    g_strfreev(t);
+    g_strstrip(name);
+    g_strstrip(label);
+    g_strstrip(mp);
+    g_strstrip(size);
+    g_strstrip(type);
+    /* 过滤：TYPE 为 part/disk、非根分区、非 loop/sr/ram */
+    if (strcmp(type, "part") != 0 && strcmp(type, "disk") != 0) return;
+    if (!strcmp(mp, "/")) return;
+    if (strstr(name, "loop") || strstr(name, "sr") || strstr(name, "ram")) return;
+    if (!device_entries) device_entries = g_ptr_array_new_with_free_func(g_free);
+    QyDevice *d = g_new0(QyDevice, 1);
+    g_strlcpy(d->name, name, sizeof d->name);
+    g_strlcpy(d->label, label[0] ? label : name, sizeof d->label);
+    g_strlcpy(d->mountpoint, mp, sizeof d->mountpoint);
+    g_strlcpy(d->size, size, sizeof d->size);
+    g_strlcpy(d->type, type, sizeof d->type);
+    g_ptr_array_add(device_entries, d);
+}
+
+/* 重建「设备」行：与 device_entries 保持一致（行样式沿用书签/最近） */
+static void device_build_rows(void) {
+    if (!device_list || !device_entries) return;
+    guint shown = 0;
+    for (guint i = 0; i < device_entries->len; i++) {
+        QyDevice *d = (QyDevice *)g_ptr_array_index(device_entries, i);
+        if (!d || !d->name[0]) continue;
+        GtkWidget *row = gtk_list_box_row_new();
+        GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+        gtk_container_add(GTK_CONTAINER(row), vbox);
+        GtkWidget *l1 = gtk_label_new(d->label);
+        gtk_label_set_xalign(GTK_LABEL(l1), 0.0);
+        gtk_label_set_ellipsize(GTK_LABEL(l1), PANGO_ELLIPSIZE_END);
+        gtk_widget_set_margin_start(l1, 6);
+        gtk_widget_set_margin_end(l1, 6);
+        gtk_widget_set_margin_top(l1, 3);
+        gtk_box_pack_start(GTK_BOX(vbox), l1, FALSE, FALSE, 0);
+        char sub[512];
+        if (d->mountpoint[0])
+            g_snprintf(sub, sizeof sub, "%s · %s", d->size[0] ? d->size : "—", d->mountpoint);
+        else
+            g_snprintf(sub, sizeof sub, "%s · %s", d->size[0] ? d->size : "—", TR("未挂载"));
+        GtkWidget *l2 = gtk_label_new(sub);
+        gtk_label_set_xalign(GTK_LABEL(l2), 0.0);
+        gtk_label_set_ellipsize(GTK_LABEL(l2), PANGO_ELLIPSIZE_END);
+        gtk_widget_set_margin_start(l2, 6);
+        gtk_widget_set_margin_end(l2, 6);
+        gtk_widget_set_margin_bottom(l2, 3);
+        add_class(l2, "qy-files-preview-dim");
+        gtk_box_pack_start(GTK_BOX(vbox), l2, FALSE, FALSE, 0);
+        g_object_set_data_full(G_OBJECT(row), "devname", g_strdup(d->name), g_free);
+        g_object_set_data_full(G_OBJECT(row), "mountpoint", g_strdup(d->mountpoint), g_free);
+        g_object_set_data(G_OBJECT(row), "mounted", GINT_TO_POINTER(d->mountpoint[0] != 0));
+        gtk_list_box_insert(GTK_LIST_BOX(device_list), row, -1);
+        shown++;
+    }
+    if (device_none_lb)
+        gtk_widget_set_visible(device_none_lb, shown == 0);
+}
+
+/* 枚举块设备并刷新「设备」分组（启动时与点击刷新时调用） */
+static void device_refresh(void) {
+    if (!device_list) return;
+    GList *rows = gtk_container_get_children(GTK_CONTAINER(device_list));
+    for (GList *l = rows; l; l = l->next)
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(rows);
+    if (!device_entries) device_entries = g_ptr_array_new_with_free_func(g_free);
+    g_ptr_array_set_size(device_entries, 0);
+    if (device_none_lb) gtk_widget_set_visible(device_none_lb, FALSE);
+
+    gchar *lsblk = g_find_program_in_path("lsblk");
+    if (!lsblk) {
+        g_printerr("QYFILESDBG: lsblk 不可用，隐藏「设备」分组\n");
+        g_free(lsblk);
+        if (device_sep) gtk_widget_set_visible(device_sep, FALSE);
+        if (device_box) gtk_widget_set_visible(device_box, FALSE);
+        return;
+    }
+    g_free(lsblk);
+    if (device_sep) gtk_widget_set_visible(device_sep, TRUE);
+    if (device_box) gtk_widget_set_visible(device_box, TRUE);
+
+    gchar *out = NULL;
+    GError *err = NULL;
+    if (!g_spawn_command_line_sync("lsblk -rno NAME,LABEL,MOUNTPOINT,SIZE,TYPE",
+                                   &out, NULL, NULL, &err) || !out) {
+        g_printerr("QYFILESDBG: lsblk 执行失败: %s\n", err ? err->message : "未知错误");
+        g_clear_error(&err);
+        g_free(out);
+        return;
+    }
+    char **lines = g_strsplit(out, "\n", -1);
+    for (int i = 0; lines[i]; i++)
+        device_parse_lsblk_line(lines[i]);
+    g_strfreev(lines);
+    g_free(out);
+    device_build_rows();
+}
+
+/* 延迟到主循环空闲时重建，避免在 row-activated/菜单回调中销毁当前行 */
+static gboolean device_refresh_pending = FALSE;
+static gboolean device_refresh_idle(gpointer ud) {
+    (void)ud;
+    device_refresh_pending = FALSE;
+    device_refresh();
+    return G_SOURCE_REMOVE;
+}
+
+static void device_refresh_defer(void) {
+    if (!device_refresh_pending) {
+        device_refresh_pending = TRUE;
+        g_idle_add(device_refresh_idle, NULL);
+    }
+}
+
+/* 直接查询 lsblk，返回指定设备当前挂载点（调用者 g_free；未挂载/失败返回 NULL）。
+ * 用于挂载后立即确定挂载点，避免依赖尚未重建的列表行。 */
+static gchar *device_query_mountpoint(const char *name) {
+    if (!name || !name[0]) return NULL;
+    gchar *out = NULL;
+    GError *err = NULL;
+    if (!g_spawn_command_line_sync("lsblk -rno NAME,LABEL,MOUNTPOINT,SIZE,TYPE",
+                                   &out, NULL, NULL, &err) || !out) {
+        g_clear_error(&err);
+        g_free(out);
+        return NULL;
+    }
+    gchar *result = NULL;
+    char **lines = g_strsplit(out, "\n", -1);
+    for (int i = 0; lines[i] && !result; i++) {
+        gchar **t = g_strsplit(lines[i], " ", -1);
+        int n = 0;
+        while (t && t[n]) n++;
+        if (n >= 3 && t[0] && !strcmp(t[0], name) && t[2] && t[2][0])
+            result = g_strdup(t[2]);
+        g_strfreev(t);
+    }
+    g_strfreev(lines);
+    g_free(out);
+    return result;
+}
+
+/* 挂载设备：优先 udisksctl，否则 qysudo；等待命令完成后再刷新并进入挂载点 */
+static void device_mount(const char *name) {
+    if (!name || !name[0]) return;
+    gchar *dev = g_strdup_printf("/dev/%s", name);
+    gchar *udisks = g_find_program_in_path("udisksctl");
+    int rc = -1;
+    if (udisks) {
+        gchar *cmd = g_strdup_printf("udisksctl mount -b %s", g_shell_quote(dev));
+        rc = system(cmd);
+        g_free(cmd);
+        g_free(udisks);
+    } else {
+        g_free(udisks);
+        gchar *mp = g_strdup_printf("/mnt/lanxiu/%s", name);
+        gchar *cmd = g_strdup_printf("qysudo mkdir -p %s && qysudo mount %s %s",
+                                     g_shell_quote(mp), g_shell_quote(dev), g_shell_quote(mp));
+        rc = system(cmd);
+        g_free(cmd);
+        g_free(mp);
+    }
+    g_free(dev);
+    if (rc == 0) {
+        gchar *mp = device_query_mountpoint(name);
+        if (mp && mp[0]) {
+            if (status) {
+                gchar *msg = g_strdup_printf(TR("已挂载 %s 到 %s"), name, mp);
+                gtk_label_set_text(GTK_LABEL(status), msg);
+                g_free(msg);
+            }
+            chdir_to(mp);
+        } else {
+            if (status) gtk_label_set_text(GTK_LABEL(status), TR("挂载失败"));
+        }
+        g_free(mp);
+    } else {
+        if (status) gtk_label_set_text(GTK_LABEL(status), TR("挂载失败"));
+    }
+    device_refresh_defer();
+}
+
+/* 卸载设备：优先 udisksctl，否则 qysudo umount 挂载点 */
+static void device_unmount(const char *name, const char *mp) {
+    if (!name || !name[0]) return;
+    gchar *dev = g_strdup_printf("/dev/%s", name);
+    gchar *udisks = g_find_program_in_path("udisksctl");
+    int rc = -1;
+    if (udisks) {
+        gchar *cmd = g_strdup_printf("udisksctl unmount -b %s", g_shell_quote(dev));
+        rc = system(cmd);
+        g_free(cmd);
+        g_free(udisks);
+    } else {
+        g_free(udisks);
+        if (mp && mp[0]) {
+            gchar *cmd = g_strdup_printf("qysudo umount %s", g_shell_quote(mp));
+            rc = system(cmd);
+            g_free(cmd);
+        }
+    }
+    g_free(dev);
+    if (rc == 0) {
+        if (status) gtk_label_set_text(GTK_LABEL(status), TR("已卸载"));
+    } else {
+        if (status) gtk_label_set_text(GTK_LABEL(status), TR("卸载失败"));
+    }
+    device_refresh_defer();
+}
+
+/* 左键点击设备行：未挂载→挂载；已挂载→进入挂载点 */
+static void on_device_activated(GtkListBox *box, GtkListBoxRow *row, gpointer ud) {
+    (void)box; (void)ud;
+    if (!row) return;
+    const char *name = (const char *)g_object_get_data(G_OBJECT(row), "devname");
+    const char *mp = (const char *)g_object_get_data(G_OBJECT(row), "mountpoint");
+    gboolean mounted = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "mounted"));
+    if (!name || !name[0]) return;
+    if (mounted) {
+        if (mp && mp[0]) chdir_to(mp);
+        return;
+    }
+    device_mount(name);
+}
+
+/* 右键菜单「卸载」 */
+static void on_device_unmount(GtkMenuItem *mi, gpointer ud) {
+    (void)mi;
+    GtkListBoxRow *row = GTK_LIST_BOX_ROW(ud);
+    if (!row) return;
+    const char *name = (const char *)g_object_get_data(G_OBJECT(row), "devname");
+    const char *mp = (const char *)g_object_get_data(G_OBJECT(row), "mountpoint");
+    device_unmount(name, mp ? mp : "");
+}
+
+/* 设备行右键：仅已挂载设备提供「卸载」 */
+static gboolean on_device_popup(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->type != GDK_BUTTON_PRESS || ev->button != 3) return FALSE;
+    GtkListBoxRow *row = gtk_list_box_get_row_at_y(GTK_LIST_BOX(device_list), (gint)ev->y);
+    if (!row) return TRUE;
+    gtk_list_box_select_row(GTK_LIST_BOX(device_list), row);
+    const char *mp = (const char *)g_object_get_data(G_OBJECT(row), "mountpoint");
+    if (!mp || !mp[0]) return TRUE;   /* 未挂载的设备不提供卸载 */
+    GtkWidget *menu = gtk_menu_new();
+    GtkWidget *mi = gtk_menu_item_new_with_label(TR("卸载"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_device_unmount), row);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    gtk_widget_show_all(menu);
+    gtk_menu_attach_to_widget(GTK_MENU(menu), w, NULL);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (const GdkEvent *)ev);
+    return TRUE;
+}
+
+/* 设备分组标题旁「刷新」按钮 */
+static void on_device_refresh_clicked(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    device_refresh();
 }
 
 /* ---------- 打开方式子菜单（release 256） ---------- */
@@ -2525,6 +2816,38 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(side), recent_list, FALSE, FALSE, 0);
     recent_load();
     recent_rebuild();
+    /* 「设备」分组（release 303）：位于「最近」下方、「书签」上方 */
+    device_sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_box_pack_start(GTK_BOX(side), device_sep, FALSE, FALSE, 4);
+    device_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    GtkWidget *device_hdr_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    GtkWidget *device_hdr = gtk_label_new(TR("设备"));
+    gtk_widget_set_halign(device_hdr, GTK_ALIGN_START);
+    gtk_widget_set_hexpand(device_hdr, TRUE);
+    add_class(device_hdr, "qy-files-bm-header");
+    gtk_box_pack_start(GTK_BOX(device_hdr_box), device_hdr, TRUE, TRUE, 0);
+    GtkWidget *device_refresh_btn = gtk_button_new_with_label(TR("刷新"));
+    gtk_button_set_relief(GTK_BUTTON(device_refresh_btn), GTK_RELIEF_NONE);
+    add_class(device_refresh_btn, "qy-files-bm-header");
+    gtk_widget_set_tooltip_text(device_refresh_btn, TR("重新枚举设备"));
+    g_signal_connect(device_refresh_btn, "clicked", G_CALLBACK(on_device_refresh_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(device_hdr_box), device_refresh_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(device_box), device_hdr_box, FALSE, FALSE, 0);
+    device_list = gtk_list_box_new();
+    qy_add_class(device_list, "qy-files-book");
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(device_list), GTK_SELECTION_SINGLE);
+    gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(device_list), TRUE);
+    g_signal_connect(device_list, "row-activated", G_CALLBACK(on_device_activated), NULL);
+    g_signal_connect(device_list, "button-press-event", G_CALLBACK(on_device_popup), NULL);
+    gtk_box_pack_start(GTK_BOX(device_box), device_list, FALSE, FALSE, 0);
+    device_none_lb = gtk_label_new(TR("无移动设备"));
+    gtk_widget_set_halign(device_none_lb, GTK_ALIGN_START);
+    gtk_widget_set_margin_start(device_none_lb, 6);
+    gtk_widget_set_margin_top(device_none_lb, 2);
+    add_class(device_none_lb, "qy-files-preview-dim");
+    gtk_box_pack_start(GTK_BOX(device_box), device_none_lb, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(side), device_box, FALSE, FALSE, 0);
+    device_refresh();
     /* 书签分组（release 256） */
     gtk_box_pack_start(GTK_BOX(side), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 4);
     GtkWidget *bm_hdr = gtk_label_new(TR("书签"));
