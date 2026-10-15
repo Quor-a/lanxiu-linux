@@ -92,6 +92,8 @@ static GtkWidget *mon_draw     = NULL;  /* 顶栏 CPU/内存迷你条 (cairo) */
 static double    mon_cpu = 0.0, mon_mem = 0.0;  /* 当前使用率 0~1 */
 static GtkWidget *desktop_fixed = NULL;
 static GtkWidget *ws_label = NULL;   /* 顶栏工作区指示标签 #qy-ws-ind */
+static GtkWidget *net_popover = NULL;      /* 顶栏网络状态弹层 */
+static GtkWidget *net_status_label = NULL; /* 弹层内网络状态文本 */
 
 /* ---------- 夜间模式（22:00-6:00 暖色遮罩） ---------- */
 static GtkWidget *night_overlay = NULL;   /* 顶层 RGBA 暖色遮罩 */
@@ -903,6 +905,92 @@ static gboolean dock_tick(gpointer ud) {
 
 /* ---------- 桌面图标 ---------- */
 /* 应用名 → 统一图标 id（qyicon 接入点） */
+
+/* 桌面图标静态定义（默认顺序；app 为持久化标识，对应
+ * ~/.config/lanxiu/qydesktop-desktopicons.conf 每行一个应用名） */
+typedef struct {
+    const char *app;
+    QyIconId    iid;
+    const char *css;
+    const char *label;      /* 原文，创建时经 TR() 翻译 */
+    const char *cmdline;
+} DesktopAppDef;
+
+static const DesktopAppDef desktop_apps[] = {
+    { "home",     QY_ICON_HOME,      "c-home",     "主文件夹", "qyfiles" },
+    { "trash",    QY_ICON_TRASH,     "c-trash",    "回收站",   "qyfiles --trash" },
+    { "store",    QY_ICON_STORE,     "c-store",    "软件中心", "qystore" },
+    { "term",     QY_ICON_TERM,      "c-term",     "终端",     "weston-terminal" },
+    { "settings", QY_ICON_SETTINGS,  "c-settings", "设置",     "qysettings" },
+    { "mon",      QY_ICON_MONITOR,   "c-mon",      "系统监视", "qymon" },
+    { "view",     QY_ICON_IMAGE,     "c-view",     "图片查看", "qyview" },
+};
+#define NDESKTOP_APPS ((int)(sizeof desktop_apps / sizeof desktop_apps[0]))
+
+#define DESKTOP_ICON_X    110
+#define DESKTOP_ICON_Y0   60
+#define DESKTOP_ICON_DY   110
+#define DESKTOP_ICON_CONF "qydesktop-desktopicons.conf"
+
+/* 当前桌面图标顺序（GPtrArray<char*>，app 标识）与对应按钮
+ * （GPtrArray<GtkWidget*>），两数组索引一一对应 */
+static GPtrArray *desktop_order = NULL;
+static GPtrArray *desktop_btns  = NULL;
+
+static const DesktopAppDef *desktop_app_find(const char *app) {
+    if (!app) return NULL;
+    for (int i = 0; i < NDESKTOP_APPS; i++)
+        if (strcmp(desktop_apps[i].app, app) == 0)
+            return &desktop_apps[i];
+    return NULL;
+}
+
+static int desktop_order_index(const char *app) {
+    if (!desktop_order || !app) return -1;
+    for (guint i = 0; i < desktop_order->len; i++)
+        if (strcmp((const char *)g_ptr_array_index(desktop_order, i), app) == 0)
+            return (int)i;
+    return -1;
+}
+
+/* 启动时读取持久化顺序：文件存在则按文件行序重排，再追加未出现的默认应用 */
+static void desktop_order_load(void) {
+    desktop_order = g_ptr_array_new();
+    gchar *path = g_build_filename(g_get_home_dir(), ".config", "lanxiu",
+                                   DESKTOP_ICON_CONF, NULL);
+    gchar *content = NULL;
+    if (g_file_get_contents(path, &content, NULL, NULL) && content) {
+        gchar **lines = g_strsplit(content, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            gchar *line = g_strstrip(lines[i]);
+            if (line[0] && desktop_app_find(line) && desktop_order_index(line) < 0)
+                g_ptr_array_add(desktop_order, g_strdup(line));
+        }
+        g_strfreev(lines);
+        g_free(content);
+    }
+    g_free(path);
+    for (int i = 0; i < NDESKTOP_APPS; i++)
+        if (desktop_order_index(desktop_apps[i].app) < 0)
+            g_ptr_array_add(desktop_order, g_strdup(desktop_apps[i].app));
+}
+
+/* 拖拽排序完成后立即写回（每行一个应用名） */
+static void desktop_order_save(void) {
+    if (!desktop_order) return;
+    gchar *dir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    gchar *path = g_build_filename(dir, DESKTOP_ICON_CONF, NULL);
+    GString *s = g_string_new(NULL);
+    for (guint i = 0; i < desktop_order->len; i++)
+        g_string_append_printf(s, "%s\n",
+                               (const char *)g_ptr_array_index(desktop_order, i));
+    g_file_set_contents(path, s->str, (gssize)s->len, NULL);
+    g_string_free(s, TRUE);
+    g_free(dir);
+    g_free(path);
+}
+
 static gboolean desktop_icon_draw_cb(GtkWidget *w, cairo_t *cr, gpointer ud) {
     QyIconId id = (QyIconId)GPOINTER_TO_INT(ud);
     GtkAllocation al;
@@ -915,11 +1003,129 @@ static gboolean desktop_icon_draw_cb(GtkWidget *w, cairo_t *cr, gpointer ud) {
 }
 
 static void desktop_icon_click(GtkButton *btn, gpointer ud) {
-    launch_cmd((const char *)ud);
+    (void)ud;
+    const char *cmd = (const char *)g_object_get_data(G_OBJECT(btn), "cmdline");
+    if (cmd) launch_cmd(cmd);
+}
+
+/* 按当前顺序重排图标位置（GtkFixed 中纵向移动） */
+static void desktop_icons_relayout(void) {
+    if (!desktop_fixed || !desktop_btns) return;
+    for (guint i = 0; i < desktop_btns->len; i++) {
+        GtkWidget *btn = GTK_WIDGET(g_ptr_array_index(desktop_btns, i));
+        gtk_fixed_move(GTK_FIXED(desktop_fixed), btn,
+                       DESKTOP_ICON_X, DESKTOP_ICON_Y0 + (int)i * DESKTOP_ICON_DY);
+    }
+}
+
+/* ---------- 桌面图标拖拽排序（DnD） ---------- */
+static const GtkTargetEntry desk_icon_targets[] = {
+    { "application/x-lanxiu-desktop-icon", GTK_TARGET_SAME_APP, 0 }
+};
+
+static void desktop_icon_drag_data_get(GtkWidget *w, GdkDragContext *ctx,
+                                       GtkSelectionData *data, guint info,
+                                       guint time, gpointer ud) {
+    (void)ctx; (void)info; (void)time; (void)ud;
+    const char *app = (const char *)g_object_get_data(G_OBJECT(w), "app");
+    if (app)
+        gtk_selection_data_set(data,
+                               gdk_atom_intern_static_string("application/x-lanxiu-desktop-icon"),
+                               8, (const guchar *)app, (gint)strlen(app));
+}
+
+/* 悬停到其他图标：上半 → 插到目标之前，下半 → 之后，并显示放置提示 */
+static gboolean desktop_icon_drag_motion(GtkWidget *w, GdkDragContext *ctx,
+                                         gint x, gint y, guint time, gpointer ud) {
+    (void)ud;
+    (void)x;
+    const char *dst = (const char *)g_object_get_data(G_OBJECT(w), "app");
+    GtkWidget *srcw = gtk_drag_get_source_widget(ctx);
+    const char *src = srcw ? (const char *)g_object_get_data(G_OBJECT(srcw), "app") : NULL;
+    if (!src || !dst || strcmp(src, dst) == 0) return FALSE;
+
+    GtkAllocation al;
+    gtk_widget_get_allocation(w, &al);
+    gboolean below = y > al.height / 2;
+    g_object_set_data(G_OBJECT(w), "drop-pos", GINT_TO_POINTER(below ? 1 : 0));
+    GtkStyleContext *sc = gtk_widget_get_style_context(w);
+    if (below) {
+        gtk_style_context_add_class(sc, "qy-desktop-icon-drop-below");
+        gtk_style_context_remove_class(sc, "qy-desktop-icon-drop-above");
+    } else {
+        gtk_style_context_add_class(sc, "qy-desktop-icon-drop-above");
+        gtk_style_context_remove_class(sc, "qy-desktop-icon-drop-below");
+    }
+    gdk_drag_status(ctx, GDK_ACTION_MOVE, time);
+    return TRUE;
+}
+
+static void desktop_icon_drag_leave(GtkWidget *w, GdkDragContext *ctx,
+                                    guint time, gpointer ud) {
+    (void)ctx; (void)time; (void)ud;
+    g_object_set_data(G_OBJECT(w), "drop-pos", GINT_TO_POINTER(0));
+    gtk_style_context_remove_class(gtk_widget_get_style_context(w),
+                                   "qy-desktop-icon-drop-above");
+    gtk_style_context_remove_class(gtk_widget_get_style_context(w),
+                                   "qy-desktop-icon-drop-below");
+}
+
+/* 拖拽结束：清理所有图标上的放置提示 */
+static void desktop_icon_drag_end(GtkWidget *w, GdkDragContext *ctx, gpointer ud) {
+    (void)w; (void)ctx; (void)ud;
+    if (!desktop_fixed) return;
+    GList *ch = gtk_container_get_children(GTK_CONTAINER(desktop_fixed));
+    for (GList *it = ch; it; it = it->next) {
+        GtkWidget *c = GTK_WIDGET(it->data);
+        gtk_style_context_remove_class(gtk_widget_get_style_context(c),
+                                       "qy-desktop-icon-drop-above");
+        gtk_style_context_remove_class(gtk_widget_get_style_context(c),
+                                       "qy-desktop-icon-drop-below");
+    }
+    g_list_free(ch);
+}
+
+/* 松手：把源图标移到目标图标之前/之后，重排 GPtrArray 与位置并写回配置 */
+static void desktop_icon_drag_data_received(GtkWidget *w, GdkDragContext *ctx,
+                                            gint x, gint y, GtkSelectionData *data,
+                                            guint info, guint time, gpointer ud) {
+    (void)x; (void)y; (void)info; (void)ud;
+    const char *dst = (const char *)g_object_get_data(G_OBJECT(w), "app");
+    int len = gtk_selection_data_get_length(data);
+    if (len <= 0 || !dst) {
+        gtk_drag_finish(ctx, FALSE, FALSE, time);
+        return;
+    }
+    gchar *src = g_strndup((const char *)gtk_selection_data_get_data(data), len);
+    if (!src[0] || strcmp(src, dst) == 0) {
+        g_free(src);
+        gtk_drag_finish(ctx, FALSE, FALSE, time);
+        return;
+    }
+    gboolean below = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(w), "drop-pos")) != 0;
+    int src_idx = desktop_order_index(src);
+    int dst_idx = desktop_order_index(dst);
+    if (src_idx >= 0 && dst_idx >= 0 && src_idx != dst_idx) {
+        gchar *name = g_ptr_array_remove_index(desktop_order, src_idx);
+        GtkWidget *btn = g_ptr_array_remove_index(desktop_btns, src_idx);
+        int dst2 = desktop_order_index(dst);
+        int ins = below ? dst2 + 1 : dst2;
+        if (ins > (int)desktop_order->len) ins = desktop_order->len;
+        g_ptr_array_insert(desktop_order, ins, name);
+        g_ptr_array_insert(desktop_btns, ins, btn);
+        desktop_icons_relayout();
+        desktop_order_save();
+        gtk_drag_finish(ctx, TRUE, FALSE, time);
+    } else {
+        gtk_drag_finish(ctx, FALSE, FALSE, time);
+    }
+    g_free(src);
+    desktop_icon_drag_leave(w, ctx, time, NULL);
 }
 
 static GtkWidget *desktop_icon(QyIconId iid, const char *css,
-                               const char *label, const char *cmdline) {
+                               const char *label, const char *cmdline,
+                               const char *app) {
     GtkWidget *btn = gtk_button_new();
     gtk_button_set_relief(GTK_BUTTON(btn), GTK_RELIEF_NONE);
     /* release 242: 桌面图标仅供鼠标点击，不参与键盘焦点/默认激活。
@@ -946,9 +1152,39 @@ static GtkWidget *desktop_icon(QyIconId iid, const char *css,
     add_class(lb, "qy-desktop-label");
     gtk_box_pack_start(GTK_BOX(v), circle, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(v), lb, FALSE, FALSE, 0);
-    g_signal_connect(btn, "clicked", G_CALLBACK(desktop_icon_click),
-                     (gpointer)g_strdup(cmdline));
+
+    /* 行数据：app 供拖拽识别，cmdline 供点击启动 */
+    g_object_set_data(G_OBJECT(btn), "app", g_strdup(app));
+    g_object_set_data(G_OBJECT(btn), "cmdline", (gpointer)cmdline);
+    g_signal_connect(btn, "clicked", G_CALLBACK(desktop_icon_click), NULL);
+
+    /* 拖拽排序：可拖起（源），也可作为放置目标 */
+    gtk_drag_source_set(btn, GDK_BUTTON1_MASK, desk_icon_targets, 1,
+                        GDK_ACTION_MOVE);
+    gtk_drag_dest_set(btn, GTK_DEST_DEFAULT_DROP, desk_icon_targets, 1,
+                      GDK_ACTION_MOVE);
+    g_signal_connect(btn, "drag-data-get", G_CALLBACK(desktop_icon_drag_data_get), NULL);
+    g_signal_connect(btn, "drag-motion", G_CALLBACK(desktop_icon_drag_motion), NULL);
+    g_signal_connect(btn, "drag-leave", G_CALLBACK(desktop_icon_drag_leave), NULL);
+    g_signal_connect(btn, "drag-data-received", G_CALLBACK(desktop_icon_drag_data_received), NULL);
+    g_signal_connect(btn, "drag-end", G_CALLBACK(desktop_icon_drag_end), NULL);
     return btn;
+}
+
+/* 按当前 desktop_order 创建全部桌面图标（左上竖排） */
+static void desktop_icons_create(void) {
+    if (!desktop_order) desktop_order_load();
+    desktop_btns = g_ptr_array_new();
+    for (guint i = 0; i < desktop_order->len; i++) {
+        const char *app = (const char *)g_ptr_array_index(desktop_order, i);
+        const DesktopAppDef *def = desktop_app_find(app);
+        if (!def) continue;
+        GtkWidget *btn = desktop_icon(def->iid, def->css, TR(def->label),
+                                      def->cmdline, def->app);
+        gtk_fixed_put(GTK_FIXED(desktop_fixed), btn,
+                      DESKTOP_ICON_X, DESKTOP_ICON_Y0 + (int)i * DESKTOP_ICON_DY);
+        g_ptr_array_add(desktop_btns, btn);
+    }
 }
 
 /* ---------- 壁纸（供菜单刷新） ---------- */
@@ -2252,6 +2488,93 @@ static gboolean on_net_right_press(GtkWidget *w, GdkEventButton *ev, gpointer ud
     return TRUE;
 }
 
+/* ---------- 网络状态弹层（net_btn 左键弹出，右键菜单不变） ---------- */
+/* 尽力读取网络状态：hostname -I 拿 IP，nmcli 拿 WiFi 名 */
+static gchar *net_status_text(void) {
+    GString *s = g_string_new(NULL);
+    gboolean spawn_ok = FALSE;
+    gchar *out = NULL;
+
+    if (g_spawn_command_line_sync("hostname -I", &out, NULL, NULL, NULL)) {
+        spawn_ok = TRUE;
+        if (out) {
+            gchar *line = g_strstrip(out);
+            gchar *nl = strchr(line, '\n');
+            if (nl) *nl = '\0';
+            if (line[0])
+                g_string_append_printf(s, "%s: %s\n", TR("IP 地址"), line);
+        }
+    }
+    g_clear_pointer(&out, g_free);
+
+    out = NULL;
+    if (g_spawn_command_line_sync("nmcli -t -f active,ssid dev wifi", &out, NULL, NULL, NULL)) {
+        spawn_ok = TRUE;
+        if (out) {
+            gchar **lines = g_strsplit(out, "\n", -1);
+            for (int i = 0; lines[i]; i++) {
+                if (g_str_has_prefix(lines[i], "yes:")) {
+                    const char *ssid = lines[i] + 4;
+                    if (ssid[0])
+                        g_string_append_printf(s, "%s: %s\n", TR("WiFi"), ssid);
+                    break;
+                }
+            }
+            g_strfreev(lines);
+        }
+    }
+    g_clear_pointer(&out, g_free);
+
+    if (!spawn_ok) {
+        g_string_free(s, TRUE);
+        return g_strdup(TR("网络状态不可用"));
+    }
+    if (s->len == 0) {
+        g_string_free(s, TRUE);
+        return g_strdup(TR("未连接"));
+    }
+    return g_string_free(s, FALSE);
+}
+
+static void net_status_refresh(void) {
+    gchar *txt = net_status_text();
+    if (net_status_label) gtk_label_set_label(GTK_LABEL(net_status_label), txt);
+    g_free(txt);
+}
+
+/* 弹层内「打开网络管理器」 */
+static void net_open_manager_clicked(GtkButton *btn, gpointer ud) {
+    (void)btn; (void)ud;
+    tray_launch("qynet");
+    if (net_popover) gtk_popover_popdown(GTK_POPOVER(net_popover));
+}
+
+/* net_btn 左键：弹出网络状态，不再直接打开 qynet */
+static void on_net_left_clicked(GtkWidget *w, gpointer ud) {
+    (void)ud;
+    if (!net_popover) {
+        net_popover = gtk_popover_new(w);
+        GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+        gtk_container_set_border_width(GTK_CONTAINER(box), 12);
+        GtkWidget *title = gtk_label_new(TR("网络状态"));
+        gtk_label_set_xalign(GTK_LABEL(title), 0.0);
+        gtk_box_pack_start(GTK_BOX(box), title, FALSE, FALSE, 0);
+        net_status_label = gtk_label_new(NULL);
+        gtk_label_set_xalign(GTK_LABEL(net_status_label), 0.0);
+        gtk_label_set_line_wrap(GTK_LABEL(net_status_label), TRUE);
+        GtkWidget *open_btn = gtk_button_new_with_label(TR("打开网络管理器"));
+        g_signal_connect(open_btn, "clicked", G_CALLBACK(net_open_manager_clicked), NULL);
+        gtk_box_pack_start(GTK_BOX(box), net_status_label, FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(box), open_btn, FALSE, FALSE, 0);
+        gtk_container_add(GTK_CONTAINER(net_popover), box);
+    }
+    net_status_refresh();
+    if (gtk_widget_get_visible(net_popover))
+        gtk_popover_popdown(GTK_POPOVER(net_popover));
+    else
+        gtk_popover_popup(GTK_POPOVER(net_popover));
+}
+
 /* 通知铃铛右键：勿扰开关 / 清空历史 */
 static void on_notif_dnd_toggle(GtkMenuItem *mi, gpointer ud) {
     (void)mi; (void)ud;
@@ -2450,7 +2773,8 @@ static void build_bar(void) {
 
     /* 系统托盘: 网络/声音/剪贴板/截图/锁屏（cairo 线稿图标，右键菜单） */
     GtkWidget *tray_hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
-    GtkWidget *net_btn = make_tray_icon_btn(TRAY_NET, TR("网络"), "qynet");
+    /* 网络：左键弹状态层（on_net_left_clicked），右键菜单不变 */
+    GtkWidget *net_btn = make_tray_icon_btn_cb(TRAY_NET, TR("网络"), G_CALLBACK(on_net_left_clicked), NULL);
     gtk_widget_set_tooltip_text(net_btn, TR("网络控制（打开 qynet 查看连接）"));
     g_signal_connect(net_btn, "button-press-event", G_CALLBACK(on_net_right_press), NULL);
     gtk_box_pack_start(GTK_BOX(tray_hb), net_btn, FALSE, FALSE, 0);
@@ -2579,22 +2903,9 @@ static void build_desktop(void) {
     g_signal_connect(darea, "button-press-event", G_CALLBACK(desk_button_press), NULL);
     gtk_fixed_put(GTK_FIXED(desktop_fixed), darea, 0, 0);
 
-    /* 桌面图标（左上竖排） */
-    int x = 110, y = 60, dy = 110;
-    gtk_fixed_put(GTK_FIXED(desktop_fixed),
-                  desktop_icon(QY_ICON_HOME, "c-home", TR("主文件夹"), "qyfiles"), x, y);
-    gtk_fixed_put(GTK_FIXED(desktop_fixed),
-                  desktop_icon(QY_ICON_TRASH, "c-trash", TR("回收站"), "qyfiles --trash"), x, y + dy);
-    gtk_fixed_put(GTK_FIXED(desktop_fixed),
-                  desktop_icon(QY_ICON_STORE, "c-store", TR("软件中心"), "qystore"), x, y + dy * 2);
-    gtk_fixed_put(GTK_FIXED(desktop_fixed),
-                  desktop_icon(QY_ICON_TERM, "c-term", TR("终端"), "weston-terminal"), x, y + dy * 3);
-    gtk_fixed_put(GTK_FIXED(desktop_fixed),
-                  desktop_icon(QY_ICON_SETTINGS, "c-settings", TR("设置"), "qysettings"), x, y + dy * 4);
-    gtk_fixed_put(GTK_FIXED(desktop_fixed),
-                  desktop_icon(QY_ICON_MONITOR, "c-mon", TR("系统监视"), "qymon"), x, y + dy * 5);
-    gtk_fixed_put(GTK_FIXED(desktop_fixed),
-                  desktop_icon(QY_ICON_IMAGE, "c-view", TR("图片查看"), "qyview"), x, y + dy * 6);
+    /* 桌面图标（左上竖排；顺序可拖拽调整并持久化到
+     * ~/.config/lanxiu/qydesktop-desktopicons.conf） */
+    desktop_icons_create();
 
     gtk_widget_show_all(win);
     /* weston 输入焦点修复（release 238）：桌面窗口显示后主动 present 获取键盘焦点，

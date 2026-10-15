@@ -29,6 +29,8 @@ static double temp_hist[NTEMP]; /* 温度历史（°C） */
 static int temp_hist_n = 0;
 static int temp_tick = 0;       /* 每 2 次 tick（2s）追加一个温度点 */
 static GtkWidget *temp_da = NULL;  /* 温度曲线 #qymon-temp */
+static gboolean temp_fahrenheit = FALSE; /* 温度显示单位: FALSE=°C TRUE=°F（release 304） */
+static GtkWidget *temp_unit_btn = NULL;  /* 温度单位切换按钮（°C/°F，release 304） */
 
 /* ---------- 磁盘 IO 吞吐曲线（release 288） ---------- */
 #define NIO 60                      /* 磁盘 IO 历史点数（每 tick 一点） */
@@ -263,6 +265,44 @@ static double read_cpu_temp(void) {
     return -1;
 }
 
+/* 温度显示转换（release 304）：历史/传感器数据始终以 °C 存储，
+ * 仅在显示/绘制层转换。°F = °C * 9/5 + 32。 */
+static double temp_display(double c) {
+    return temp_fahrenheit ? c * 9.0 / 5.0 + 32.0 : c;
+}
+
+/* 温度单位配置文件 ~/.config/lanxiu/qymon-tempunit（内容 C 或 F） */
+static gchar *temp_unit_config_path(void) {
+    return g_build_filename(g_get_user_config_dir(), "lanxiu", "qymon-tempunit", NULL);
+}
+
+/* 启动时加载温度单位设置 */
+static void temp_unit_load_config(void) {
+    gchar *path = temp_unit_config_path();
+    FILE *f = fopen(path, "r");
+    if (f) {
+        char buf[8] = "";
+        if (fgets(buf, sizeof buf, f))
+            temp_fahrenheit = (buf[0] == 'F' || buf[0] == 'f');
+        fclose(f);
+    }
+    g_free(path);
+}
+
+/* 切换时持久化温度单位设置 */
+static void temp_unit_save_config(void) {
+    gchar *dir = g_build_filename(g_get_user_config_dir(), "lanxiu", NULL);
+    gchar *path = g_build_filename(dir, "qymon-tempunit", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    FILE *f = fopen(path, "w");
+    if (f) {
+        fputc(temp_fahrenheit ? 'F' : 'C', f);
+        fclose(f);
+    }
+    g_free(path);
+    g_free(dir);
+}
+
 /* 检查 PATH 中是否存在程序 */
 static gboolean has_program(const char *name) {
     gchar *p = g_find_program_in_path(name);
@@ -391,8 +431,9 @@ static void read_hwmon(void) {
                                     label = hwmon_display_name(name);
                                 }
                                 if (temps->len) g_string_append(temps, " · ");
-                                g_string_append_printf(temps, "%s: %d°C",
-                                                       label, (int)(c + 0.5));
+                                g_string_append_printf(temps, "%s: %.0f°%s",
+                                                       label, temp_display(c),
+                                                       temp_fahrenheit ? "F" : "C");
                                 g_free(label);
                                 g_free(lp);
                             }
@@ -433,6 +474,31 @@ static gboolean hwmon_tick(gpointer ud) {
     (void)ud;
     read_hwmon();
     return G_SOURCE_CONTINUE;
+}
+
+/* 温度单位切换回调（release 304）：更新单位、立即刷新温度显示、
+ * 重绘温度曲线，并持久化到 ~/.config/lanxiu/qymon-tempunit。 */
+static void on_temp_unit_toggled(GtkWidget *btn, gpointer ud) {
+    (void)ud;
+    temp_fahrenheit = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(btn));
+    /* 按钮文字: 未激活显示 °C，激活显示 °F */
+    gtk_button_set_label(GTK_BUTTON(btn), temp_fahrenheit ? "°F" : "°C");
+    /* 立即刷新温度大数字（正常 tick 也会刷新，这里保证即时响应） */
+    if (temp_label) {
+        double temp = read_cpu_temp();
+        char big[96];
+        if (temp > 0)
+            g_snprintf(big, sizeof big, TR("CPU 温度: %.0f°%s"),
+                       temp_display(temp), temp_fahrenheit ? "F" : "C");
+        else
+            g_snprintf(big, sizeof big, "%s", TR("CPU 温度: --"));
+        gtk_label_set_text(GTK_LABEL(temp_label), big);
+    }
+    /* 立即刷新 hwmon 附加温度 */
+    if (hwmon_label) read_hwmon();
+    /* 重绘温度曲线 */
+    if (temp_da) gtk_widget_queue_draw(temp_da);
+    temp_unit_save_config();
 }
 
 /* 读取首个非 lo 接口的收发速率 (KB/s), 与上次调用差分 */
@@ -659,10 +725,12 @@ static gboolean tick(gpointer ud) {
     if (disk_label) gtk_label_set_text(GTK_LABEL(disk_label), big);
     /* 同步更新磁盘使用率进度条（release 302） */
     set_disk_progress(disk);
-    /* CPU 温度: 标签显示「CPU 温度: NN°C」，每 2s 追加一个历史点 */
+    /* CPU 温度: 标签显示「CPU 温度: NN°C/°F」，每 2s 追加一个历史点
+     * （原始数据始终存 °C，显示经 temp_display 转换，release 304） */
     double temp = read_cpu_temp();
     if (temp > 0) {
-        g_snprintf(big, sizeof big, TR("CPU 温度: %d°C"), (int)(temp + 0.5));
+        g_snprintf(big, sizeof big, TR("CPU 温度: %.0f°%s"),
+                   temp_display(temp), temp_fahrenheit ? "F" : "C");
         temp_tick++;
         if ((temp_tick % 2) == 0) {
             if (temp_hist_n < NTEMP) {
@@ -806,7 +874,9 @@ static gboolean on_temp_draw(GtkWidget *da, cairo_t *cr, gpointer ud) {
         /* 数据不足时仅显示当前温度文字 */
         if (temp_hist_n == 1) {
             char txt[64];
-            g_snprintf(txt, sizeof txt, "%.0f°C", temp_hist[temp_hist_n - 1]);
+            g_snprintf(txt, sizeof txt, "%.0f°%s",
+                       temp_display(temp_hist[temp_hist_n - 1]),
+                       temp_fahrenheit ? "F" : "C");
             cairo_set_font_size(cr, 11);
             cairo_set_source_rgb(cr, 0.9, 0.9, 0.9);
             cairo_move_to(cr, 8, 16);
@@ -814,11 +884,13 @@ static gboolean on_temp_draw(GtkWidget *da, cairo_t *cr, gpointer ud) {
         }
         return FALSE;
     }
-    /* 动态范围: 最小 2°C 跨度，避免曲线太平 */
+    /* 动态范围（release 304）: 在显示单位下计算 min/max，°F 时自动放大为
+     * 32-212 附近区间；最小 2° 跨度，避免曲线太平 */
     double tmin = 1000, tmax = -1000;
     for (int i = 0; i < temp_hist_n; i++) {
-        if (temp_hist[i] < tmin) tmin = temp_hist[i];
-        if (temp_hist[i] > tmax) tmax = temp_hist[i];
+        double v = temp_display(temp_hist[i]);
+        if (v < tmin) tmin = v;
+        if (v > tmax) tmax = v;
     }
     if (tmax - tmin < 2.0) { tmin -= 1; tmax += 1; }
     /* 橙色线 #FF5C1A */
@@ -827,14 +899,16 @@ static gboolean on_temp_draw(GtkWidget *da, cairo_t *cr, gpointer ud) {
     int started = 0;
     for (int i = 0; i < temp_hist_n; i++) {
         double x = (double)i / (double)(NTEMP - 1) * w;
-        double y = h - (temp_hist[i] - tmin) / (tmax - tmin) * (h - 12) - 4;
+        double y = h - (temp_display(temp_hist[i]) - tmin) / (tmax - tmin) * (h - 12) - 4;
         if (!started) { cairo_move_to(cr, x, y); started = 1; }
         else cairo_line_to(cr, x, y);
     }
     cairo_stroke(cr);
     /* 右上角当前温度 */
     char txt[64];
-    g_snprintf(txt, sizeof txt, "%.0f°C", temp_hist[temp_hist_n - 1]);
+    g_snprintf(txt, sizeof txt, "%.0f°%s",
+               temp_display(temp_hist[temp_hist_n - 1]),
+               temp_fahrenheit ? "F" : "C");
     cairo_set_font_size(cr, 11);
     cairo_set_source_rgb(cr, 0.95, 0.55, 0.15);
     cairo_move_to(cr, w - 70, 16);
@@ -1173,7 +1247,8 @@ static GtkWidget *curve_toggle_new(int i) {
 
 static void activate(GtkApplication *app, gpointer ud) {
     qy_load_theme();
-    curve_load_config();   /* 加载曲线开关状态（release 300） */
+    curve_load_config();      /* 加载曲线开关状态（release 300） */
+    temp_unit_load_config();  /* 加载温度单位设置 °C/°F（release 304） */
     GtkWidget *win = gtk_application_window_new(app);
     gtk_window_set_title(GTK_WINDOW(win), TR("澜岫系统监视器"));
     gtk_window_set_default_size(GTK_WINDOW(win), 640, 600);
@@ -1242,6 +1317,12 @@ static void activate(GtkApplication *app, gpointer ud) {
         curve_toggle[i] = curve_toggle_new(i);
         gtk_box_pack_start(GTK_BOX(legend_bar), curve_toggle[i], FALSE, FALSE, 0);
     }
+    /* 温度单位切换按钮（release 304）：与曲线开关同排，未激活显示 °C，激活显示 °F */
+    temp_unit_btn = gtk_toggle_button_new_with_label(temp_fahrenheit ? "°F" : "°C");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(temp_unit_btn), temp_fahrenheit);
+    gtk_widget_set_tooltip_text(temp_unit_btn, TR("切换温度单位"));
+    g_signal_connect(temp_unit_btn, "toggled", G_CALLBACK(on_temp_unit_toggled), NULL);
+    gtk_box_pack_start(GTK_BOX(legend_bar), temp_unit_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), legend_bar, FALSE, FALSE, 0);
 
     /* 实时曲线区（固定高度，下方让位给进程列表） */
@@ -1377,6 +1458,7 @@ static void activate(GtkApplication *app, gpointer ud) {
         if (temp_label) gtk_widget_set_visible(temp_label, FALSE);
         if (temp_da) gtk_widget_set_visible(temp_da, FALSE);
         if (curve_toggle[4]) gtk_widget_set_visible(curve_toggle[4], FALSE);
+        if (temp_unit_btn) gtk_widget_set_visible(temp_unit_btn, FALSE);
     }
 }
 

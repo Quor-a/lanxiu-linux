@@ -458,6 +458,57 @@ static gboolean auto_key_input(gpointer p) {
     return G_SOURCE_REMOVE;
 }
 
+/* ---------- 记忆键（release 304·qycalc） ---------- */
+static double memory_value = 0;     /* 记忆值 */
+static gboolean memory_has = FALSE; /* 是否有记忆内容 */
+static GtkWidget *mem_ind = NULL;   /* 结果旁的「M」指示标签 */
+
+/* 刷新「M」记忆指示（有记忆显示，无记忆隐藏） */
+static void update_mem_ind(void) {
+    if (mem_ind)
+        gtk_widget_set_visible(mem_ind, memory_has);
+}
+
+/* 取当前值：表达式可求值则用其值，空输入按 0 处理 */
+static double get_current_value(void) {
+    double v = 0;
+    current_value(&v);
+    return v;
+}
+
+/* MC: 清除记忆 */
+static void on_mc_clicked(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    memory_value = 0;
+    memory_has = FALSE;
+    update_mem_ind();
+}
+
+/* MR: 读取记忆到输入框（格式 %.10g） */
+static void on_mr_clicked(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    if (!memory_has) return;
+    g_snprintf(expr_buf, sizeof expr_buf, "%.10g", memory_value);
+    gtk_label_set_text(GTK_LABEL(result_label), "");
+    update_display();
+}
+
+/* M+: 当前值加入记忆 */
+static void on_mplus_clicked(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    memory_value += get_current_value();
+    memory_has = TRUE;
+    update_mem_ind();
+}
+
+/* M-: 当前值从记忆减去 */
+static void on_mminus_clicked(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    memory_value -= get_current_value();
+    memory_has = TRUE;
+    update_mem_ind();
+}
+
 /* ---------- 按钮网格 ---------- */
 static GtkWidget *calc_button(const char *label, const char *ud, GCallback cb) {
     GtkWidget *b = gtk_button_new_with_label(label);
@@ -649,7 +700,16 @@ int main(int argc, char **argv) {
     gtk_widget_set_tooltip_text(result_label, TR("点击复制结果"));
     gtk_widget_add_events(result_label, GDK_BUTTON_PRESS_MASK);
     g_signal_connect(result_label, "button-press-event", G_CALLBACK(on_result_copy), NULL);
-    gtk_box_pack_start(GTK_BOX(vbox), result_label, FALSE, FALSE, 2);
+
+    /* 结果行：结果标签（右对齐）+ 记忆指示「M」（release 304·qycalc） */
+    GtkWidget *res_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    gtk_box_pack_start(GTK_BOX(res_row), result_label, TRUE, TRUE, 0);
+    mem_ind = gtk_label_new("M");
+    qy_add_class(mem_ind, "qy-calc-mem");
+    gtk_widget_set_no_show_all(mem_ind, TRUE);   /* show_all 不强制显示 */
+    gtk_widget_hide(mem_ind);                     /* 初始无记忆，隐藏 */
+    gtk_box_pack_start(GTK_BOX(res_row), mem_ind, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), res_row, FALSE, FALSE, 2);
 
     /* 底部进制转换显示（release 299·qycalc）：只读小标签，等宽字体 */
     base_label = gtk_label_new("DEC — HEX — OCT — BIN");
@@ -700,6 +760,11 @@ int main(int argc, char **argv) {
     qy_add_class(eq, "qy-btn qy-btn-accent");
     g_signal_connect(eq, "clicked", G_CALLBACK(on_equal_clicked), NULL);
     gtk_grid_attach(GTK_GRID(grid), eq, 3, 4, 2, 1);
+    /* 行 5: 记忆键 MC MR M+ M-（release 304·qycalc） */
+    gtk_grid_attach(GTK_GRID(grid), calc_button(TR("MC"), NULL, G_CALLBACK(on_mc_clicked)), 0, 5, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), calc_button(TR("MR"), NULL, G_CALLBACK(on_mr_clicked)), 1, 5, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), calc_button(TR("M+"), NULL, G_CALLBACK(on_mplus_clicked)), 2, 5, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), calc_button(TR("M-"), NULL, G_CALLBACK(on_mminus_clicked)), 3, 5, 1, 1);
 
     /* 科学模式按钮区（默认隐藏，点「科学模式」展开） */
     sci_grid = gtk_grid_new();

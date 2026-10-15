@@ -27,6 +27,12 @@ static GtkWidget *b_autocopy = NULL;   /* 自动复制开关按钮 */
 static GtkWidget *quality_spin = NULL; /* JPEG 质量滑块（release 298） */
 static int jpeg_quality = 85;          /* JPEG 保存质量（release 298） */
 
+/* release 304: 截图历史列表 */
+static GPtrArray *history_paths = NULL;   /* 截图历史（绝对路径，索引 0 为最新） */
+static GtkWidget *history_combo = NULL;   /* 历史下拉 */
+static GtkWidget *b_clear_history = NULL; /* 清除历史按钮 */
+static gboolean history_loading = FALSE;  /* 程序填充下拉时屏蔽 changed 信号 */
+
 static void on_fmt_changed(GtkComboBox *combo, gpointer ud) {
     (void)ud;
     const char *id = gtk_combo_box_get_active_id(combo);
@@ -59,6 +65,146 @@ static char last_path[512] = "";
 
 static guint countdown_id = 0;          /* 倒计时定时器 id */
 static int countdown_secs = 0;          /* 剩余秒数 */
+
+/* ---------- 截图历史（release 304） ----------
+ * 每次保存成功后将路径记入历史（去重 + 最多 10 条），
+ * 持久化到 ~/.config/lanxiu/qyshot-history.conf（每行一个绝对路径）。
+ * 下拉框选择历史条目时用默认看图器打开；文件不存在则提示并移除。
+ */
+#define QYSHOT_HISTORY_MAX 10
+
+static gchar *history_file_path(void) {
+    return g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qyshot-history.conf", NULL);
+}
+
+static void history_save(void) {
+    gchar *path = history_file_path();
+    gchar *dir = g_path_get_dirname(path);
+    g_mkdir_with_parents(dir, 0755);
+    g_free(dir);
+    GString *s = g_string_new(NULL);
+    if (history_paths) {
+        for (guint i = 0; i < history_paths->len; i++)
+            g_string_append_printf(s, "%s\n", (const char *)g_ptr_array_index(history_paths, i));
+    }
+    g_file_set_contents(path, s->str, s->len, NULL);
+    g_string_free(s, TRUE);
+    g_free(path);
+}
+
+static void history_load(void) {
+    if (history_paths) g_ptr_array_free(history_paths, TRUE);
+    history_paths = g_ptr_array_new_with_free_func(g_free);
+    gchar *path = history_file_path();
+    gchar *content = NULL;
+    if (g_file_get_contents(path, &content, NULL, NULL) && content) {
+        char **lines = g_strsplit(content, "\n", -1);
+        for (int i = 0; lines[i] && (int)history_paths->len < QYSHOT_HISTORY_MAX; i++) {
+            gchar *line = g_strstrip(lines[i]);
+            if (line[0]) g_ptr_array_add(history_paths, g_strdup(line));
+        }
+        g_strfreev(lines);
+    }
+    g_free(content);
+    g_free(path);
+}
+
+/* 刷新下拉：第一项为占位「截图历史…」，其后为最近历史（显示文件名） */
+static void history_refresh_combo(void) {
+    if (!history_combo) return;
+    history_loading = TRUE;
+    GtkComboBoxText *cbt = GTK_COMBO_BOX_TEXT(history_combo);
+    gtk_combo_box_text_remove_all(cbt);
+    gtk_combo_box_text_append(cbt, NULL, TR("截图历史…"));
+    if (history_paths) {
+        for (guint i = 0; i < history_paths->len; i++) {
+            const char *p = (const char *)g_ptr_array_index(history_paths, i);
+            gchar *base = g_path_get_basename(p);
+            gtk_combo_box_text_append(cbt, p, base);
+            g_free(base);
+        }
+    }
+    gtk_combo_box_set_active(GTK_COMBO_BOX(history_combo), 0);
+    history_loading = FALSE;
+}
+
+/* 记录一条历史：去重（同路径移到最前）、最多 10 条、立即持久化并刷新下拉 */
+static void history_add(const char *path) {
+    if (!path || !path[0]) return;
+    if (!history_paths) history_load();
+    for (guint i = 0; i < history_paths->len; i++) {
+        if (strcmp((const char *)g_ptr_array_index(history_paths, i), path) == 0) {
+            g_ptr_array_remove_index(history_paths, i);
+            break;
+        }
+    }
+    g_ptr_array_insert(history_paths, 0, g_strdup(path));
+    while ((int)history_paths->len > QYSHOT_HISTORY_MAX)
+        g_ptr_array_remove_index(history_paths, history_paths->len - 1);
+    history_save();
+    history_refresh_combo();
+}
+
+/* 从历史移除指定路径（文件不存在等场景） */
+static void history_remove(const char *path) {
+    if (!history_paths || !path) return;
+    for (guint i = 0; i < history_paths->len; i++) {
+        if (strcmp((const char *)g_ptr_array_index(history_paths, i), path) == 0) {
+            g_ptr_array_remove_index(history_paths, i);
+            break;
+        }
+    }
+    history_save();
+    history_refresh_combo();
+}
+
+/* 清除历史（按钮）：清空内存、历史文件与下拉 */
+static void on_clear_history(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (history_paths) g_ptr_array_set_size(history_paths, 0);
+    gchar *path = history_file_path();
+    g_file_set_contents(path, "", 0, NULL);
+    g_free(path);
+    history_refresh_combo();
+    if (status_label)
+        gtk_label_set_text(GTK_LABEL(status_label), TR("已清除截图历史"));
+}
+
+/* 选择历史条目：用默认看图器打开；文件不存在则提示并从历史移除 */
+static void on_history_changed(GtkComboBox *combo, gpointer ud) {
+    (void)ud;
+    if (history_loading) return;
+    const char *path = gtk_combo_box_get_active_id(combo);
+    if (!path || !path[0]) return;   /* 占位项「截图历史…」 */
+    /* 选中后立即回到占位项，便于再次选择 */
+    history_loading = TRUE;
+    gtk_combo_box_set_active(combo, 0);
+    history_loading = FALSE;
+
+    if (!g_file_test(path, G_FILE_TEST_EXISTS)) {
+        gtk_label_set_text(GTK_LABEL(status_label), TR("文件不存在"));
+        history_remove(path);
+        return;
+    }
+    GError *err = NULL;
+    gchar *uri = g_filename_to_uri(path, NULL, &err);
+    if (!uri) {
+        char st[480];
+        g_snprintf(st, sizeof st, "%s: %s", TR("打开图片失败"), err ? err->message : TR("未知错误"));
+        gtk_label_set_text(GTK_LABEL(status_label), st);
+        g_clear_error(&err);
+        return;
+    }
+    if (gtk_show_uri_on_window(NULL, uri, GDK_CURRENT_TIME, &err)) {
+        gtk_label_set_text(GTK_LABEL(status_label), TR("已打开图片"));
+    } else {
+        char st[480];
+        g_snprintf(st, sizeof st, "%s: %s", TR("打开图片失败"), err ? err->message : TR("无默认看图器"));
+        gtk_label_set_text(GTK_LABEL(status_label), st);
+        g_clear_error(&err);
+    }
+    g_free(uri);
+}
 
 static gboolean on_capture_wrap(gpointer p);   /* 前向声明 */
 
@@ -279,6 +425,7 @@ static void on_save(GtkWidget *w, gpointer ud) {
             GError *err = NULL;
             if (save_pixbuf(shot_pixbuf, path, fmt, &err)) {
                 g_strlcpy(last_path, path, sizeof last_path);
+                history_add(path);   /* release 304: 保存成功后记入截图历史 */
                 char st[640];
                 g_snprintf(st, sizeof st, "%s: %s", TR("已保存"), path);
                 gtk_label_set_text(GTK_LABEL(status_label), st);
@@ -753,6 +900,25 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(ctl), b_open_folder, FALSE, FALSE, 0);
     on_fmt_changed(GTK_COMBO_BOX(format_combo), NULL);
     gtk_box_pack_start(GTK_BOX(vbox), ctl, FALSE, FALSE, 0);
+
+    /* release 304: 截图历史行（预览区下方，占位「截图历史…」+ 清除历史按钮） */
+    GtkWidget *hist_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    history_combo = gtk_combo_box_text_new();
+    qy_add_class(history_combo, "qy-shot-combo");
+    gtk_widget_set_size_request(history_combo, 220, -1);
+    gtk_widget_set_tooltip_text(history_combo, TR("截图历史"));
+    g_signal_connect(history_combo, "changed", G_CALLBACK(on_history_changed), NULL);
+    gtk_box_pack_start(GTK_BOX(hist_row), history_combo, FALSE, FALSE, 0);
+
+    b_clear_history = gtk_button_new_with_label(TR("清除历史"));
+    qy_add_class(b_clear_history, "qy-shot-combo");
+    g_signal_connect(b_clear_history, "clicked", G_CALLBACK(on_clear_history), NULL);
+    gtk_box_pack_start(GTK_BOX(hist_row), b_clear_history, FALSE, FALSE, 0);
+
+    gtk_box_pack_start(GTK_BOX(vbox), hist_row, FALSE, FALSE, 0);
+    /* 启动时读取历史并填充下拉 */
+    history_load();
+    history_refresh_combo();
 
     /* 按钮行 */
     GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
