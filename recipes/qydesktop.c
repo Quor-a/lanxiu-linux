@@ -2103,6 +2103,12 @@ static void on_power_action(GtkMenuItem *mi, gpointer ud) {
     g_free((gpointer)ud);
 }
 
+/* 锁屏（release 296） */
+static void on_lock_action(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    g_spawn_command_line_async("qylock", NULL);
+}
+
 static void on_power_btn_clicked(GtkWidget *w, gpointer ud) {
     (void)ud;
     GtkWidget *menu = gtk_menu_new();
@@ -2115,6 +2121,9 @@ static void on_power_btn_clicked(GtkWidget *w, gpointer ud) {
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
     mi = gtk_menu_item_new_with_label(TR("注销"));
     g_signal_connect(mi, "activate", G_CALLBACK(on_power_action), g_strdup("pkill -x weston"));
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    mi = gtk_menu_item_new_with_label(TR("锁屏"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_lock_action), NULL);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
     gtk_widget_show_all(menu);
     gtk_menu_attach_to_widget(GTK_MENU(menu), w, NULL);
