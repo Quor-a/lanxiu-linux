@@ -102,6 +102,7 @@ static void on_open(GtkWidget *w, gpointer ud);           /* 前向声明（媒�
 static void lyric_font_apply(void);                       /* 前向声明（歌词字号快捷键用） */
 static void on_clear_playlist(GtkWidget *w, gpointer ud); /* 前向声明（右键菜单用） */
 static void on_remove_selected(GtkMenuItem *mi, gpointer ud); /* 前向声明（多选批量移除） */
+static void on_track_reset_count(GtkMenuItem *mi, gpointer ud); /* 前向声明（重置播放计数，release 287） */
 static void playlist_save(void);                          /* 前向声明（add_to_playlist 自动保存用） */
 static void add_to_playlist(const char *path);            /* 前向声明（on_track_remove 提前引用） */
 static void playlist_row_add(const char *path, guint seq);                        /* 前向声明（拖拽重建用） */
@@ -628,6 +629,9 @@ static gboolean on_track_row_press(GtkWidget *row, GdkEventButton *ev, gpointer 
     GtkWidget *mi_rm = gtk_menu_item_new_with_label(TR("移除选中曲目"));
     g_signal_connect(mi_rm, "activate", G_CALLBACK(on_remove_selected), NULL);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_rm);
+    GtkWidget *mi_cnt = gtk_menu_item_new_with_label(TR("重置播放计数"));
+    g_signal_connect(mi_cnt, "activate", G_CALLBACK(on_track_reset_count), (gpointer)g_strdup(path));
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_cnt);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
     GtkWidget *mi_clr = gtk_menu_item_new_with_label(TR("清空播放列表"));
     g_signal_connect(mi_clr, "activate", G_CALLBACK(on_clear_playlist), NULL);
@@ -941,6 +945,24 @@ static void count_increment(const char *path) {
         }
     }
     if (seq) playlist_row_refresh(path, seq, c + 1);
+}
+
+/* 重置选中曲目的播放计数（release 287） */
+static void on_track_reset_count(GtkMenuItem *mi, gpointer ud) {
+    (void)mi;
+    const char *path = (const char *)ud;
+    if (play_counts && path)
+        g_hash_table_remove(play_counts, path);
+    counts_save();
+    if (path) {
+        for (guint i = 0; i < track_list->len; i++) {
+            if (strcmp((const char *)g_ptr_array_index(track_list, i), path) == 0) {
+                playlist_row_refresh(path, i + 1, 0);
+                break;
+            }
+        }
+    }
+    g_free(ud);
 }
 
 /* 播放计数排序比较器：按播放次数降序（release 284） */
