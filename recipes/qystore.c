@@ -30,6 +30,7 @@ static GtkWidget *spinner = NULL;    /* 搜索/安装加载动画（release 256�
 static GtkWidget *list_stack = NULL; /* 列表 / 空状态 切换 */
 static GtkWidget *empty_label = NULL; /* 空状态文字（未找到匹配的应用） */
 static GtkTreeView *g_tv = NULL;      /* 主列表视图（release 283：搜索后自动选中首行） */
+static void search_cfg_save(const char *kw);   /* 前向声明（release 289：搜索记忆） */
 static GtkWidget *g_open_btn = NULL;   /* 「打开」按钮（release 284：未安装时禁用） */
 
 /* 空状态插图（cairo，深蓝底 + 橙色放大镜） */
@@ -483,6 +484,7 @@ static void select_first_row(void);   /* 前向声明（on_search 提前引用�
 static void on_search(GtkSearchEntry *e, gpointer ud) {
     (void)ud;
     g_strlcpy(g_filter, gtk_entry_get_text(GTK_ENTRY(e)), sizeof g_filter);
+    search_cfg_save(g_filter);   /* release 289: 记住搜索词 */
     if (spinner) {
         gtk_spinner_start(GTK_SPINNER(spinner));
         while (gtk_events_pending()) gtk_main_iteration();
@@ -527,6 +529,28 @@ static void status_color_cb(GtkTreeViewColumn *col, GtkCellRenderer *renderer,
     g_object_set(renderer, "foreground",
                  (name && is_installed(name)) ? "#6ee7a0" : "#ffb38a", NULL);
     g_free(name);
+}
+
+/* 搜索关键词记忆（release 289）：~/.config/lanxiu/qystore-search.conf */
+static gchar *search_cfg_load(void) {
+    gchar *path = g_build_filename(g_get_home_dir(), ".config/lanxiu/qystore-search.conf", NULL);
+    gchar *content = NULL;
+    if (!g_file_get_contents(path, &content, NULL, NULL) || !content || !content[0]) {
+        g_free(content);
+        g_free(path);
+        return NULL;
+    }
+    g_free(path);
+    return content;
+}
+
+static void search_cfg_save(const char *kw) {
+    gchar *path = g_build_filename(g_get_home_dir(), ".config/lanxiu/qystore-search.conf", NULL);
+    gchar *dir = g_path_get_dirname(path);
+    g_mkdir_with_parents(dir, 0755);
+    g_free(dir);
+    g_file_set_contents(path, kw ? kw : "", -1, NULL);
+    g_free(path);
 }
 
 int main(int argc, char **argv) {
@@ -575,6 +599,12 @@ int main(int argc, char **argv) {
     gtk_widget_set_vexpand(sw, TRUE);
     GtkTreeView *tv = GTK_TREE_VIEW(gtk_tree_view_new_with_model(GTK_TREE_MODEL(store)));
     g_tv = tv;   /* release 283：搜索/筛选后自动选中首行 */
+    /* release 289: 恢复上次搜索关键词（列表就绪后再触发过滤） */
+    gchar *kw = search_cfg_load();
+    if (kw) {
+        gtk_entry_set_text(GTK_ENTRY(search), kw);
+        g_free(kw);
+    }
     const char *titles[C_FILE] = { TR("名称"), TR("版本"), TR("大小"), TR("状态") };
     for (int c = 0; c < C_FILE - 1; c++) {
         GtkCellRenderer *r = gtk_cell_renderer_text_new();
