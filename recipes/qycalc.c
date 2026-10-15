@@ -301,6 +301,35 @@ static void on_ln_clicked(GtkButton *b, gpointer ud)   { (void)b; (void)ud; sci_
 static void on_sq_clicked(GtkButton *b, gpointer ud)   { (void)b; (void)ud; sci_unary(sci_sq_fn, FALSE); }
 static void on_inv_clicked(GtkButton *b, gpointer ud)  { (void)b; (void)ud; sci_unary(sci_inv_fn, FALSE); }
 
+/* n!：仅支持 0~170 的非负整数（release 297·qycalc）
+ * 大数改用科学计数法，避免 %0.0f 超出 expr_buf / 显示缓冲区。 */
+static void on_fact_clicked(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    double v = 0;
+    if (!current_value(&v)) {
+        gtk_label_set_text(GTK_LABEL(result_label), TR("阶乘仅支持 0~170 的整数"));
+        return;
+    }
+    /* 负数 / 非整数 / 大于 170 / NaN 一律拒绝 */
+    if (v != v || v < 0 || v > 170 || v != (double)(long)v) {
+        gtk_label_set_text(GTK_LABEL(result_label), TR("阶乘仅支持 0~170 的整数"));
+        g_printerr("QYCALCDBG: factorial error value=%g\n", v);
+        return;
+    }
+    long n = (long)v;
+    double r = 1.0;
+    for (long i = 2; i <= n; i++) r *= i;
+    const char *fmt = (r < 1e200) ? "%0.0f" : "%g";
+    g_snprintf(expr_buf, sizeof expr_buf, fmt, r);
+    update_display();
+    char out[256], res[256];
+    g_snprintf(out, sizeof out, fmt, r);
+    g_snprintf(res, sizeof res, fmt, r);
+    gtk_label_set_text(GTK_LABEL(result_label), out);
+    g_printerr("QYCALCDBG: sci expr=%s result=%g\n", expr_buf, r);
+    hist_add(expr_buf, res);   /* 记录历史（release 284） */
+}
+
 /* π：把常量插入表达式（运算符/括号后直接拼接，数字后自动补乘号） */
 static void on_pi_clicked(GtkButton *b, gpointer ud) {
     (void)b; (void)ud;
@@ -632,6 +661,8 @@ int main(int argc, char **argv) {
     sci_mode_btn = sci_button("DEG", G_CALLBACK(on_mode_clicked));
     gtk_widget_set_tooltip_text(sci_mode_btn, TR("角度制"));
     gtk_grid_attach(GTK_GRID(sci_grid), sci_mode_btn, 3, 2, 1, 1);
+    /* 行 3: n!（release 297·qycalc） */
+    gtk_grid_attach(GTK_GRID(sci_grid), calc_button("n!", "", G_CALLBACK(on_fact_clicked)), 0, 3, 1, 1);
     gtk_widget_set_no_show_all(sci_grid, TRUE);
     gtk_widget_hide(sci_grid);
     gtk_box_pack_start(GTK_BOX(vbox), sci_grid, FALSE, FALSE, 0);

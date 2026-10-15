@@ -172,6 +172,51 @@ static gint sort_mtime_cmp(gconstpointer a, gconstpointer b) {
     return sa.st_mtime > sb.st_mtime ? -1 : 1;
 }
 
+/* 搜索结果高亮（release 297）：把标题中所有匹配关键字的子串用 Pango markup 高亮。
+ * 在原始标题上做大小写不敏感的字节定位（strcasestr），再对每个片段单独
+ * g_markup_escape_text 转义，避免匹配字节落在转义实体（如 &amp;）内部造成错误高亮。
+ * 返回新分配的 markup 字符串；无匹配时返回 NULL（调用方按普通文本显示）。
+ */
+static gchar *highlight_title_markup(const char *title, const char *query) {
+    if (!title || !title[0] || !query || !query[0])
+        return NULL;
+
+    GString *out = g_string_new(NULL);
+    const char *p = title;
+    const size_t qlen = strlen(query);
+    gboolean found = FALSE;
+
+    while (*p) {
+        const char *m = strcasestr(p, query);
+        if (!m)
+            break;
+        found = TRUE;
+
+        gchar *prefix = g_markup_escape_text(p, m - p);
+        g_string_append(out, prefix);
+        g_free(prefix);
+
+        gchar *hit = g_markup_escape_text(m, qlen);
+        g_string_append(out, "<span background=\"#E95420\" foreground=\"#ffffff\">");
+        g_string_append(out, hit);
+        g_string_append(out, "</span>");
+        g_free(hit);
+
+        p = m + qlen;
+    }
+
+    if (!found) {
+        g_string_free(out, TRUE);
+        return NULL;
+    }
+
+    gchar *tail = g_markup_escape_text(p, -1);
+    g_string_append(out, tail);
+    g_free(tail);
+
+    return g_string_free(out, FALSE);
+}
+
 static void refresh_note_list(void) {
     loading_list = TRUE;
 
@@ -198,9 +243,18 @@ static void refresh_note_list(void) {
             const char *full = g_ptr_array_index(files, i);
             gchar *title = read_first_line(full);
             GtkWidget *row = gtk_list_box_row_new();
-            GtkWidget *lbl = gtk_label_new(title[0] ? title : TR("无标题"));
+            GtkWidget *lbl = gtk_label_new(NULL);
             gtk_label_set_xalign(GTK_LABEL(lbl), 0.0);
             gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
+            /* release 297: 搜索时有非空关键字则用 markup 高亮匹配子串 */
+            const char *q = search_entry ? gtk_entry_get_text(GTK_ENTRY(search_entry)) : "";
+            gchar *markup = highlight_title_markup(title, q);
+            if (markup) {
+                gtk_label_set_markup(GTK_LABEL(lbl), markup);
+                g_free(markup);
+            } else {
+                gtk_label_set_text(GTK_LABEL(lbl), title[0] ? title : TR("无标题"));
+            }
             gtk_container_add(GTK_CONTAINER(row), lbl);
             g_object_set_data_full(G_OBJECT(row), "note-path", g_strdup(full), g_free);
             gtk_list_box_insert(listbox, row, -1);
@@ -345,6 +399,8 @@ static void on_save_clicked(GtkButton *b, gpointer ud) {
 /* 笔记搜索：按文件名过滤列表（release 276） */
 static void on_search_changed(GtkSearchEntry *se, gpointer ud) {
     (void)se; (void)ud;
+    /* release 297: 重建列表行，让搜索结果高亮随关键字变化而刷新 */
+    refresh_note_list();
     const char *q = gtk_entry_get_text(GTK_ENTRY(search_entry));
     GList *ch = gtk_container_get_children(GTK_CONTAINER(listbox));
     for (GList *l = ch; l; l = l->next) {

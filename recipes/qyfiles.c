@@ -54,6 +54,11 @@ static GtkWidget *search_entry = NULL; /* 搜索框（各标签共享控件，�
 
 static void update_tab_label(void);
 static gboolean on_tab_middle_press(GtkWidget *w, GdkEventButton *ev, gpointer ud); /* 前向声明（中键关闭标签，release 292） */
+/* release 297: 标签页右键菜单 */
+static void on_tab_menu_new(GtkMenuItem *mi, gpointer ud);
+static void on_tab_menu_close(GtkMenuItem *mi, gpointer ud);
+static void on_tab_menu_close_others(GtkMenuItem *mi, gpointer ud);
+static void show_tab_menu(GtkWidget *w, GdkEventButton *ev, QyFilesTab *tab);
 
 /* v2.0 主题 + 工具栏状态按钮 */
 static void load_theme(void) {
@@ -2140,7 +2145,7 @@ static QyFilesTab *create_tab(const char *path) {
     g_signal_connect(iv, "item-activated", G_CALLBACK(on_icon_activated), NULL);
     g_signal_connect(iv, "selection-changed", G_CALLBACK(on_view_cursor_changed), NULL);
 
-    /* 标签页标题 = 目录 basename，tooltip = 完整路径（release 292：中键关闭） */
+    /* 标签页标题 = 目录 basename，tooltip = 完整路径（release 292：中键关闭；release 297：右键菜单） */
     const char *dir = (path && path[0]) ? path : "/";
     gchar *base = g_path_get_basename(dir);
     GtkWidget *lbl = gtk_label_new((base && base[0]) ? base : "/");
@@ -2202,6 +2207,84 @@ static void on_close_tab(GtkButton *b, gpointer ud) {
     if (t) g_free(t);
 }
 
+/* ---------- 标签页右键菜单（release 297） ---------- */
+/* 「新标签」: 打开主目录新标签 */
+static void on_tab_menu_new(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    on_new_tab(NULL, NULL);
+}
+
+/* 「关闭标签」: 关闭被右键的标签页（复用 on_close_tab 逻辑，先切换再 remove_page，至少保留一个） */
+static void on_tab_menu_close(GtkMenuItem *mi, gpointer ud) {
+    (void)mi;
+    QyFilesTab *tab = (QyFilesTab *)ud;
+    if (!notebook || !tab) return;
+    int n = gtk_notebook_get_n_pages(GTK_NOTEBOOK(notebook));
+    if (n <= 1) {
+        gtk_label_set_text(GTK_LABEL(status), TR("至少保留一个标签"));
+        return;
+    }
+    int cur = gtk_notebook_get_current_page(GTK_NOTEBOOK(notebook));
+    for (int i = 0; i < n; i++) {
+        GtkWidget *page = gtk_notebook_get_nth_page(GTK_NOTEBOOK(notebook), i);
+        if (page && g_object_get_data(G_OBJECT(page), "tab") == tab) {
+            int target = i > 0 ? i - 1 : 1;
+            if (cur == i)
+                gtk_notebook_set_current_page(GTK_NOTEBOOK(notebook), target);
+            gtk_notebook_remove_page(GTK_NOTEBOOK(notebook), i);
+            g_free(tab);
+            return;
+        }
+    }
+}
+
+/* 「关闭其他标签」: 保留被右键的标签，关闭其余所有标签（至少保留一个） */
+static void on_tab_menu_close_others(GtkMenuItem *mi, gpointer ud) {
+    (void)mi;
+    QyFilesTab *keep = (QyFilesTab *)ud;
+    if (!notebook || !keep) return;
+    int n = gtk_notebook_get_n_pages(GTK_NOTEBOOK(notebook));
+    if (n <= 1) return;
+    GtkWidget *keep_page = NULL;
+    for (int i = 0; i < n; i++) {
+        GtkWidget *page = gtk_notebook_get_nth_page(GTK_NOTEBOOK(notebook), i);
+        if (page && g_object_get_data(G_OBJECT(page), "tab") == keep) {
+            keep_page = page;
+            gtk_notebook_set_current_page(GTK_NOTEBOOK(notebook), i);
+            break;
+        }
+    }
+    if (!keep_page) return;
+    /* 从后往前逐页移除，避免索引位移；保留页始终跳过 */
+    for (int i = gtk_notebook_get_n_pages(GTK_NOTEBOOK(notebook)) - 1; i >= 0; i--) {
+        GtkWidget *page = gtk_notebook_get_nth_page(GTK_NOTEBOOK(notebook), i);
+        if (page == keep_page) continue;
+        QyFilesTab *t = page ? g_object_get_data(G_OBJECT(page), "tab") : NULL;
+        gtk_notebook_remove_page(GTK_NOTEBOOK(notebook), i);
+        if (t) g_free(t);
+    }
+}
+
+/* 在标签事件盒上弹出右键菜单（release 297） */
+static void show_tab_menu(GtkWidget *w, GdkEventButton *ev, QyFilesTab *tab) {
+    GtkWidget *menu = gtk_menu_new();
+    GtkWidget *mi = gtk_menu_item_new_with_label(TR("新标签"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_tab_menu_new), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+
+    mi = gtk_menu_item_new_with_label(TR("关闭标签"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_tab_menu_close), tab);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+
+    mi = gtk_menu_item_new_with_label(TR("关闭其他标签"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_tab_menu_close_others), tab);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+
+    gtk_widget_show_all(menu);
+    gtk_menu_attach_to_widget(GTK_MENU(menu), w, NULL);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (const GdkEvent *)ev);
+}
+
 /* 切换标签: 保存旧标签状态，载入新标签（不丢失各自目录） */
 static void on_tab_switch(GtkNotebook *nb, GtkWidget *page, guint page_num, gpointer ud) {
     (void)nb; (void)page_num; (void)ud;
@@ -2224,11 +2307,16 @@ static void on_tab_switch(GtkNotebook *nb, GtkWidget *page, guint page_num, gpoi
         update_preview();
 }
 
-/* 中键点击标签关闭该页（release 292） */
+/* 标签页鼠标事件: 中键关闭该页（release 292），右键弹出标签菜单（release 297） */
 static gboolean on_tab_middle_press(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
     (void)w;
     QyFilesTab *tab = (QyFilesTab *)ud;
-    if (ev->type != GDK_BUTTON_PRESS || ev->button != 2 || !notebook) return FALSE;
+    if (ev->type != GDK_BUTTON_PRESS || !notebook) return FALSE;
+    if (ev->button == 3) {          /* release 297: 右键菜单 */
+        show_tab_menu(w, ev, tab);
+        return TRUE;
+    }
+    if (ev->button != 2) return FALSE;
     int n = gtk_notebook_get_n_pages(GTK_NOTEBOOK(notebook));
     if (n <= 1) return TRUE;   /* 至少保留一个标签 */
     int cur = gtk_notebook_get_current_page(GTK_NOTEBOOK(notebook));

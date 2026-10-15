@@ -197,9 +197,13 @@ static void refresh_proc_list(void) {
     g_hash_table_destroy(seen);
     g_printerr("QYMONDBG: procs=%d\n", n);
     if (proc_info_label) {
-        gchar *s = g_strdup_printf(TR("进程 %d 个 · 点击选择后结束"), n);
-        gtk_label_set_text(GTK_LABEL(proc_info_label), s);
-        g_free(s);
+        if (proc_filter && proc_filter[0] && n == 0) {
+            gtk_label_set_text(GTK_LABEL(proc_info_label), TR("无匹配进程"));
+        } else {
+            gchar *s = g_strdup_printf(TR("进程 %d 个 · 点击选择后结束"), n);
+            gtk_label_set_text(GTK_LABEL(proc_info_label), s);
+            g_free(s);
+        }
     }
 }
 static GtkWidget *temp_label = NULL;   /* CPU 温度大数字 */
@@ -677,6 +681,8 @@ static gboolean tick(gpointer ud) {
         if (title_label) gtk_label_set_text(GTK_LABEL(title_label), ttl);
         g_free(ttl);
     }
+    /* 全量进程列表：每 tick 刷新，搜索过滤在 refresh_proc_list 内生效 */
+    refresh_proc_list();
     gtk_widget_queue_draw(GTK_WIDGET(ud));
     return G_SOURCE_CONTINUE;
 }
@@ -1074,11 +1080,17 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_tree_view_column_set_sort_column_id(col, P_CPU);
     gtk_tree_view_column_set_clickable(col, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(proc_tv), col);
-    /* 进程搜索框：输入即过滤（进程刷新时应用），置于列表上方 */
+    /* 进程搜索框 + 信息标签：搜索框输入即过滤（进程刷新时应用），置于列表上方 */
+    GtkWidget *proc_top = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     proc_search = gtk_search_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(proc_search), TR("搜索进程…"));
     g_signal_connect(proc_search, "search-changed", G_CALLBACK(on_proc_search_changed), NULL);
-    gtk_box_pack_start(GTK_BOX(vbox), proc_search, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(proc_top), proc_search, TRUE, TRUE, 0);
+    proc_info_label = gtk_label_new("");
+    add_class(proc_info_label, "qy-mon-info");
+    gtk_widget_set_halign(proc_info_label, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(proc_top), proc_info_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), proc_top, FALSE, FALSE, 0);
 
     GtkWidget *psw = gtk_scrolled_window_new(NULL, NULL);
     gtk_widget_set_size_request(psw, -1, 190);
@@ -1097,12 +1109,8 @@ static void activate(GtkApplication *app, gpointer ud) {
     GtkWidget *b_pref = gtk_button_new_with_label(TR("刷新进程"));
     qy_add_class(b_pref, "qy-btn");
     g_signal_connect(b_pref, "clicked", G_CALLBACK(on_proc_refresh), NULL);
-    proc_info_label = gtk_label_new("");
-    add_class(proc_info_label, "qy-mon-info");
-    gtk_widget_set_halign(proc_info_label, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(pbar), b_kill, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(pbar), b_pref, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(pbar), proc_info_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), pbar, FALSE, FALSE, 0);
 
     /* 底部信息栏: 运行时间 / 负载 / 进程 */
