@@ -15,6 +15,7 @@
 #define REPO_INDEX "/usr/share/qyrepo/index.json"
 #define REPO_DIR   "/usr/share/qyrepo/pkgs"
 #define INST_DIR   "/var/lib/qypkg/installed"
+#define REPO_BASE_URL "file:///usr/share/qyrepo/pkgs"  /* 离线仓库本地下载基址（release 301） */
 
 enum { C_NAME, C_VER, C_SIZE, C_STATUS, C_FILE, C_N };
 
@@ -32,6 +33,7 @@ static GtkWidget *empty_label = NULL; /* 空状态文字（未找到匹配的应
 static GtkTreeView *g_tv = NULL;      /* 主列表视图（release 283：搜索后自动选中首行） */
 static void search_cfg_save(const char *kw);   /* 前向声明（release 289：搜索记忆） */
 static GtkWidget *g_open_btn = NULL;   /* 「打开」按钮（release 284：未安装时禁用） */
+static GtkWidget *g_copy_link_btn = NULL; /* 「复制链接」按钮（release 301） */
 
 /* 空状态插图（cairo，深蓝底 + 橙色放大镜） */
 static gboolean empty_draw_cb(GtkWidget *w, cairo_t *cr, gpointer ud) {
@@ -126,6 +128,76 @@ static void human_size(long v, char *out, size_t n) {
     if (v >= 1048576) snprintf(out, n, "%.1f MB", v / 1048576.0);
     else if (v >= 1024) snprintf(out, n, "%ld KB", v / 1024);
     else snprintf(out, n, "%ld B", v);
+}
+
+/* 在仓库 index.json 的当前包条目中查找 url / dl_url（release 301） */
+static int repo_index_url(const char *file, char *out, size_t outsz) {
+    out[0] = 0;
+    if (!file || !file[0]) return -1;
+    size_t len = 0;
+    char *js = slurp(REPO_INDEX, &len);
+    if (!js) return -1;
+    char pat[600];
+    snprintf(pat, sizeof pat, "\"filename\":\"%s\"", file);
+    const char *p = strstr(js, pat);
+    int rc = -1;
+    if (p) {
+        /* 条目内向后扫描窗口（url 字段通常位于 filename 之后） */
+        const char *end = p + 1024;
+        if (end > js + len) end = js + len;
+        const char *keys[2] = { "url", "dl_url" };
+        for (int i = 0; i < 2 && rc != 0; i++) {
+            char kpat[32];
+            snprintf(kpat, sizeof kpat, "\"%s\"", keys[i]);
+            const char *k = p;
+            while ((k = strstr(k, kpat)) && k < end) {
+                const char *colon = strchr(k, ':');
+                if (colon && colon < end) {
+                    const char *q = colon + 1;
+                    while (q < end && (*q == ' ' || *q == '\t')) q++;
+                    if (q < end && *q == '"') {
+                        q++;
+                        size_t j = 0;
+                        while (q < end && *q && *q != '"' && j + 1 < outsz)
+                            out[j++] = *q++;
+                        out[j] = 0;
+                        if (out[0]) { rc = 0; break; }
+                    }
+                }
+                k += strlen(kpat);
+            }
+        }
+    }
+    free(js);
+    return rc;
+}
+
+/* 组装当前选中包的下载链接（release 301）
+ * 优先取包元数据 / 仓库索引中的 url 或 dl_url 字段；
+ * 若无则用仓库 base URL + 包文件路径拼出。 */
+static void pkg_download_url(char *out, size_t outsz) {
+    out[0] = 0;
+    if (!g_file[0]) return;
+    /* 1) 仓库索引条目中的 url / dl_url */
+    if (repo_index_url(g_file, out, outsz) == 0 && out[0]) return;
+    /* 2) 包自身 meta 中的 url / dl_url */
+    char *js = pkg_meta(g_file);
+    if (js) {
+        char u[512] = "";
+        if (json_str(js, "url", u, sizeof u) == 0 && u[0]) {
+            snprintf(out, outsz, "%s", u);
+            free(js);
+            return;
+        }
+        if (json_str(js, "dl_url", u, sizeof u) == 0 && u[0]) {
+            snprintf(out, outsz, "%s", u);
+            free(js);
+            return;
+        }
+        free(js);
+    }
+    /* 3) 回退: 仓库 base URL + 包文件路径（离线本地仓库） */
+    snprintf(out, outsz, REPO_BASE_URL "/%s", g_file);
 }
 
 /* 组装包详情多行文本: 名称-版本 / 描述 / 依赖 / 大小（release 283） */
@@ -344,7 +416,10 @@ static void on_cursor_changed(GtkTreeView *tv, gpointer ud) {
     (void)ud;
     GtkTreePath *path = NULL;
     gtk_tree_view_get_cursor(tv, &path, NULL);
-    if (!path) return;
+    if (!path) {
+        if (g_copy_link_btn) gtk_widget_set_sensitive(g_copy_link_btn, FALSE);
+        return;
+    }
     GtkTreeIter it;
     GtkTreeModel *m = gtk_tree_view_get_model(tv);
     if (gtk_tree_model_get_iter(m, &it, path)) show_row(tv, &it);
@@ -370,6 +445,24 @@ static void on_copy_pkg_clicked(GtkButton *b, gpointer ud) {
     gtk_clipboard_set_text(cb, g_name, -1);
 }
 
+/* 复制当前软件包下载链接到剪贴板（release 301） */
+static void on_copy_link_clicked(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (!g_name[0] || !g_file[0]) {
+        gtk_label_set_text(GTK_LABEL(info_label), TR("请先选择软件包"));
+        return;
+    }
+    char url[1024];
+    pkg_download_url(url, sizeof url);
+    if (!url[0]) {
+        gtk_label_set_text(GTK_LABEL(info_label), TR("该软件包没有下载链接"));
+        return;
+    }
+    GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    gtk_clipboard_set_text(cb, url, -1);
+    gtk_label_set_text(GTK_LABEL(info_label), TR("已复制下载链接"));
+}
+
 static void show_row(GtkTreeView *tv, GtkTreeIter *itp) {
     GtkTreeIter it = *itp;
     GtkTreeModel *m = gtk_tree_view_get_model(tv);
@@ -390,6 +483,7 @@ static void show_row(GtkTreeView *tv, GtkTreeIter *itp) {
     gtk_button_set_label(GTK_BUTTON(btn_act),
         g_status[0] == 'i' ? TR("卸载") : TR("安装"));
     if (g_open_btn) gtk_widget_set_sensitive(g_open_btn, g_status[0] == 'i');   /* release 284 */
+    if (g_copy_link_btn) gtk_widget_set_sensitive(g_copy_link_btn, TRUE);       /* release 301 */
     g_free(name); g_free(ver); g_free(file);
 }
 
@@ -507,6 +601,7 @@ static void select_first_row(void) {
         gtk_label_set_text(GTK_LABEL(info_label), TR("选择一个软件包"));
         gtk_button_set_label(GTK_BUTTON(btn_act), TR("安装"));
         if (g_open_btn) gtk_widget_set_sensitive(g_open_btn, FALSE);
+        if (g_copy_link_btn) gtk_widget_set_sensitive(g_copy_link_btn, FALSE);  /* release 301 */
     }
 }
 
@@ -658,18 +753,24 @@ int main(int argc, char **argv) {
     gtk_container_add(GTK_CONTAINER(card), info_label);
     gtk_box_pack_start(GTK_BOX(vbox), card, FALSE, FALSE, 0);
 
-    /* 打开按钮（release 270）：已安装时启动应用 */
+    /* 详情卡按钮行（release 301）：打开 / 复制包名 / 复制链接 / 安装 */
     g_open_btn = gtk_button_new_with_label(TR("打开"));
     g_signal_connect(g_open_btn, "clicked", G_CALLBACK(on_open_clicked), NULL);
-    gtk_box_pack_start(GTK_BOX(vbox), g_open_btn, FALSE, FALSE, 0);
     GtkWidget *b_copy = gtk_button_new_with_label(TR("复制包名"));
     qy_add_class(b_copy, "qy-btn");
     g_signal_connect(b_copy, "clicked", G_CALLBACK(on_copy_pkg_clicked), NULL);
-    gtk_box_pack_start(GTK_BOX(vbox), b_copy, FALSE, FALSE, 0);
-
+    g_copy_link_btn = gtk_button_new_with_label(TR("复制链接"));
+    g_signal_connect(g_copy_link_btn, "clicked", G_CALLBACK(on_copy_link_clicked), NULL);
+    gtk_widget_set_sensitive(g_copy_link_btn, FALSE);   /* 初始无选中包时禁用 */
     btn_act = gtk_button_new_with_label(TR("安装"));
     g_signal_connect(btn_act, "clicked", G_CALLBACK(on_act), NULL);
-    gtk_box_pack_start(GTK_BOX(vbox), btn_act, FALSE, FALSE, 0);
+
+    GtkWidget *btn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_box_pack_start(GTK_BOX(btn_row), g_open_btn, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(btn_row), b_copy, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(btn_row), g_copy_link_btn, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(btn_row), btn_act, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), btn_row, FALSE, FALSE, 0);
 
     load_repo(NULL, 0);
     /* 自动选中首行, 打开即显示详情 */

@@ -23,6 +23,8 @@ static GtkWidget *btn_pause = NULL;
 static GtkWidget *btn_stop = NULL;
 static GtkWidget *playlist = NULL;      /* GtkListBox 播放列表 */
 static GtkWidget *win = NULL;
+static GtkWidget *search_entry = NULL;        /* 播放列表搜索框（release 301） */
+static gchar *status_before_search = NULL;    /* 搜索前状态文本，清空关键字时恢复 */
 
 /* ---------- 封面显示（同目录 cover.jpg/png/webp，128x128） ---------- */
 static GtkWidget *cover_stack = NULL;   /* img/empty 二选一 */
@@ -113,6 +115,8 @@ static void on_playlist_drag_get(GtkWidget *w, GdkDragContext *ctx, GtkSelection
                                  guint info, guint t, gpointer ud);               /* 前向声明（拖拽排序） */
 static void on_playlist_drag_recv(GtkWidget *w, GdkDragContext *ctx, gint x, gint y,
                                   GtkSelectionData *data, guint info, guint t, gpointer ud); /* 前向声明（拖拽排序） */
+static void playlist_filter_apply(void);  /* 前向声明（搜索过滤，release 301） */
+static void playlist_filter_rows(void);    /* 前向声明（搜索过滤，release 301） */
 
 /* 检查 PATH 中是否存在程序（g_find_program_in_path 返回需 g_free） */
 static gboolean has_program(const char *name) {
@@ -670,6 +674,7 @@ static void on_remove_selected(GtkMenuItem *mi, gpointer ud) {
         playlist_row_add((const char *)g_ptr_array_index(track_list, i), i + 1);
     if (current_index >= 0) highlight_current_row();
     playlist_save();
+    playlist_filter_apply();   /* 保持搜索过滤状态（release 301） */
 }
 
 /* 拖拽源: 输出曲目路径（release 280 拖拽排序） */
@@ -706,9 +711,90 @@ static void on_playlist_drag_recv(GtkWidget *w, GdkDragContext *ctx, gint x, gin
                 playlist_row_add((const char *)g_ptr_array_index(track_list, i), i + 1);
             if (current_index >= 0) highlight_current_row();   /* 拖拽后保持高亮 */
             playlist_save();
+            playlist_filter_apply();   /* 保持搜索过滤状态（release 301） */
         }
     }
     g_free(src);
+}
+
+/* ---------- 播放列表搜索过滤（release 301） ---------- */
+/* 路径或文件名是否包含关键字（大小写不敏感） */
+static gboolean playlist_row_matches(const char *path, const char *kw) {
+    if (!kw || !kw[0]) return TRUE;
+    if (!path) return FALSE;
+    gchar *path_l = g_utf8_strdown(path, -1);
+    gchar *kw_l = g_utf8_strdown(kw, -1);
+    gboolean hit = FALSE;
+    if (path_l && kw_l && strstr(path_l, kw_l))
+        hit = TRUE;
+    if (!hit) {
+        gchar *base = g_path_get_basename(path);
+        gchar *base_l = base ? g_utf8_strdown(base, -1) : NULL;
+        if (base_l && kw_l && strstr(base_l, kw_l))
+            hit = TRUE;
+        g_free(base_l);
+        g_free(base);
+    }
+    g_free(path_l);
+    g_free(kw_l);
+    return hit;
+}
+
+/* 按当前搜索关键字重新应用行可见性（不修改状态栏） */
+static void playlist_filter_rows(void) {
+    if (!playlist || !search_entry) return;
+    const char *kw = gtk_entry_get_text(GTK_ENTRY(search_entry));
+    if (!kw || !kw[0]) return;
+    GList *ch = gtk_container_get_children(GTK_CONTAINER(playlist));
+    for (GList *l = ch; l; l = l->next) {
+        const char *path = g_object_get_data(G_OBJECT(l->data), "track-path");
+        gboolean vis = path && playlist_row_matches(path, kw);
+        gtk_widget_set_visible(GTK_WIDGET(l->data), vis);
+    }
+    g_list_free(ch);
+}
+
+/* 应用搜索过滤并更新匹配计数提示（匹配 N/M 首） */
+static void playlist_filter_apply(void) {
+    if (!playlist || !search_entry) return;
+    const char *kw = gtk_entry_get_text(GTK_ENTRY(search_entry));
+    gboolean has_kw = kw && kw[0] != '\0';
+    if (!has_kw && !status_before_search) return;
+
+    GList *ch = gtk_container_get_children(GTK_CONTAINER(playlist));
+    guint total = g_list_length(ch);
+    guint matched = 0;
+    for (GList *l = ch; l; l = l->next) {
+        gboolean vis = TRUE;
+        if (has_kw) {
+            const char *path = g_object_get_data(G_OBJECT(l->data), "track-path");
+            vis = path && playlist_row_matches(path, kw);
+        }
+        gtk_widget_set_visible(GTK_WIDGET(l->data), vis);
+        if (vis) matched++;
+    }
+    g_list_free(ch);
+
+    if (!status_label) return;
+    if (has_kw) {
+        if (!status_before_search) {
+            const gchar *cur = gtk_label_get_text(GTK_LABEL(status_label));
+            status_before_search = g_strdup(cur ? cur : "");
+        }
+        gchar *st = g_strdup_printf(TR("匹配 %u/%u 首"), matched, total);
+        gtk_label_set_text(GTK_LABEL(status_label), st);
+        g_free(st);
+    } else if (status_before_search) {
+        gtk_label_set_text(GTK_LABEL(status_label), status_before_search);
+        g_free(status_before_search);
+        status_before_search = NULL;
+    }
+}
+
+/* 搜索框文本变化回调 */
+static void on_search_changed(GtkSearchEntry *entry, gpointer ud) {
+    (void)entry; (void)ud;
+    playlist_filter_apply();
 }
 
 /* 纯 UI: 添加一行播放列表（不修改 track_list，重建用） */
@@ -755,6 +841,14 @@ static void playlist_row_add(const char *path, guint seq) {
     gtk_drag_dest_set(row, GTK_DEST_DEFAULT_ALL, &te, 1, GDK_ACTION_MOVE);
     g_signal_connect(row, "drag-data-get", G_CALLBACK(on_playlist_drag_get), NULL);
     g_signal_connect(row, "drag-data-received", G_CALLBACK(on_playlist_drag_recv), NULL);
+    /* 搜索过滤（release 301）：新行按当前关键字决定初始可见性 */
+    if (search_entry) {
+        const char *kw = gtk_entry_get_text(GTK_ENTRY(search_entry));
+        if (kw && kw[0]) {
+            gboolean vis = path && playlist_row_matches(path, kw);
+            gtk_widget_set_visible(row, vis);
+        }
+    }
 }
 
 /* 添加曲目到播放列表（去重 + 持久化） */
@@ -767,6 +861,7 @@ static void add_to_playlist(const char *path) {
     g_ptr_array_add(track_list, g_strdup(path));
     playlist_row_add(path, track_list->len);
     playlist_save();   /* 添加后自动保存 */
+    playlist_filter_apply();   /* 保持搜索过滤状态（release 301） */
 }
 
 /* 窗口拖放: 拖入音频文件直接加入播放列表并播放（release 280） */
@@ -1005,6 +1100,7 @@ static void on_sort_by_count(GtkButton *b, gpointer ud) {
     if (current_index >= 0) highlight_current_row();
     playlist_save();
     gtk_label_set_text(GTK_LABEL(status_label), TR("已按播放次数排序"));
+    playlist_filter_rows();   /* 保持搜索过滤状态（release 301） */
 }
 
 /* 工具栏「保存列表」 */
@@ -1142,6 +1238,7 @@ static void on_clean_invalid(GtkWidget *w, gpointer ud) {
     gchar *st = g_strdup_printf(TR("已移除 %u 个失效文件"), n);
     gtk_label_set_text(GTK_LABEL(status_label), st);
     g_free(st);
+    playlist_filter_rows();   /* 保持搜索过滤状态（release 301） */
 }
 
 /* 双击播放 */
@@ -1550,6 +1647,12 @@ static void build_ui(void) {
     gtk_box_pack_start(GTK_BOX(pl_bar), b_clean, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_clear, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(left_vbox), pl_bar, FALSE, FALSE, 0);
+
+    /* 播放列表搜索框（release 301）：位于工具栏下方、列表上方 */
+    search_entry = gtk_search_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(search_entry), TR("搜索播放列表…"));
+    g_signal_connect(search_entry, "search-changed", G_CALLBACK(on_search_changed), NULL);
+    gtk_box_pack_start(GTK_BOX(left_vbox), search_entry, FALSE, FALSE, 0);
 
     GtkWidget *pl_sw = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(pl_sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);

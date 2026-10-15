@@ -523,6 +523,19 @@ static void hist_load(void) {
     g_free(path);
 }
 
+/* 历史行激活（release 301·qycalc）：把该条表达式回填到输入框；
+ * 若历史行只保存了结果（无 " = " 分隔），则回填结果值。只回填，不求值。 */
+static void on_hist_activate(GtkListBoxRow *row, gpointer ud) {
+    (void)ud;
+    const char *expr = g_object_get_data(G_OBJECT(row), "expr");
+    if (!expr || !expr[0]) return;
+    g_strlcpy(expr_buf, expr, sizeof expr_buf);
+    g_strstrip(expr_buf);
+    update_display();                                    /* 刷新显示 */
+    gtk_label_set_text(GTK_LABEL(result_label), "");     /* 清掉旧结果 */
+    if (hist_popover) gtk_popover_popdown(GTK_POPOVER(hist_popover));
+}
+
 /* 刷新历史弹层列表 */
 static void hist_refresh_list(void) {
     if (!hist_list) return;
@@ -540,13 +553,27 @@ static void hist_refresh_list(void) {
     }
     for (guint i = 0; i < hist_entries->len; i++) {
         const char *line = (const char *)g_ptr_array_index(hist_entries, i);
+        /* 行内显示 "表达式 = 结果"；data "expr" 只存表达式部分 */
+        const char *eq = strstr(line, " = ");
+        char *expr_owned = NULL;
+        const char *expr = line;
+        if (eq) {
+            expr_owned = g_strndup(line, (gsize)(eq - line));
+            g_strstrip(expr_owned);
+            expr = expr_owned;
+        }
         GtkWidget *row = gtk_list_box_row_new();
         GtkWidget *lbl = gtk_label_new(line);
         gtk_label_set_xalign(GTK_LABEL(lbl), 0.0);
         gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
         gtk_container_add(GTK_CONTAINER(row), lbl);
-        g_object_set_data_full(G_OBJECT(row), "hist-line", g_strdup(line), g_free);
+        /* 表达式/结果文本存到行 data（行销毁时自动释放） */
+        g_object_set_data_full(G_OBJECT(row), "expr", g_strdup(expr), g_free);
+        /* 点击（单击激活）回填表达式 */
+        g_signal_connect(row, "activate", G_CALLBACK(on_hist_activate), NULL);
+        gtk_widget_set_tooltip_text(row, TR("点击回填到输入框"));
         gtk_list_box_insert(GTK_LIST_BOX(hist_list), row, -1);
+        g_free(expr_owned);
     }
 }
 
@@ -564,23 +591,6 @@ static void hist_add(const char *expr, const char *result) {
         g_ptr_array_remove_index(hist_entries, 0);
     hist_save();
     hist_refresh_list();
-}
-
-/* 点击历史条目：把表达式载入输入并收起弹层 */
-static void hist_on_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer ud) {
-    (void)box; (void)ud;
-    const char *line = g_object_get_data(G_OBJECT(row), "hist-line");
-    if (!line) return;
-    const char *eq = strstr(line, " = ");
-    if (!eq) return;
-    size_t n = (size_t)(eq - line);
-    if (n >= sizeof expr_buf) n = sizeof expr_buf - 1;
-    memcpy(expr_buf, line, n);
-    expr_buf[n] = 0;
-    g_strstrip(expr_buf);
-    update_display();
-    gtk_label_set_text(GTK_LABEL(result_label), "");
-    if (hist_popover) gtk_popover_popdown(GTK_POPOVER(hist_popover));
 }
 
 /* 清空计算历史（release 285） */
@@ -609,7 +619,6 @@ static void build_history_ui(GtkWidget *vbox) {
     gtk_box_pack_start(GTK_BOX(pv), sw, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(pv), b_clear, FALSE, FALSE, 0);
     gtk_container_add(GTK_CONTAINER(hist_popover), pv);
-    g_signal_connect(hist_list, "row-activated", G_CALLBACK(hist_on_row_activated), NULL);
     hist_load();
     hist_refresh_list();
     gtk_box_pack_start(GTK_BOX(vbox), hist_btn, FALSE, FALSE, 0);

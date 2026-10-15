@@ -84,6 +84,8 @@ static GtkWidget *b_cp = NULL, *b_prop = NULL;
 static GtkWidget *b_res = NULL, *b_pur = NULL, *b_emp = NULL;
 static GtkWidget *b_bm = NULL;   /* 添加书签按钮（release 256） */
 static GtkWidget *book_list = NULL; /* 侧边栏书签 GtkListBox */
+static GtkWidget *recent_list = NULL;  /* 侧边栏「最近」GtkListBox（release 301） */
+static GPtrArray *recent_paths = NULL; /* 最近访问路径，最新在前，最多 6 个 */
 static int icon_size = 48;             /* 图标大小（release 295） */
 static GtkWidget *zoom_combo = NULL;   /* 图标大小选择 */
 
@@ -924,6 +926,124 @@ static void load_bookmarks(void) {
     g_free(file);
 }
 
+/* ---------- 侧边栏「最近」列表（release 301） ---------- */
+/* 最近访问路径持久化到 ~/.config/lanxiu/qyfiles-recent.conf，每行一个路径，最新在前 */
+static gchar *recent_config_file(void) {
+    return g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qyfiles-recent.conf", NULL);
+}
+
+static void recent_save(void) {
+    gchar *dir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0700);
+    g_free(dir);
+    gchar *file = recent_config_file();
+    GString *out = g_string_new(NULL);
+    if (recent_paths) {
+        for (guint i = 0; i < recent_paths->len; i++) {
+            const char *p = (const char *)g_ptr_array_index(recent_paths, i);
+            if (p && p[0]) g_string_append_printf(out, "%s\n", p);
+        }
+    }
+    g_file_set_contents(file, out->str, out->len, NULL);
+    g_string_free(out, TRUE);
+    g_free(file);
+}
+
+static void recent_load(void) {
+    if (!recent_paths) recent_paths = g_ptr_array_new_with_free_func(g_free);
+    g_ptr_array_set_size(recent_paths, 0);
+    gchar *file = recent_config_file();
+    gchar *content = NULL;
+    if (g_file_get_contents(file, &content, NULL, NULL) && content) {
+        gchar **lines = g_strsplit(content, "\n", -1);
+        for (int i = 0; lines[i] && recent_paths->len < 6; i++) {
+            gchar *line = g_strstrip(lines[i]);
+            if (line[0] && g_file_test(line, G_FILE_TEST_IS_DIR))
+                g_ptr_array_add(recent_paths, g_strdup(line));
+        }
+        g_strfreev(lines);
+    }
+    g_free(content);
+    g_free(file);
+}
+
+/* 重建「最近」行：与 recent_paths 保持一致（行样式与书签一致） */
+static void recent_rebuild(void) {
+    if (!recent_list) return;
+    GList *rows = gtk_container_get_children(GTK_CONTAINER(recent_list));
+    for (GList *l = rows; l; l = l->next)
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(rows);
+    if (!recent_paths) return;
+    for (guint i = 0; i < recent_paths->len; i++) {
+        const char *path = (const char *)g_ptr_array_index(recent_paths, i);
+        if (!path || !path[0]) continue;
+        GtkWidget *row = gtk_list_box_row_new();
+        GtkWidget *lbl = gtk_label_new(path);
+        gtk_label_set_xalign(GTK_LABEL(lbl), 0.0);
+        gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
+        gtk_widget_set_margin_start(lbl, 6);
+        gtk_widget_set_margin_end(lbl, 6);
+        gtk_widget_set_margin_top(lbl, 3);
+        gtk_widget_set_margin_bottom(lbl, 3);
+        gtk_container_add(GTK_CONTAINER(row), lbl);
+        g_object_set_data_full(G_OBJECT(row), "path", g_strdup(path), g_free);
+        gtk_list_box_insert(GTK_LIST_BOX(recent_list), row, -1);
+    }
+}
+
+/* 延迟到主循环空闲时重建，避免在 row-activated 回调中销毁当前行 */
+static gboolean recent_rebuild_pending = FALSE;
+static gboolean recent_rebuild_idle(gpointer ud) {
+    (void)ud;
+    recent_rebuild_pending = FALSE;
+    recent_rebuild();
+    return G_SOURCE_REMOVE;
+}
+
+/* 记录最近路径：去重（已存在则移到最前），最多保留 6 个，并持久化 */
+static void recent_add(const char *path) {
+    if (!path || !path[0]) return;
+    if (!recent_paths) recent_paths = g_ptr_array_new_with_free_func(g_free);
+    for (guint i = 0; i < recent_paths->len; i++) {
+        const char *p = (const char *)g_ptr_array_index(recent_paths, i);
+        if (p && !strcmp(p, path)) {
+            g_ptr_array_remove_index(recent_paths, i);
+            break;
+        }
+    }
+    g_ptr_array_insert(recent_paths, 0, g_strdup(path));
+    while (recent_paths->len > 6)
+        g_ptr_array_remove_index(recent_paths, recent_paths->len - 1);
+    recent_save();
+    if (recent_list && !recent_rebuild_pending) {
+        recent_rebuild_pending = TRUE;
+        g_idle_add(recent_rebuild_idle, NULL);
+    }
+}
+
+/* 清空最近：清空配置文件与列表行 */
+static void recent_clear(void) {
+    if (!recent_paths) recent_paths = g_ptr_array_new_with_free_func(g_free);
+    g_ptr_array_set_size(recent_paths, 0);
+    recent_save();
+    if (recent_list) recent_rebuild();
+}
+
+/* 点击「最近」行进入对应目录 */
+static void on_recent_activated(GtkListBox *box, GtkListBoxRow *row, gpointer ud) {
+    (void)box; (void)ud;
+    const char *path = row ? g_object_get_data(G_OBJECT(row), "path") : NULL;
+    if (path && path[0]) chdir_to(path);
+}
+
+/* 分组标题旁「清空」按钮 */
+static void on_recent_clear_clicked(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    recent_clear();
+    gtk_label_set_text(GTK_LABEL(status), TR("已清除最近记录"));
+}
+
 /* ---------- 打开方式子菜单（release 256） ---------- */
 static void do_open_with(GtkMenuItem *mi, gpointer ud) {
     (void)mi;
@@ -1256,9 +1376,11 @@ static void chdir_to(const char *path) {
     } else {
         gtk_stack_set_visible_child_name(GTK_STACK(stack), icon_mode ? "icon" : "list");
     }
+    gboolean recent_changed = (strcmp(cwd, path) != 0);  /* release 301: 目录确实改变才记入最近 */
     g_strlcpy(cwd, path, sizeof cwd);
     if (path_entry) gtk_entry_set_text(GTK_ENTRY(path_entry), cwd);
     update_tab_label();
+    if (recent_changed) recent_add(path);
 }
 
 /* 标签页标题: 显示目录 basename，tooltip 显示完整路径（回收站显示「回收站」） */
@@ -2380,6 +2502,29 @@ static void activate(GtkApplication *app, gpointer ud) {
     side_button(TR("下载"), p_dl, side);
     side_button(TR("根目录 /"), "/", side);
     side_button(TR("回收站"), "TRASH", side);
+    /* 「最近」分组（release 301）：位于快速访问下方、书签分组上方 */
+    gtk_box_pack_start(GTK_BOX(side), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 4);
+    GtkWidget *recent_hdr_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    GtkWidget *recent_hdr = gtk_label_new(TR("最近"));
+    gtk_widget_set_halign(recent_hdr, GTK_ALIGN_START);
+    gtk_widget_set_hexpand(recent_hdr, TRUE);
+    add_class(recent_hdr, "qy-files-bm-header");
+    gtk_box_pack_start(GTK_BOX(recent_hdr_box), recent_hdr, TRUE, TRUE, 0);
+    GtkWidget *recent_clear = gtk_button_new_with_label(TR("清空"));
+    gtk_button_set_relief(GTK_BUTTON(recent_clear), GTK_RELIEF_NONE);
+    add_class(recent_clear, "qy-files-bm-header");
+    gtk_widget_set_tooltip_text(recent_clear, TR("清除最近记录"));
+    g_signal_connect(recent_clear, "clicked", G_CALLBACK(on_recent_clear_clicked), NULL);
+    gtk_box_pack_start(GTK_BOX(recent_hdr_box), recent_clear, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(side), recent_hdr_box, FALSE, FALSE, 0);
+    recent_list = gtk_list_box_new();
+    qy_add_class(recent_list, "qy-files-book");
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(recent_list), GTK_SELECTION_SINGLE);
+    gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(recent_list), TRUE);
+    g_signal_connect(recent_list, "row-activated", G_CALLBACK(on_recent_activated), NULL);
+    gtk_box_pack_start(GTK_BOX(side), recent_list, FALSE, FALSE, 0);
+    recent_load();
+    recent_rebuild();
     /* 书签分组（release 256） */
     gtk_box_pack_start(GTK_BOX(side), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 4);
     GtkWidget *bm_hdr = gtk_label_new(TR("书签"));
