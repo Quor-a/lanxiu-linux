@@ -718,6 +718,11 @@ static gboolean on_key(GtkWidget *w, GdkEventKey *ev, gpointer ud) {
         on_open_dialog();
         return TRUE;
     }
+    /* Ctrl+S: 保存当前图片（release 293） */
+    if ((ev->state & GDK_CONTROL_MASK) && (ev->keyval == GDK_KEY_s || ev->keyval == GDK_KEY_S)) {
+        on_save(NULL, NULL);
+        return TRUE;
+    }
     /* i: 切换右侧属性/EXIF 侧栏 */
     if (ev->keyval == GDK_KEY_i || ev->keyval == GDK_KEY_I) {
         toggle_info_sidebar();
