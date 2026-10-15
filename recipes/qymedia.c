@@ -1013,6 +1013,36 @@ static void on_save_playlist(GtkWidget *w, gpointer ud) {
     gtk_label_set_text(GTK_LABEL(status_label), TR("播放列表已保存"));
 }
 
+/* 导出为 M3U 播放列表文件（release 294） */
+static void on_export_m3u(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (!track_list || track_list->len == 0) {
+        gtk_label_set_text(GTK_LABEL(status_label), TR("播放列表为空"));
+        return;
+    }
+    GtkWidget *dlg = gtk_file_chooser_dialog_new(TR("导出 M3U 播放列表"), NULL,
+        GTK_FILE_CHOOSER_ACTION_SAVE, TR("导出"), GTK_RESPONSE_ACCEPT,
+        TR("取消"), GTK_RESPONSE_CANCEL, NULL);
+    gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(dlg), "playlist.m3u");
+    if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_ACCEPT) {
+        char *path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
+        if (path) {
+            GString *s = g_string_new("#EXTM3U\n");
+            for (guint i = 0; i < track_list->len; i++) {
+                const char *p = g_ptr_array_index(track_list, i);
+                gchar *base = g_path_get_basename(p);
+                g_string_append_printf(s, "#EXTINF:0,%s\n%s\n", base, p);
+                g_free(base);
+            }
+            g_file_set_contents(path, s->str, s->len, NULL);
+            g_string_free(s, TRUE);
+            gtk_label_set_text(GTK_LABEL(status_label), TR("已导出 M3U 播放列表"));
+            g_free(path);
+        }
+    }
+    gtk_widget_destroy(dlg);
+}
+
 static void on_clear_playlist(GtkWidget *w, gpointer ud) {
     (void)w; (void)ud;
     if (track_list && track_list->len > 0) {
@@ -1429,13 +1459,17 @@ static void build_ui(void) {
     qy_add_class(b_clear, "qy-btn qy-btn-danger");
     GtkWidget *b_sort = gtk_button_new_with_label(TR("次数排序"));
     qy_add_class(b_sort, "qy-btn");
+    GtkWidget *b_m3u = gtk_button_new_with_label(TR("导出 M3U"));
+    qy_add_class(b_m3u, "qy-btn");
     g_signal_connect(b_add, "clicked", G_CALLBACK(on_add_files), NULL);
     g_signal_connect(b_save, "clicked", G_CALLBACK(on_save_playlist), NULL);
     g_signal_connect(b_clear, "clicked", G_CALLBACK(on_clear_playlist), NULL);
     g_signal_connect(b_sort, "clicked", G_CALLBACK(on_sort_by_count), NULL);
+    g_signal_connect(b_m3u, "clicked", G_CALLBACK(on_export_m3u), NULL);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_add, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_save, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_sort, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(pl_bar), b_m3u, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(pl_bar), b_clear, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(left_vbox), pl_bar, FALSE, FALSE, 0);
 
