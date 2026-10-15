@@ -949,6 +949,60 @@ static void on_menu_sigkill(GtkMenuItem *mi, gpointer ud) {
     ctx_pid = 0;
 }
 
+/* 右键菜单：暂停进程 (SIGSTOP) */
+static void on_menu_sigstop(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    if (ctx_pid <= 0) return;
+    kill_proc(ctx_pid, ctx_name, SIGSTOP);
+    g_free(ctx_name);
+    ctx_name = NULL;
+    ctx_pid = 0;
+}
+
+/* 右键菜单：继续进程 (SIGCONT) */
+static void on_menu_sigcont(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    if (ctx_pid <= 0) return;
+    kill_proc(ctx_pid, ctx_name, SIGCONT);
+    g_free(ctx_name);
+    ctx_name = NULL;
+    ctx_pid = 0;
+}
+
+/* 右键菜单：复制进程名到剪贴板 */
+static void on_menu_copy_name(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    if (ctx_pid <= 0 || !ctx_name) return;
+    GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    gtk_clipboard_set_text(cb, ctx_name, -1);
+    if (proc_info_label) {
+        gchar *s = g_strdup_printf(TR("已复制进程名: %s"), ctx_name);
+        gtk_label_set_text(GTK_LABEL(proc_info_label), s);
+        g_free(s);
+    }
+    g_free(ctx_name);
+    ctx_name = NULL;
+    ctx_pid = 0;
+}
+
+/* 右键菜单：复制 PID 到剪贴板 */
+static void on_menu_copy_pid(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    if (ctx_pid <= 0) return;
+    gchar *pidstr = g_strdup_printf("%d", ctx_pid);
+    GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    gtk_clipboard_set_text(cb, pidstr, -1);
+    if (proc_info_label) {
+        gchar *s = g_strdup_printf(TR("已复制 PID: %s"), pidstr);
+        gtk_label_set_text(GTK_LABEL(proc_info_label), s);
+        g_free(s);
+    }
+    g_free(pidstr);
+    g_free(ctx_name);
+    ctx_name = NULL;
+    ctx_pid = 0;
+}
+
 /* 进程列表右键：选中行并弹出信号菜单 */
 static gboolean on_proc_button_press(GtkWidget *tv, GdkEventButton *ev, gpointer ud) {
     (void)ud;
@@ -970,12 +1024,26 @@ static gboolean on_proc_button_press(GtkWidget *tv, GdkEventButton *ev, gpointer
                        P_PID, &ctx_pid, P_NAME, &ctx_name, -1);
 
     GtkWidget *menu = gtk_menu_new();
-    GtkWidget *mi = gtk_menu_item_new_with_label(TR("结束进程 (SIGTERM)"));
+    GtkWidget *mi = gtk_menu_item_new_with_label(TR("结束进程"));
     g_signal_connect(mi, "activate", G_CALLBACK(on_menu_sigterm), NULL);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
-    mi = gtk_menu_item_new_with_label(TR("强制结束 (SIGKILL)"));
+    mi = gtk_menu_item_new_with_label(TR("强制结束"));
     g_signal_connect(mi, "activate", G_CALLBACK(on_menu_sigkill), NULL);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    mi = gtk_menu_item_new_with_label(TR("暂停进程"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_menu_sigstop), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    mi = gtk_menu_item_new_with_label(TR("继续进程"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_menu_sigcont), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+    mi = gtk_menu_item_new_with_label(TR("复制进程名"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_menu_copy_name), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    mi = gtk_menu_item_new_with_label(TR("复制 PID"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_menu_copy_pid), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    gtk_menu_attach_to_widget(GTK_MENU(menu), tv, NULL);
     gtk_widget_show_all(menu);
     gtk_menu_popup_at_pointer(GTK_MENU(menu), (const GdkEvent *)ev);
     return TRUE;

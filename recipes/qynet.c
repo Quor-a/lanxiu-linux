@@ -684,6 +684,146 @@ static void on_wifi_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer 
         on_wifi_clicked(NULL, (gpointer)ssid);
 }
 
+/* ---------- WiFi 忘记网络（release 299） ---------- */
+
+/* 判断配置行是否属于指定 SSID。
+ * qynet-wifi.conf 实际格式为 "SSID|密码"（wifi_connect 写入），
+ * 这里同时兼容 "SSID=密码" 与无分隔符的裸 SSID 行。 */
+static gboolean wifi_line_is(const char *line, const char *ssid) {
+    gchar *copy = g_strdup(line);
+    gchar *trimmed = g_strstrip(copy);
+    if (!trimmed[0]) { g_free(copy); return FALSE; }
+    gboolean match = FALSE;
+    char *sep = strchr(trimmed, '|');
+    if (!sep) sep = strchr(trimmed, '=');
+    if (sep) {
+        *sep = 0;
+        match = (strcmp(trimmed, ssid) == 0);
+    } else {
+        match = (strcmp(trimmed, ssid) == 0);
+    }
+    g_free(copy);
+    return match;
+}
+
+/* 检查指定 SSID 是否已保存在 wifi 配置文件中 */
+static gboolean wifi_password_has(const char *ssid) {
+    if (!ssid || !ssid[0]) return FALSE;
+    gchar *wpath = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qynet-wifi.conf", NULL);
+    gchar *data = NULL;
+    gboolean found = FALSE;
+    if (g_file_get_contents(wpath, &data, NULL, NULL) && data && data[0]) {
+        char *p = data;
+        while (p && *p && !found) {
+            char *nl = strchr(p, '\n');
+            if (nl) *nl = 0;
+            if (wifi_line_is(p, ssid)) found = TRUE;
+            p = nl ? nl + 1 : NULL;
+        }
+    }
+    g_free(data);
+    g_free(wpath);
+    return found;
+}
+
+/* 从 wifi 配置文件删除指定 SSID 条目：逐行过滤重写，保留其他条目。
+ * 返回删除的条目数。 */
+static int wifi_password_forget(const char *ssid) {
+    if (!ssid || !ssid[0]) return 0;
+    gchar *wpath = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qynet-wifi.conf", NULL);
+    gchar *data = NULL;
+    gsize len = 0;
+    int removed = 0;
+    if (!g_file_get_contents(wpath, &data, &len, NULL) || !data) {
+        g_free(data);
+        g_free(wpath);
+        return 0;
+    }
+    GString *out = g_string_new(NULL);
+    char *p = data;
+    while (p && *p) {
+        char *nl = strchr(p, '\n');
+        size_t linelen = nl ? (size_t)(nl - p) : strlen(p);
+        if (wifi_line_is(p, ssid)) {
+            removed++;
+        } else {
+            g_string_append_len(out, p, linelen);
+            if (nl) g_string_append_c(out, '\n');
+        }
+        p = nl ? nl + 1 : NULL;
+    }
+    if (removed > 0)
+        g_file_set_contents(wpath, out->str, out->len, NULL);
+    g_string_free(out, TRUE);
+    g_free(data);
+    g_free(wpath);
+    return removed;
+}
+
+/* 获取当前连接的 WiFi SSID（iw dev <iface> link），未连接返回空串 */
+static const char *current_wifi_ssid(void) {
+    static char buf[128] = "";
+    buf[0] = 0;
+    if (!has_program("iw")) return buf;
+    const char *iface = find_wlan_iface();
+    gchar *cmd = g_strdup_printf("iw dev %s link 2>/dev/null", iface);
+    gchar *out = NULL, *err = NULL;
+    gint status = 0;
+    if (g_spawn_command_line_sync(cmd, &out, &err, &status, NULL) && out) {
+        char *line = out;
+        while (line && *line) {
+            char *nl = strchr(line, '\n');
+            if (nl) *nl = 0;
+            if (strncmp(line, "SSID:", 5) == 0) {
+                g_strlcpy(buf, g_strstrip(line + 5), sizeof buf);
+                break;
+            }
+            line = nl ? nl + 1 : NULL;
+        }
+    }
+    g_free(cmd);
+    g_free(out);
+    g_free(err);
+    return buf;
+}
+
+/* 「忘记网络」按钮（release 299）：删除已保存的 WiFi 密码条目 */
+static void on_wifi_forget_clicked(GtkWidget *w, gpointer ud) {
+    (void)w;
+    (void)ud;
+    GtkListBoxRow *row = gtk_list_box_get_selected_row(wifi_list);
+    const char *ssid = row ? g_object_get_data(G_OBJECT(row), "ssid") : NULL;
+    if (!ssid || !ssid[0]) {
+        wifi_show_status(TR("请先选择要忘记的 WiFi"));
+        return;
+    }
+    if (!wifi_password_has(ssid)) {
+        wifi_show_status(TR("该网络未保存，无需忘记"));
+        return;
+    }
+    gchar *msg = g_strdup_printf(TR("忘记已保存的网络 %s?"), ssid);
+    GtkWidget *cdlg = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION,
+                                             GTK_BUTTONS_YES_NO, "%s", msg);
+    g_free(msg);
+    int cans = gtk_dialog_run(GTK_DIALOG(cdlg));
+    gtk_widget_destroy(cdlg);
+    if (cans != GTK_RESPONSE_YES) return;
+
+    if (wifi_password_forget(ssid) > 0) {
+        const char *cur = current_wifi_ssid();
+        gchar *s;
+        if (cur && cur[0] && strcmp(cur, ssid) == 0)
+            s = g_strdup_printf(TR("已忘记 %s（已断开该网络的自动连接）"), ssid);
+        else
+            s = g_strdup_printf(TR("已忘记 %s"), ssid);
+        wifi_show_status(s);
+        g_free(s);
+    } else {
+        wifi_show_status(TR("该网络未保存，无需忘记"));
+    }
+    refresh_list();
+}
+
 /* 自动化: QYNET_WIFI=SSID|密码 */
 static gboolean auto_wifi(gpointer p) {
     char *arg = (char *)p;
@@ -776,6 +916,10 @@ int main(int argc, char **argv) {
     GtkWidget *b_wifi = gtk_button_new_with_label(TR("WiFi 连接"));
     qy_add_class(b_wifi, "qy-btn");
     g_signal_connect(b_wifi, "clicked", G_CALLBACK(on_wifi_clicked), NULL);
+    GtkWidget *b_forget = gtk_button_new_with_label(TR("忘记网络"));
+    qy_add_class(b_forget, "qy-btn");
+    gtk_widget_set_tooltip_text(b_forget, TR("删除选中 WiFi 的已保存密码"));
+    g_signal_connect(b_forget, "clicked", G_CALLBACK(on_wifi_forget_clicked), NULL);
     count_label = gtk_label_new("");
     status_label = gtk_label_new("");
     GtkWidget *status_eb = gtk_event_box_new();
@@ -786,6 +930,7 @@ int main(int argc, char **argv) {
     gtk_box_pack_start(GTK_BOX(hb), b_disconn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hb), b_refresh, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hb), b_wifi, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(hb), b_forget, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hb), count_label, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), hb, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), status_eb, FALSE, FALSE, 0);

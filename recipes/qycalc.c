@@ -11,6 +11,7 @@
 
 static GtkWidget *expr_label  = NULL;   /* 当前输入表达式 */
 static GtkWidget *result_label = NULL;  /* 结果 */
+static GtkWidget *base_label = NULL;    /* 底部进制转换显示（release 299·qycalc） */
 static GtkWidget *win = NULL;
 static char expr_buf[256] = {0};
 
@@ -109,8 +110,45 @@ static gboolean on_result_copy(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
     return FALSE;
 }
 
+/* ---------- 底部进制转换显示（release 299·qycalc） ---------- */
+/* 刷新 DEC / HEX / OCT / BIN 四个进制值。
+ * 仅当求值结果为 0 <= v <= 2^31-1 的整数时显示各进制值，否则显示占位符。 */
+static void update_base_display(void) {
+    if (!base_label) return;
+    double v = 0;
+    if (expr_buf[0] && eval_expr(expr_buf, &v) == 0 &&
+        v >= 0 && v <= 2147483647.0 && v == (double)(long)v) {
+        long iv = (long)v;
+        unsigned long uv = (unsigned long)iv;
+        /* BIN：手动循环把整数转成二进制字符串（最多 32 位，去掉前导 0） */
+        char bin[40];
+        unsigned long bv = uv;
+        if (bv == 0) {
+            bin[0] = '0';
+            bin[1] = '\0';
+        } else {
+            char tmp[40];
+            int n = 0;
+            while (bv > 0 && n < 32) {
+                tmp[n++] = (bv & 1UL) ? '1' : '0';
+                bv >>= 1;
+            }
+            int i = 0;
+            while (n > 0) bin[i++] = tmp[--n];
+            bin[i] = '\0';
+        }
+        char txt[160];
+        g_snprintf(txt, sizeof txt, "DEC %ld   HEX %lX   OCT %lo   BIN %s",
+                   iv, uv, uv, bin);
+        gtk_label_set_text(GTK_LABEL(base_label), txt);
+    } else {
+        gtk_label_set_text(GTK_LABEL(base_label), "DEC — HEX — OCT — BIN");
+    }
+}
+
 static void update_display(void) {
     gtk_label_set_text(GTK_LABEL(expr_label), expr_buf[0] ? expr_buf : "0");
+    update_base_display();
 }
 
 static void append_char(const char c) {
@@ -603,6 +641,20 @@ int main(int argc, char **argv) {
     gtk_widget_add_events(result_label, GDK_BUTTON_PRESS_MASK);
     g_signal_connect(result_label, "button-press-event", G_CALLBACK(on_result_copy), NULL);
     gtk_box_pack_start(GTK_BOX(vbox), result_label, FALSE, FALSE, 2);
+
+    /* 底部进制转换显示（release 299·qycalc）：只读小标签，等宽字体 */
+    base_label = gtk_label_new("DEC — HEX — OCT — BIN");
+    gtk_widget_set_halign(base_label, GTK_ALIGN_END);
+    gtk_widget_set_can_focus(base_label, FALSE);            /* 只读，不抢焦点 */
+    gtk_label_set_selectable(GTK_LABEL(base_label), FALSE);
+    gtk_label_set_ellipsize(GTK_LABEL(base_label), PANGO_ELLIPSIZE_NONE);
+    gtk_widget_set_margin_top(base_label, 2);
+    qy_add_class(base_label, "qy-calc-base");
+    PangoAttrList *base_attrs = pango_attr_list_new();      /* 等宽字体 */
+    pango_attr_list_insert(base_attrs, pango_attr_family_new("monospace"));
+    gtk_label_set_attributes(GTK_LABEL(base_label), base_attrs);
+    pango_attr_list_unref(base_attrs);
+    gtk_box_pack_start(GTK_BOX(vbox), base_label, FALSE, FALSE, 0);
 
     GtkWidget *grid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(grid), 6);

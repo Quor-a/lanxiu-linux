@@ -50,9 +50,12 @@ static const WorldCity BUILTIN_CITIES[] = {
 #define NBUILTIN ((int)(sizeof BUILTIN_CITIES / sizeof BUILTIN_CITIES[0]))
 static GPtrArray *world_cities = NULL;   /* WorldCity*：内置 + 自定义（release 283） */
 static GPtrArray *world_labels = NULL;   /* GtkWidget* 时间标签，与 world_cities 对齐 */
+static GPtrArray *world_rows = NULL;    /* GtkWidget* 城市行，与 world_cities 对齐（release 299） */
 static GtkWidget *world_rows_box = NULL; /* 城市行容器 */
 static GtkWidget *world_entry = NULL;    /* 添加城市：城市名输入 */
 static GtkWidget *world_spin  = NULL;    /* 添加城市：UTC 偏移 */
+static GtkWidget *world_search = NULL;   /* 搜索城市关键字（release 299） */
+static void world_apply_filter(void);   /* release 299 搜索过滤，定义在下方 */
 
 /* ---------- 计时器 ---------- */
 static GtkWidget *timer_label  = NULL;   /* #qyclock-timer 大字 MM:SS */
@@ -316,6 +319,7 @@ static gboolean world_tick(gpointer ud) {
         g_snprintf(buf, sizeof buf, "%02d:%02d:%02d", tm->tm_hour, tm->tm_min, tm->tm_sec);
         gtk_label_set_text(GTK_LABEL(lbl), buf);
     }
+    world_apply_filter();   /* 刷新时保持搜索过滤状态（release 299） */
     return G_SOURCE_CONTINUE;
 }
 
@@ -565,6 +569,31 @@ static void world_cities_load(void) {
     g_free(path);
 }
 
+/* 按搜索关键字过滤城市行（release 299）：仅显示城市名包含关键字（大小写不敏感）的行 */
+static void world_apply_filter(void) {
+    if (!world_cities || !world_rows) return;
+    const char *kw = world_search ? gtk_entry_get_text(GTK_ENTRY(world_search)) : "";
+    gchar *kw_lower = g_ascii_strdown(kw, -1);
+    for (guint i = 0; i < world_cities->len && i < world_rows->len; i++) {
+        WorldCity *wc = g_ptr_array_index(world_cities, i);
+        GtkWidget *row = g_ptr_array_index(world_rows, i);
+        gboolean visible = TRUE;
+        if (kw_lower && kw_lower[0] && wc && wc->city && wc->city[0]) {
+            gchar *city_lower = g_ascii_strdown(wc->city, -1);
+            visible = city_lower && strstr(city_lower, kw_lower) != NULL;
+            g_free(city_lower);
+        }
+        if (row) gtk_widget_set_visible(row, visible);
+    }
+    g_free(kw_lower);
+}
+
+/* 搜索框输入变化：立即过滤 */
+static void on_world_search_changed(GtkSearchEntry *se, gpointer ud) {
+    (void)se; (void)ud;
+    world_apply_filter();
+}
+
 /* 追加一行城市到世界时钟页 */
 static void world_row_add(WorldCity *wc) {
     if (!world_rows_box || !wc) return;
@@ -588,7 +617,9 @@ static void world_row_add(WorldCity *wc) {
     gtk_box_pack_start(GTK_BOX(row), offset, FALSE, FALSE, 0);
     gtk_box_pack_end(GTK_BOX(row), tl, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(world_rows_box), row, FALSE, FALSE, 0);
+    if (world_rows) g_ptr_array_add(world_rows, row);
     g_ptr_array_add(world_labels, tl);
+    world_apply_filter();   /* 新行也遵循当前搜索关键字 */
 }
 
 /* 添加城市：输入名 + UTC 偏移，去重后追加并持久化 */
@@ -635,6 +666,8 @@ static void on_world_del_clicked(GtkWidget *w, gpointer ud) {
     }
     if (world_labels && world_labels->len > 0)
         g_ptr_array_remove_index(world_labels, world_labels->len - 1);
+    if (world_rows && world_rows->len > 0)
+        g_ptr_array_remove_index(world_rows, world_rows->len - 1);
     world_cities_save();
 }
 
@@ -642,16 +675,15 @@ static GtkWidget *build_world_page(void) {
     GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
     gtk_container_set_border_width(GTK_CONTAINER(page), 14);
 
-    world_rows_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_box_pack_start(GTK_BOX(page), world_rows_box, FALSE, FALSE, 0);
-
-    world_labels = g_ptr_array_new();
-    for (guint i = 0; i < world_cities->len; i++)
-        world_row_add(g_ptr_array_index(world_cities, i));
-
-    /* 添加城市输入行（release 283） */
+    /* 标题行（release 299）：搜索框 + 添加/移除城市控件，置于页顶 */
     GtkWidget *add_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_margin_top(add_row, 12);
+
+    world_search = gtk_search_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(world_search), TR("搜索城市…"));
+    g_signal_connect(world_search, "search-changed", G_CALLBACK(on_world_search_changed), NULL);
+    gtk_box_pack_start(GTK_BOX(add_row), world_search, TRUE, TRUE, 0);
+
     world_entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(world_entry), TR("城市名"));
     gtk_entry_set_width_chars(GTK_ENTRY(world_entry), 10);
@@ -668,6 +700,14 @@ static GtkWidget *build_world_page(void) {
     gtk_box_pack_start(GTK_BOX(add_row), b_add, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(add_row), b_del, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(page), add_row, FALSE, FALSE, 0);
+
+    world_rows_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_box_pack_start(GTK_BOX(page), world_rows_box, FALSE, FALSE, 0);
+
+    world_rows = g_ptr_array_new();
+    world_labels = g_ptr_array_new();
+    for (guint i = 0; i < world_cities->len; i++)
+        world_row_add(g_ptr_array_index(world_cities, i));
 
     return page;
 }
