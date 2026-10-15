@@ -33,6 +33,7 @@ static GtkWidget *alarm_list = NULL;    /* GtkListBox，每行 HH:MM */
 static GtkWidget *alarm_hour = NULL;      /* 时 GtkSpinButton */
 static GtkWidget *alarm_min  = NULL;      /* 分 GtkSpinButton */
 static gchar *alarm_fired_min = NULL;    /* 已触发过的分钟 HH:MM（避免同分钟重复触发） */
+static gchar *snooze_at = NULL;          /* 贪睡目标时刻 HH:MM（release 294） */
 
 /* ---------- 世界时钟 ---------- */
 typedef struct { char *city; int offset; } WorldCity;
@@ -203,15 +204,27 @@ static void alarm_load(void) {
     g_free(path);
 }
 
-/* 到点提醒：优先 qynotify，不可用则弹 GtkDialog */
+/* 到点提醒：优先 qynotify，不可用则弹 GtkDialog（release 294：支持稍后 5 分钟） */
 static void show_alarm_dialog(const char *hhmm) {
-    GtkWidget *dlg = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL,
-                                            GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
-                                            "%s", TR("闹钟提醒"));
-    gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(dlg), "%s", hhmm);
-    gtk_window_set_title(GTK_WINDOW(dlg), TR("闹钟"));
-    gtk_dialog_run(GTK_DIALOG(dlg));
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(TR("闹钟"), NULL,
+        GTK_DIALOG_MODAL, TR("稍后 5 分钟"), GTK_RESPONSE_ACCEPT,
+        TR("确定"), GTK_RESPONSE_OK, NULL);
+    GtkWidget *lb = gtk_label_new(NULL);
+    gchar *txt = g_strdup_printf("%s\n%s", TR("闹钟提醒"), hhmm);
+    gtk_label_set_markup(GTK_LABEL(lb), txt);
+    g_free(txt);
+    gtk_container_add(GTK_CONTAINER(gtk_dialog_get_content_area(GTK_DIALOG(dlg))), lb);
+    gtk_widget_show_all(dlg);
+    int rc = gtk_dialog_run(GTK_DIALOG(dlg));
     gtk_widget_destroy(dlg);
+    if (rc == GTK_RESPONSE_ACCEPT) {
+        time_t t = time(NULL) + 300;   /* 5 分钟后 */
+        struct tm *tm = localtime(&t);
+        g_free(snooze_at);
+        snooze_at = g_strdup_printf("%02d:%02d", tm->tm_hour, tm->tm_min);
+        g_free(alarm_fired_min);
+        alarm_fired_min = g_strdup("");   /* 允许贪睡目标分钟再次触发 */
+    }
 }
 
 static void alarm_fire(const char *hhmm) {
@@ -233,6 +246,16 @@ static gboolean alarm_tick(gpointer ud) {
     struct tm *tm = localtime(&t);
     char now[8];
     g_snprintf(now, sizeof now, "%02d:%02d", tm->tm_hour, tm->tm_min);
+
+    /* 贪睡目标时刻到点（release 294） */
+    if (snooze_at && !strcmp(snooze_at, now)) {
+        g_free(snooze_at);
+        snooze_at = NULL;
+        g_free(alarm_fired_min);
+        alarm_fired_min = g_strdup(now);
+        show_alarm_dialog(now);
+        return G_SOURCE_CONTINUE;
+    }
 
     /* 同一分钟只处理一次，避免 1s 定时器反复触发 */
     if (alarm_fired_min && !strcmp(alarm_fired_min, now))
