@@ -314,10 +314,17 @@ static gboolean countdown_tick(gpointer p) {
     return G_SOURCE_CONTINUE;
 }
 
-/* 截图按钮：有延时则启动倒计时，否则立即截图 */
+/* 截图按钮：有延时则启动倒计时（再次点击取消倒计时，release 295），否则立即截图 */
 static void on_capture_clicked(GtkWidget *w, gpointer ud) {
     (void)w; (void)ud;
-    if (countdown_id) return;   /* 倒计时中忽略重复点击 */
+    if (countdown_id) {
+        g_source_remove(countdown_id);
+        countdown_id = 0;
+        gtk_button_set_label(GTK_BUTTON(cap_btn), TR("全屏截图"));
+        gtk_widget_set_sensitive(cap_btn, TRUE);
+        if (status_label) gtk_label_set_text(GTK_LABEL(status_label), TR("已取消倒计时截图"));
+        return;
+    }
     int delay = 0;
     const char *sel = gtk_combo_box_get_active_id(GTK_COMBO_BOX(delay_combo));
     if (sel) delay = atoi(sel);
