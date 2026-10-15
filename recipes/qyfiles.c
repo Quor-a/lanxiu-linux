@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <time.h>   /* release 287: 粘贴剪贴板文件名时间戳 */
 #include <glib/gstdio.h>
 #include <sys/wait.h>
 #include <sys/statvfs.h>
@@ -80,6 +81,7 @@ static GtkWidget *book_list = NULL; /* 侧边栏书签 GtkListBox */
 
 /* 网络挂载（release: SMB/CIFS + SSHFS） */
 static GtkWidget *b_mount = NULL;       /* 工具栏「挂载」按钮 */
+static GtkWidget *b_paste = NULL;       /* 工具栏「粘贴剪贴板」按钮（release 287） */
 static GtkWidget *mount_type_combo = NULL;
 static GtkWidget *mount_server_entry = NULL;
 static GtkWidget *mount_share_entry = NULL;
@@ -111,6 +113,7 @@ static void set_mode_buttons(void) {
     gtk_widget_set_visible(b_emp, trash);
     gtk_widget_set_visible(b_bm, !trash);
     gtk_widget_set_visible(b_mount, !trash);
+    gtk_widget_set_visible(b_paste, !trash);
 }
 
 /* 把当前标签的目录/回收站/搜索状态回写到 cur_tab */
@@ -1693,6 +1696,48 @@ static void on_refresh(GtkButton *b, gpointer ud) {
     else chdir_to(cwd);
 }
 
+/* 粘贴剪贴板图片/文本到当前目录（release 287） */
+static void do_paste_clipboard(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (in_trash) {
+        gtk_label_set_text(GTK_LABEL(status), TR("回收站中不能粘贴"));
+        return;
+    }
+    GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    GdkPixbuf *img = gtk_clipboard_wait_for_image(cb);
+    if (img) {
+        gchar *fname = g_strdup_printf("粘贴图片-%ld.png", (long)time(NULL));
+        gchar *path = g_build_filename(cwd, fname, NULL);
+        GError *err = NULL;
+        if (gdk_pixbuf_save(img, path, "png", &err, NULL))
+            gtk_label_set_text(GTK_LABEL(status), TR("已粘贴图片"));
+        else {
+            gtk_label_set_text(GTK_LABEL(status), err ? err->message : TR("粘贴图片失败"));
+            if (err) g_clear_error(&err);
+        }
+        g_object_unref(img);
+        g_free(path);
+        g_free(fname);
+        chdir_to(cwd);
+        return;
+    }
+    gchar *text = gtk_clipboard_wait_for_text(cb);
+    if (text && text[0]) {
+        gchar *fname = g_strdup_printf("粘贴文本-%ld.txt", (long)time(NULL));
+        gchar *path = g_build_filename(cwd, fname, NULL);
+        if (g_file_set_contents(path, text, -1, NULL))
+            gtk_label_set_text(GTK_LABEL(status), TR("已粘贴文本"));
+        else
+            gtk_label_set_text(GTK_LABEL(status), TR("粘贴文本失败"));
+        g_free(path);
+        g_free(fname);
+        g_free(text);
+        chdir_to(cwd);
+        return;
+    }
+    gtk_label_set_text(GTK_LABEL(status), TR("剪贴板为空"));
+}
+
 /* 后退/前进导航历史（release 281） */
 static void on_back(GtkButton *b, gpointer ud) {
     (void)b; (void)ud;
@@ -2310,6 +2355,9 @@ static void activate(GtkApplication *app, gpointer ud) {
     b_mount = gtk_button_new_with_label(TR("挂载"));
     add_class(b_mount, "qy-btn");
     g_signal_connect(b_mount, "clicked", G_CALLBACK(on_mount_clicked), NULL);
+    b_paste = gtk_button_new_with_label(TR("粘贴剪贴板"));
+    add_class(b_paste, "qy-btn");
+    g_signal_connect(b_paste, "clicked", G_CALLBACK(do_paste_clipboard), NULL);
     GtkWidget *b_view = qy_icon_button(QY_ICON_GRID, 18, TR("图标视图"), NULL);
     add_class(b_view, "qy-btn");
     g_signal_connect(b_view, "clicked", G_CALLBACK(on_toggle_view), NULL);
@@ -2347,6 +2395,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(hbox), b_prop, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_bm, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_mount, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(hbox), b_paste, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_view, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_preview, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), b_new_tab, FALSE, FALSE, 0);
