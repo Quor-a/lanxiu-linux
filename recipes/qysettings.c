@@ -2344,6 +2344,12 @@ static void on_svc_cursor_changed(GtkTreeView *tv, gpointer ud) {
 }
 
 /* 执行 systemctl 动作（qysudo 提权） */
+/* 服务页「刷新」按钮包装（release 290） */
+static void svc_refresh_wrap(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    svc_refresh();
+}
+
 static void svc_run_action(GtkWidget *w, gpointer ud) {
     (void)w;
     const char *act = (const char *)ud;
@@ -4314,13 +4320,15 @@ static void activate(GtkApplication *app, gpointer ud) {
         GtkWidget *b_restart = gtk_button_new_with_label(TR("重启"));
         GtkWidget *b_enable = gtk_button_new_with_label(TR("启用"));
         GtkWidget *b_log = gtk_button_new_with_label(TR("查看日志"));
+        GtkWidget *b_refresh = gtk_button_new_with_label(TR("刷新"));
         g_signal_connect(b_start, "clicked", G_CALLBACK(svc_run_action), (gpointer)"start");
         g_signal_connect(b_stop, "clicked", G_CALLBACK(svc_run_action), (gpointer)"stop");
         g_signal_connect(b_restart, "clicked", G_CALLBACK(svc_run_action), (gpointer)"restart");
         g_signal_connect(b_enable, "clicked", G_CALLBACK(svc_run_action), (gpointer)"enable");
         g_signal_connect(b_log, "clicked", G_CALLBACK(on_svc_log_clicked), NULL);
-        GtkWidget *bbtns[5] = { b_start, b_stop, b_restart, b_enable, b_log };
-        for (int i = 0; i < 5; i++) {
+        g_signal_connect(b_refresh, "clicked", G_CALLBACK(svc_refresh_wrap), NULL);
+        GtkWidget *bbtns[6] = { b_start, b_stop, b_restart, b_enable, b_log, b_refresh };
+        for (int i = 0; i < 6; i++) {
             qy_add_class(bbtns[i], "qy-btn");
             gtk_box_pack_start(GTK_BOX(bar), bbtns[i], FALSE, FALSE, 0);
         }
