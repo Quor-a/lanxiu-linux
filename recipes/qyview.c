@@ -29,6 +29,9 @@ static GtkWidget *zoom_label = NULL;   /* 底部当前缩放百分比 */
 static GtkWidget *play_btn = NULL;      /* 悬浮条播放/暂停按钮 */
 static GtkWidget *slide_spin = NULL;    /* 幻灯片间隔微调（release 270） */
 static int slide_ms = 3000;             /* 幻灯片间隔毫秒 */
+static GtkWidget *trans_combo = NULL;   /* 转场效果下拉（release 296） */
+static GtkWidget *view_stack = NULL;    /* 图片 GtkStack（转场回调使用） */
+static void on_trans_changed(GtkComboBox *combo, gpointer ud);   /* 前向声明（转场效果） */
 static GtkWidget *file_label = NULL;   /* 左下角文件名 */
 static GtkWidget *g_da = NULL;          /* 绘图区（幻灯片定时器回调用） */
 static guint slide_timer = 0;           /* 幻灯片定时器 id */
@@ -875,6 +878,7 @@ static void activate(GtkApplication *app, gpointer ud) {
 
     /* 图片绘制区：GtkStack 双绘图区，幻灯片切换时 CROSSFADE 淡入淡出 */
     GtkWidget *stack = gtk_stack_new();
+    view_stack = stack;   /* release 296: 转场回调使用 */
     gtk_stack_set_transition_type(GTK_STACK(stack), GTK_STACK_TRANSITION_TYPE_CROSSFADE);
     gtk_stack_set_transition_duration(GTK_STACK(stack), 300);
     gtk_stack_set_homogeneous(GTK_STACK(stack), TRUE);
@@ -938,6 +942,28 @@ static void activate(GtkApplication *app, gpointer ud) {
     qy_add_class(slide_spin, "qy-view-bar-btn");
     gtk_widget_set_tooltip_text(slide_spin, TR("幻灯片间隔（秒）"));
     g_signal_connect(slide_spin, "value-changed", G_CALLBACK(on_slide_interval), NULL);
+    /* 转场效果（release 296） */
+    trans_combo = gtk_combo_box_text_new();
+    qy_add_class(trans_combo, "qy-view-bar-btn");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(trans_combo), "fade", TR("淡入淡出"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(trans_combo), "lr",   TR("左右滑动"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(trans_combo), "ud",   TR("上下滑动"));
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(trans_combo), "over", TR("覆盖滑动"));
+    gtk_widget_set_tooltip_text(trans_combo, TR("幻灯片转场效果"));
+    g_signal_connect(trans_combo, "changed", G_CALLBACK(on_trans_changed), NULL);
+    {
+        gchar *dir = g_build_filename(g_get_user_config_dir(), "lanxiu", NULL);
+        gchar *cfg = g_build_filename(dir, "qyview-trans.conf", NULL);
+        gchar *contents = NULL;
+        if (g_file_get_contents(cfg, &contents, NULL, NULL)) {
+            for (int ti = 0; ti < 4; ti++) {
+                gtk_combo_box_set_active(GTK_COMBO_BOX(trans_combo), ti);
+                const char *cur = gtk_combo_box_get_active_id(GTK_COMBO_BOX(trans_combo));
+                if (cur && g_strcmp0(cur, g_strstrip(contents)) == 0) break;
+            }
+        }
+        g_free(contents); g_free(cfg); g_free(dir);
+    }
     GtkWidget *sep1 = gtk_separator_new(GTK_ORIENTATION_VERTICAL);
     GtkWidget *b_zoomout = gtk_button_new_with_label("−");
     GtkWidget *b_zoomin = gtk_button_new_with_label("+");
@@ -1100,6 +1126,23 @@ static void activate(GtkApplication *app, gpointer ud) {
         g_timeout_add(900, save_once, da);
     }
     gtk_widget_grab_focus(da);
+}
+
+/* 转场效果切换（release 296） */
+static void on_trans_changed(GtkComboBox *combo, gpointer ud) {
+    (void)ud;
+    const char *id = gtk_combo_box_get_active_id(combo);
+    if (!id) return;
+    GtkStackTransitionType t = GTK_STACK_TRANSITION_TYPE_CROSSFADE;
+    if (!strcmp(id, "lr")) t = GTK_STACK_TRANSITION_TYPE_SLIDE_LEFT_RIGHT;
+    else if (!strcmp(id, "ud")) t = GTK_STACK_TRANSITION_TYPE_SLIDE_UP_DOWN;
+    else if (!strcmp(id, "over")) t = GTK_STACK_TRANSITION_TYPE_OVER_LEFT_RIGHT;
+    if (view_stack) gtk_stack_set_transition_type(GTK_STACK(view_stack), t);
+    gchar *dir = g_build_filename(g_get_user_config_dir(), "lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    gchar *cfg = g_build_filename(dir, "qyview-trans.conf", NULL);
+    g_file_set_contents(cfg, id, -1, NULL);
+    g_free(cfg); g_free(dir);
 }
 
 int main(int argc, char **argv) {
