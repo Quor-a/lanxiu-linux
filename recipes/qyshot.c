@@ -22,6 +22,8 @@ static GtkWidget *cap_btn = NULL;       /* 全屏截图按钮（倒计时文字�
 static GtkWidget *region_btn = NULL;    /* 区域截图按钮 */
 static GtkWidget *delay_combo = NULL;   /* 延时选择 */
 static GtkWidget *format_combo = NULL; /* 保存格式选择 */
+static gboolean auto_copy = FALSE;     /* 截图后自动复制到剪贴板（release 292） */
+static GtkWidget *b_autocopy = NULL;   /* 自动复制开关按钮 */
 
 static void on_fmt_changed(GtkComboBox *combo, gpointer ud) {
     (void)ud;
@@ -285,6 +287,11 @@ static void on_capture(GtkWidget *w, gpointer ud) {
                gdk_pixbuf_get_width(shot_pixbuf), gdk_pixbuf_get_height(shot_pixbuf),
                TR("截图完成"));
     gtk_label_set_text(GTK_LABEL(status_label), st);
+    /* release 292: 截图后自动复制到剪贴板 */
+    if (auto_copy) {
+        gtk_clipboard_set_image(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD), shot_pixbuf);
+        gtk_label_set_text(GTK_LABEL(status_label), TR("截图完成，已自动复制到剪贴板"));
+    }
     /* 截图后自动弹出保存对话框（QYSHOT_AUTO 自动化模式除外） */
     if (!g_getenv("QYSHOT_AUTO"))
         on_save(NULL, NULL);
@@ -334,6 +341,21 @@ static void on_copy(GtkWidget *w, gpointer ud) {
     GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
     gtk_clipboard_set_image(cb, shot_pixbuf);
     gtk_label_set_text(GTK_LABEL(status_label), TR("已复制到剪贴板"));
+}
+
+/* 自动复制开关：切换即写配置（release 292） */
+static void on_autocopy_toggled(GtkWidget *w, gpointer ud) {
+    (void)ud;
+    auto_copy = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
+    gchar *path = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qyshot-copy", NULL);
+    gchar *dir = g_path_get_dirname(path);
+    g_mkdir_with_parents(dir, 0755);
+    g_free(dir);
+    g_file_set_contents(path, auto_copy ? "1" : "0", -1, NULL);
+    g_free(path);
+    if (status_label)
+        gtk_label_set_text(GTK_LABEL(status_label),
+                           auto_copy ? TR("已开启：截图后自动复制到剪贴板") : TR("已关闭自动复制"));
 }
 
 /* ---------- 区域截图（X11） ----------
@@ -630,15 +652,28 @@ static void activate(GtkApplication *app, gpointer ud) {
     qy_add_class(region_btn, "qy-shot-btn");
     GtkWidget *b_save = qy_icon_button(QY_ICON_SAVE, 18, TR("保存"), NULL);
     GtkWidget *b_copy = qy_icon_button(QY_ICON_COPY, 18, TR("复制到剪贴板"), NULL);
+    b_autocopy = gtk_toggle_button_new_with_label(TR("自动复制"));
+    qy_add_class(b_autocopy, "qy-shot-btn");
     g_signal_connect(cap_btn, "clicked", G_CALLBACK(on_capture_clicked), NULL);
     g_signal_connect(region_btn, "clicked", G_CALLBACK(on_region_clicked), NULL);
     g_signal_connect(b_save, "clicked", G_CALLBACK(on_save), NULL);
     g_signal_connect(b_copy, "clicked", G_CALLBACK(on_copy), NULL);
+    g_signal_connect(b_autocopy, "toggled", G_CALLBACK(on_autocopy_toggled), NULL);
     gtk_box_pack_start(GTK_BOX(bar), cap_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), region_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), b_save, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), b_copy, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), b_autocopy, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), bar, FALSE, FALSE, 0);
+    /* release 292: 恢复自动复制开关状态 */
+    {
+        gchar *cp = g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qyshot-copy", NULL);
+        gchar *val = NULL;
+        if (g_file_get_contents(cp, &val, NULL, NULL) && val && val[0] == '1')
+            gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(b_autocopy), TRUE);
+        g_free(val);
+        g_free(cp);
+    }
 
     /* 状态栏 */
     status_label = gtk_label_new(TR("就绪"));
