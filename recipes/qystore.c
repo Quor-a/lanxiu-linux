@@ -496,6 +496,49 @@ static void show_row(GtkTreeView *tv, GtkTreeIter *itp) {
     g_free(name); g_free(ver); g_free(file);
 }
 
+/* 组装包详情对话框完整文本（release 307）：名称-版本 / 描述 / 依赖 / 大小 / 状态 / 路径。
+ * 复用 pkg_detail_text 作为文本源头，保证对话框展示与「复制全部详情」内容完全一致。 */
+static void detail_full_text(char *out, size_t outsz) {
+    pkg_detail_text(g_name, g_ver, g_file, out, outsz);
+    size_t L = strlen(out);
+    snprintf(out + L, outsz - L, "\n%s: %s\n%s: %s",
+             TR("状态"), g_status[0] == 'i' ? TR("已安装") : TR("可安装"),
+             TR("路径"), g_file);
+}
+
+/* 「复制全部详情」按钮文字恢复（release 307）：1.5 秒后恢复为「复制全部详情」 */
+static gboolean restore_copy_all_label(gpointer data) {
+    GtkWidget *btn = data;
+    gtk_button_set_label(GTK_BUTTON(btn), TR("复制全部详情"));
+    g_object_set_data(G_OBJECT(btn), "qy-copy-all-src", NULL);
+    return G_SOURCE_REMOVE;
+}
+
+/* 按钮销毁时移除尚未触发的恢复定时器，防止回调访问已销毁控件（release 307） */
+static void copy_all_btn_destroyed(GtkWidget *btn, gpointer ud) {
+    (void)ud;
+    guint src = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(btn), "qy-copy-all-src"));
+    if (src) g_source_remove(src);
+}
+
+/* 把包详情对话框展示的全部元数据复制到剪贴板（release 307） */
+static void on_copy_all_clicked(GtkWidget *w, gpointer ud) {
+    (void)ud;
+    if (!g_name[0] || !g_file[0]) return;
+    char txt[2048];
+    detail_full_text(txt, sizeof txt);
+    GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
+    gtk_clipboard_set_text(cb, txt, -1);
+    /* 按钮短暂变为「已复制」，1.5 秒后恢复（release 307） */
+    if (w) {
+        gtk_button_set_label(GTK_BUTTON(w), TR("已复制"));
+        guint old = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(w), "qy-copy-all-src"));
+        if (old) g_source_remove(old);
+        guint src = g_timeout_add(1500, restore_copy_all_label, w);
+        g_object_set_data(G_OBJECT(w), "qy-copy-all-src", GUINT_TO_POINTER(src));
+    }
+}
+
 /* 包详情对话框（release 283）：双击行查看完整元数据 */
 static void detail_dialog(GtkWidget *parent) {
     if (!g_name[0] || !g_file[0]) return;
@@ -508,19 +551,21 @@ static void detail_dialog(GtkWidget *parent) {
     GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
     gtk_container_set_border_width(GTK_CONTAINER(content), 12);
     char txt[2048];
-    pkg_detail_text(g_name, g_ver, g_file, txt, sizeof txt);
-    {
-        size_t L = strlen(txt);
-        snprintf(txt + L, sizeof txt - L, "\n%s: %s\n%s: %s",
-                 TR("状态"), g_status[0] == 'i' ? TR("已安装") : TR("可安装"),
-                 TR("路径"), g_file);
-    }
+    detail_full_text(txt, sizeof txt);
     GtkWidget *label = gtk_label_new(txt);
     gtk_label_set_xalign(GTK_LABEL(label), 0.0);
     gtk_label_set_line_wrap(GTK_LABEL(label), TRUE);
     gtk_label_set_selectable(GTK_LABEL(label), TRUE);
     gtk_box_pack_start(GTK_BOX(content), label, TRUE, TRUE, 0);
     gtk_widget_show_all(content);
+
+    /* 「复制全部详情」按钮（release 307）：放在对话框按钮区，关闭按钮旁 */
+    GtkWidget *copy_all_btn = gtk_button_new_with_label(TR("复制全部详情"));
+    g_signal_connect(copy_all_btn, "destroy", G_CALLBACK(copy_all_btn_destroyed), NULL);
+    g_signal_connect(copy_all_btn, "clicked", G_CALLBACK(on_copy_all_clicked), NULL);
+    gtk_dialog_add_action_widget(GTK_DIALOG(dlg), copy_all_btn, GTK_RESPONSE_NONE);
+    gtk_widget_show(copy_all_btn);
+
     int ans = gtk_dialog_run(GTK_DIALOG(dlg));
     if (ans == GTK_RESPONSE_APPLY)
         on_copy_pkg_clicked(NULL, NULL);

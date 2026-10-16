@@ -59,6 +59,8 @@ static GtkListStore *proc_store = NULL;   /* 全量进程列表 */
 static GtkWidget *proc_tv = NULL;         /* 进程列表视图 */
 static GtkWidget *proc_search = NULL;     /* GtkSearchEntry 进程过滤 */
 static gchar *proc_filter = NULL;         /* 当前过滤文本（小写） */
+static GtkWidget *proc_only_btn = NULL;   /* 「仅我的进程」切换按钮（release 307） */
+static gboolean proc_only_mine = FALSE;   /* 「仅我的进程」过滤开关（release 307） */
 
 /* 右键菜单选中的进程上下文 */
 static gint  ctx_pid = 0;
@@ -96,8 +98,9 @@ static void cpu_cell_data_func(GtkTreeViewColumn *col, GtkCellRenderer *r,
     g_free(s);
 }
 
-/* 刷新全量进程列表（/proc/PID/comm + status VmRSS），默认按内存降序。
- * 若设置了 proc_filter，仅保留进程名（忽略大小写）包含过滤词的条目。 */
+/* 刷新全量进程列表（/proc/PID/comm + status VmRSS/Uid），默认按内存降序。
+ * 若设置了 proc_filter，仅保留进程名（忽略大小写）包含过滤词的条目；
+ * 若开启「仅我的进程」（release 307），先按 Uid 过滤只保留当前用户进程。 */
 static void refresh_proc_list(void) {
     if (!proc_store) return;
     /* CPU% 差分采样：初始化哈希表与 CLK_TCK（release 271） */
@@ -112,6 +115,7 @@ static void refresh_proc_list(void) {
     if (!dir) return;
     const char *ent;
     int n = 0;
+    uid_t my_uid = getuid();   /* 「仅我的进程」当前用户 real uid（release 307） */
     GHashTable *seen = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, NULL); /* 本次出现的 pid 集合 */
     while ((ent = g_dir_read_name(dir)) != NULL) {
         if (!g_ascii_isdigit(ent[0])) continue;
@@ -119,7 +123,33 @@ static void refresh_proc_list(void) {
         gchar *comm = NULL;
         if (g_file_get_contents(cp, &comm, NULL, NULL) && comm) {
             g_strstrip(comm);
-            /* 搜索过滤：进程名包含过滤词（strstr 忽略大小写） */
+            /* 一次读取 status：同时解析 VmRSS 与 Uid（release 307 复用同一文件内容） */
+            gchar *sp = g_strdup_printf("/proc/%s/status", ent);
+            gchar *status = NULL;
+            long rss_kb = 0;
+            gboolean uid_match = FALSE;
+            if (g_file_get_contents(sp, &status, NULL, NULL) && status) {
+                char *vm = strstr(status, "VmRSS:");
+                if (vm) rss_kb = atol(vm + 7);
+                /* Uid: 行第一列为 real uid；解析失败视为不匹配 */
+                char *uid_line = strstr(status, "Uid:");
+                if (uid_line) {
+                    char *end = NULL;
+                    unsigned long uid_val = strtoul(uid_line + 4, &end, 10);
+                    if (end != uid_line + 4)
+                        uid_match = ((uid_t)uid_val == my_uid);
+                }
+            }
+            g_free(sp);
+            g_free(status);
+            /* 「仅我的进程」过滤（release 307）：先按 uid 过滤收集，
+             * Uid 读取失败或 /proc/<pid> 已消失视为不匹配（跳过） */
+            if (proc_only_mine && !uid_match) {
+                g_free(comm);
+                g_free(cp);
+                continue;
+            }
+            /* 搜索过滤：在 uid 过滤后叠加，进程名包含过滤词（strstr 忽略大小写） */
             if (proc_filter && proc_filter[0]) {
                 gchar *low = g_ascii_strdown(comm, -1);
                 gboolean match = strstr(low, proc_filter) != NULL;
@@ -130,15 +160,6 @@ static void refresh_proc_list(void) {
                     continue;
                 }
             }
-            gchar *sp = g_strdup_printf("/proc/%s/status", ent);
-            gchar *status = NULL;
-            long rss_kb = 0;
-            if (g_file_get_contents(sp, &status, NULL, NULL) && status) {
-                char *vm = strstr(status, "VmRSS:");
-                if (vm) rss_kb = atol(vm + 7);
-            }
-            g_free(sp);
-            g_free(status);
             /* CPU% 两次采样差分（release 271） */
             gint64 pid64 = g_ascii_strtoll(ent, NULL, 10);
             gint64 *pid_key = g_new(gint64, 1);
@@ -998,6 +1019,13 @@ static void on_proc_search_changed(GtkSearchEntry *e, gpointer ud) {
     refresh_proc_list();
 }
 
+/* 「仅我的进程」切换（release 307）：更新开关并立即刷新进程列表 */
+static void on_proc_only_toggled(GtkWidget *btn, gpointer ud) {
+    (void)ud;
+    proc_only_mine = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(btn));
+    refresh_proc_list();
+}
+
 /* 直接向进程发送信号（kill(2)），并反馈结果 */
 static void kill_proc(int pid, const char *name, int sig) {
     if (kill(pid, sig) == 0) {
@@ -1528,12 +1556,18 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_tree_view_column_set_sort_column_id(col, P_CPU);
     gtk_tree_view_column_set_clickable(col, TRUE);
     gtk_tree_view_append_column(GTK_TREE_VIEW(proc_tv), col);
-    /* 进程搜索框 + 信息标签：搜索框输入即过滤（进程刷新时应用），置于列表上方 */
+    /* 进程搜索框 + 「仅我的进程」开关 + 信息标签：搜索框输入即过滤（进程刷新时应用），置于列表上方 */
     GtkWidget *proc_top = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     proc_search = gtk_search_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(proc_search), TR("搜索进程…"));
     g_signal_connect(proc_search, "search-changed", G_CALLBACK(on_proc_search_changed), NULL);
     gtk_box_pack_start(GTK_BOX(proc_top), proc_search, TRUE, TRUE, 0);
+    /* 「仅我的进程」过滤开关（release 307）：置于搜索框旁，切换立即生效 */
+    proc_only_btn = gtk_toggle_button_new_with_label(TR("仅我的进程"));
+    gtk_widget_set_tooltip_text(proc_only_btn, TR("只显示当前用户运行的进程"));
+    qy_add_class(proc_only_btn, "qy-btn");
+    g_signal_connect(proc_only_btn, "toggled", G_CALLBACK(on_proc_only_toggled), NULL);
+    gtk_box_pack_start(GTK_BOX(proc_top), proc_only_btn, FALSE, FALSE, 0);
     proc_info_label = gtk_label_new("");
     add_class(proc_info_label, "qy-mon-info");
     gtk_widget_set_halign(proc_info_label, GTK_ALIGN_START);

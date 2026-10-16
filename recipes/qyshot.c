@@ -33,6 +33,18 @@ static GtkWidget *history_combo = NULL;   /* 历史下拉 */
 static GtkWidget *b_clear_history = NULL; /* 清除历史按钮 */
 static gboolean history_loading = FALSE;  /* 程序填充下拉时屏蔽 changed 信号 */
 
+/* release 307: 截图画笔标注
+ * 在截图预览（GtkOverlay）上叠加透明标注层 annotate_da，开启「标注」后
+ * 可按住左键画橙色（#E95420）3px 画笔线；轨迹保存在 annotate_surface
+ * （ARGB32，与截图同尺寸），保存/复制时合成到截图 pixbuf 上。 */
+static GtkWidget *annotate_da = NULL;           /* 截图预览上的透明标注覆盖层 */
+static cairo_surface_t *annotate_surface = NULL;/* 标注轨迹层（与截图同尺寸） */
+static gboolean annotate_mode = FALSE;          /* 「标注」开关状态 */
+static gboolean drawing = FALSE;                /* 鼠标左键正在画线 */
+static int last_x = 0, last_y = 0;              /* 上一线段端点（绘图区坐标） */
+static GtkWidget *b_annotate = NULL;            /* 「标注」开关按钮 */
+static GtkWidget *b_clear_annotate = NULL;      /* 「清除标注」按钮 */
+
 static void on_fmt_changed(GtkComboBox *combo, gpointer ud) {
     (void)ud;
     const char *id = gtk_combo_box_get_active_id(combo);
@@ -401,6 +413,189 @@ static void update_preview(void) {
         gtk_image_set_from_pixbuf(GTK_IMAGE(preview), scaled ? scaled : shot_pixbuf);
         if (scaled) g_object_unref(scaled);
     }
+    /* release 307: 新截图后标注覆盖层需要重绘（尺寸可能变化） */
+    if (annotate_da) gtk_widget_queue_draw(annotate_da);
+}
+
+/* ---------- release 307: 截图画笔标注 ----------
+ * 「标注」开启后，可在截图预览上按住鼠标左键画线（默认 #E95420 橙色，3px）。
+ * 预览区为 GtkOverlay：下层 GtkImage 显示截图，上层 annotate_da 是透明覆盖层，
+ * 接收鼠标事件；标注轨迹保存在 annotate_surface（ARGB32、与截图同尺寸）中，
+ * 显示时按绘图区/截图尺寸比例缩放，保存/复制时转换成 GdkPixbuf 合成到截图。
+ * 注意：不直接用 cairo_image_surface_create_for_data 在 GdkPixbuf 内存上绘制，
+ * 因为 GdkPixbuf 内存为 RGBA（非预乘），cairo ARGB32（小端）为 BGRA，直接绘制
+ * 会红蓝互换；因此用独立 cairo surface 保存轨迹，颜色与 alpha 均正确。
+ */
+
+/* 重置标注层：新截图后调用，创建与截图同尺寸的透明 ARGB32 表面 */
+static void annotation_reset(void) {
+    if (annotate_surface) {
+        cairo_surface_destroy(annotate_surface);
+        annotate_surface = NULL;
+    }
+    drawing = FALSE;
+    if (shot_pixbuf) {
+        int w = gdk_pixbuf_get_width(shot_pixbuf);
+        int h = gdk_pixbuf_get_height(shot_pixbuf);
+        if (w > 0 && h > 0) {
+            annotate_surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, w, h);
+            if (cairo_surface_status(annotate_surface) != CAIRO_STATUS_SUCCESS) {
+                cairo_surface_destroy(annotate_surface);
+                annotate_surface = NULL;
+            } else {
+                cairo_t *cr = cairo_create(annotate_surface);
+                cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+                cairo_paint(cr);
+                cairo_destroy(cr);
+            }
+        }
+    }
+    if (annotate_da) gtk_widget_queue_draw(annotate_da);
+}
+
+/* 透明覆盖层绘制：清为全透明露出下层截图，再按比例绘制标注轨迹；
+ * 无 RGBA 视觉（无合成器）时透明不可用，则直接绘制截图作为背景。 */
+static gboolean annotate_da_draw(GtkWidget *w, cairo_t *cr, gpointer ud) {
+    (void)w; (void)ud;
+    int aw = gtk_widget_get_allocated_width(w);
+    int ah = gtk_widget_get_allocated_height(w);
+    cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+    cairo_paint(cr);
+    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+
+    GdkVisual *vis = gtk_widget_get_visual(w);
+    GdkScreen *scr = gtk_widget_get_screen(w);
+    if (vis != gdk_screen_get_rgba_visual(scr)) {
+        /* 非 RGBA 环境：覆盖层不透明，先绘制截图作为背景 */
+        if (shot_pixbuf) {
+            int iw = gdk_pixbuf_get_width(shot_pixbuf);
+            int ih = gdk_pixbuf_get_height(shot_pixbuf);
+            if (aw > 0 && ah > 0 && iw > 0 && ih > 0) {
+                double sx = (double)aw / iw;
+                double sy = (double)ah / ih;
+                cairo_save(cr);
+                cairo_scale(cr, sx, sy);
+                gdk_cairo_set_source_pixbuf(cr, shot_pixbuf, 0, 0);
+                cairo_paint(cr);
+                cairo_restore(cr);
+            }
+        }
+    }
+    if (!annotate_surface) return FALSE;
+    int iw = cairo_image_surface_get_width(annotate_surface);
+    int ih = cairo_image_surface_get_height(annotate_surface);
+    if (aw < 1 || ah < 1 || iw < 1 || ih < 1) return FALSE;
+    double sx = (double)aw / iw;
+    double sy = (double)ah / ih;
+    cairo_save(cr);
+    cairo_scale(cr, sx, sy);
+    cairo_set_source_surface(cr, annotate_surface, 0, 0);
+    cairo_paint(cr);
+    cairo_restore(cr);
+    return FALSE;
+}
+
+static gboolean annotate_button_press(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (!annotate_mode || !annotate_surface) return FALSE;
+    if (ev->button == 1) {
+        drawing = TRUE;
+        last_x = (int)ev->x;
+        last_y = (int)ev->y;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static gboolean annotate_button_release(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->button == 1) drawing = FALSE;
+    return TRUE;
+}
+
+/* 鼠标移动：把绘图区坐标按比例映射到截图坐标，在标注层上画线段 */
+static gboolean annotate_motion(GtkWidget *w, GdkEventMotion *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (!drawing || !annotate_mode || !annotate_surface) return FALSE;
+    int aw = gtk_widget_get_allocated_width(w);
+    int ah = gtk_widget_get_allocated_height(w);
+    int iw = cairo_image_surface_get_width(annotate_surface);
+    int ih = cairo_image_surface_get_height(annotate_surface);
+    if (aw < 1 || ah < 1 || iw < 1 || ih < 1) return TRUE;
+    /* 绘图区坐标 → 截图坐标（截图 pixbuf 尺寸 / 绘图区分配尺寸） */
+    double sx = (double)iw / aw;
+    double sy = (double)ih / ah;
+    int cur_x = (int)ev->x;
+    int cur_y = (int)ev->y;
+    cairo_t *cr = cairo_create(annotate_surface);
+    cairo_set_source_rgb(cr, 0xe9 / 255.0, 0x54 / 255.0, 0x20 / 255.0); /* #E95420 */
+    /* 线宽随坐标等比缩放，保证在缩放显示的预览上看到 3px 的笔迹 */
+    cairo_set_line_width(cr, 3.0 * ((sx + sy) / 2.0));
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+    cairo_move_to(cr, last_x * sx, last_y * sy);
+    cairo_line_to(cr, cur_x * sx, cur_y * sy);
+    cairo_stroke(cr);
+    cairo_destroy(cr);
+    last_x = cur_x;
+    last_y = cur_y;
+    gtk_widget_queue_draw(w);
+    return TRUE;
+}
+
+/* 「标注」开关：切换标注模式，并在覆盖层上设置画笔光标 */
+static void on_annotate_toggled(GtkWidget *w, gpointer ud) {
+    (void)ud;
+    annotate_mode = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w));
+    if (!annotate_mode) drawing = FALSE;
+    if (annotate_da) {
+        GdkWindow *gdkw = gtk_widget_get_window(annotate_da);
+        if (gdkw) {
+            if (annotate_mode) {
+                GdkDisplay *dpy = gdk_display_get_default();
+                GdkCursor *cur = gdk_cursor_new_for_display(dpy, GDK_CROSSHAIR);
+                if (cur) { gdk_window_set_cursor(gdkw, cur); g_object_unref(cur); }
+            } else {
+                gdk_window_set_cursor(gdkw, NULL);
+            }
+        }
+    }
+    if (status_label)
+        gtk_label_set_text(GTK_LABEL(status_label),
+                           annotate_mode ? TR("标注模式：在截图上按住鼠标左键画线")
+                                        : TR("已关闭标注，已画内容保留"));
+}
+
+/* 「清除标注」：清空标注层像素并重绘（截图本身不受影响） */
+static void on_clear_annotate(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (annotate_surface) {
+        cairo_t *cr = cairo_create(annotate_surface);
+        cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+        cairo_paint(cr);
+        cairo_destroy(cr);
+    }
+    if (annotate_da) gtk_widget_queue_draw(annotate_da);
+    if (status_label) gtk_label_set_text(GTK_LABEL(status_label), TR("已清除标注"));
+}
+
+/* 若存在标注轨迹，返回合成标注后的新 pixbuf（调用者负责释放）；
+ * 否则返回 base 本身（不新增引用）。 */
+static GdkPixbuf *annotation_composite(GdkPixbuf *base) {
+    if (!annotate_surface || !base) return base;
+    int w = gdk_pixbuf_get_width(base);
+    int h = gdk_pixbuf_get_height(base);
+    int sw = cairo_image_surface_get_width(annotate_surface);
+    int sh = cairo_image_surface_get_height(annotate_surface);
+    if (sw != w || sh != h || w < 1 || h < 1) return base;
+    GdkPixbuf *overlay = gdk_pixbuf_get_from_surface(annotate_surface, 0, 0, w, h);
+    if (!overlay) return base;
+    GdkPixbuf *res = gdk_pixbuf_copy(base);
+    if (res)
+        gdk_pixbuf_composite(overlay, res, 0, 0, w, h, 0, 0, 1.0, 1.0,
+                             GDK_INTERP_BILINEAR, 255);
+    g_object_unref(overlay);
+    return res ? res : base;
 }
 
 /* 保存对话框（GtkFileChooserNative） */
@@ -423,7 +618,9 @@ static void on_save(GtkWidget *w, gpointer ud) {
         char *path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
         if (path) {
             GError *err = NULL;
-            if (save_pixbuf(shot_pixbuf, path, fmt, &err)) {
+            /* release 307: 保存时若存在标注轨迹，先合成到截图再保存 */
+            GdkPixbuf *to_save = annotation_composite(shot_pixbuf);
+            if (save_pixbuf(to_save, path, fmt, &err)) {
                 g_strlcpy(last_path, path, sizeof last_path);
                 history_add(path);   /* release 304: 保存成功后记入截图历史 */
                 char st[640];
@@ -436,6 +633,7 @@ static void on_save(GtkWidget *w, gpointer ud) {
                 gtk_label_set_text(GTK_LABEL(status_label), err ? err->message : TR("保存失败"));
                 g_clear_error(&err);
             }
+            if (to_save != shot_pixbuf) g_object_unref(to_save);
             g_free(path);
         }
     }
@@ -451,6 +649,7 @@ static void on_capture(GtkWidget *w, gpointer ud) {
         gtk_label_set_text(GTK_LABEL(status_label), TR("截图失败：无法访问屏幕"));
         return;
     }
+    annotation_reset();   /* release 307: 新截图对应新的空白标注层 */
     update_preview();
     char st[128];
     g_snprintf(st, sizeof st, "%d×%d %s",
@@ -516,7 +715,10 @@ static void on_copy(GtkWidget *w, gpointer ud) {
     (void)w; (void)ud;
     if (!shot_pixbuf) return;
     GtkClipboard *cb = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-    gtk_clipboard_set_image(cb, shot_pixbuf);
+    /* release 307: 复制时同样合成标注轨迹 */
+    GdkPixbuf *to_copy = annotation_composite(shot_pixbuf);
+    gtk_clipboard_set_image(cb, to_copy);
+    if (to_copy != shot_pixbuf) g_object_unref(to_copy);
     gtk_label_set_text(GTK_LABEL(status_label), TR("已复制到剪贴板"));
 }
 
@@ -684,6 +886,7 @@ static gboolean region_release_cb(GtkWidget *w, GdkEventButton *ev, gpointer ud)
             gdk_pixbuf_copy_area(rs->shot, ix0, iy0, cw, ch, crop, 0, 0);
             if (shot_pixbuf) g_object_unref(shot_pixbuf);
             shot_pixbuf = crop;
+            annotation_reset();   /* release 307: 区域截图后重置标注层 */
             update_preview();
             gchar *st = g_strdup_printf("%d×%d %s", cw, ch, TR("区域截图完成"));
             gtk_label_set_text(GTK_LABEL(status_label), st);
@@ -828,13 +1031,31 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_widget_set_margin_bottom(vbox, 10);
     gtk_container_add(GTK_CONTAINER(win), vbox);
 
-    /* 预览区 */
+    /* 预览区：GtkOverlay = 截图 GtkImage + 透明标注覆盖层（release 307） */
     GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
     qy_add_class(sw, "qy-app-surface");
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(sw), 360);
+    GtkWidget *ov = gtk_overlay_new();
     preview = gtk_image_new();
-    gtk_container_add(GTK_CONTAINER(sw), preview);
+    gtk_container_add(GTK_CONTAINER(ov), preview);
+    annotate_da = gtk_drawing_area_new();
+    gtk_widget_set_app_paintable(annotate_da, TRUE);
+    {
+        GdkScreen *scr = gtk_widget_get_screen(annotate_da);
+        GdkVisual *vis = gdk_screen_get_rgba_visual(scr);
+        if (vis) gtk_widget_set_visual(annotate_da, vis);
+    }
+    gtk_widget_set_halign(annotate_da, GTK_ALIGN_FILL);
+    gtk_widget_set_valign(annotate_da, GTK_ALIGN_FILL);
+    gtk_widget_add_events(annotate_da, GDK_BUTTON_PRESS_MASK |
+                          GDK_BUTTON_RELEASE_MASK | GDK_POINTER_MOTION_MASK);
+    g_signal_connect(annotate_da, "draw", G_CALLBACK(annotate_da_draw), NULL);
+    g_signal_connect(annotate_da, "button-press-event", G_CALLBACK(annotate_button_press), NULL);
+    g_signal_connect(annotate_da, "motion-notify-event", G_CALLBACK(annotate_motion), NULL);
+    g_signal_connect(annotate_da, "button-release-event", G_CALLBACK(annotate_button_release), NULL);
+    gtk_overlay_add_overlay(GTK_OVERLAY(ov), annotate_da);
+    gtk_container_add(GTK_CONTAINER(sw), ov);
     gtk_box_pack_start(GTK_BOX(vbox), sw, TRUE, TRUE, 0);
 
     /* 控制行：延时 + 格式 */
@@ -898,6 +1119,15 @@ static void activate(GtkApplication *app, gpointer ud) {
     qy_add_class(b_open_folder, "qy-shot-combo");
     g_signal_connect(b_open_folder, "clicked", G_CALLBACK(on_open_folder), NULL);
     gtk_box_pack_start(GTK_BOX(ctl), b_open_folder, FALSE, FALSE, 0);
+    /* release 307: 标注开关 + 清除标注 */
+    b_annotate = gtk_toggle_button_new_with_label(TR("标注"));
+    qy_add_class(b_annotate, "qy-shot-combo");
+    g_signal_connect(b_annotate, "toggled", G_CALLBACK(on_annotate_toggled), NULL);
+    gtk_box_pack_start(GTK_BOX(ctl), b_annotate, FALSE, FALSE, 0);
+    b_clear_annotate = gtk_button_new_with_label(TR("清除标注"));
+    qy_add_class(b_clear_annotate, "qy-shot-combo");
+    g_signal_connect(b_clear_annotate, "clicked", G_CALLBACK(on_clear_annotate), NULL);
+    gtk_box_pack_start(GTK_BOX(ctl), b_clear_annotate, FALSE, FALSE, 0);
     on_fmt_changed(GTK_COMBO_BOX(format_combo), NULL);
     gtk_box_pack_start(GTK_BOX(vbox), ctl, FALSE, FALSE, 0);
 

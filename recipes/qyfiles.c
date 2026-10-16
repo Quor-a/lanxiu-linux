@@ -375,6 +375,98 @@ static void do_rename(void) {
     chdir_to(cwd);
 }
 
+/* 批量重命名（release 307）：<前缀>_<编号><原扩展名>，编号 %02d，超过 99 自动 %03d */
+static gint batch_name_cmp(gconstpointer a, gconstpointer b) {
+    return g_utf8_collate((const char *)a, (const char *)b);
+}
+
+static void do_batch_rename(GtkButton *btn, gpointer ud) {
+    (void)btn; (void)ud;
+    if (in_trash) return;
+    /* 多选: gtk_tree_selection_get_selected_rows 取所有选中路径，逐行取名称列 */
+    GSList *names = selected_names();
+    guint n = g_slist_length(names);
+    if (n < 2) {
+        gtk_label_set_text(GTK_LABEL(status), TR("请先选择多个文件"));
+        g_slist_free_full(names, g_free);
+        return;
+    }
+    /* 确认后按名称排序重命名 */
+    names = g_slist_sort(names, batch_name_cmp);
+
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(TR("批量重命名"),
+        GTK_WINDOW(gtk_widget_get_toplevel(view)),
+        GTK_DIALOG_MODAL,
+        TR("取消"), GTK_RESPONSE_CANCEL,
+        TR("确定"), GTK_RESPONSE_OK, NULL);
+    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+
+    GtkWidget *grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 8);
+
+    GtkWidget *lbl_prefix = gtk_label_new(TR("前缀"));
+    gtk_widget_set_halign(lbl_prefix, GTK_ALIGN_START);
+    GtkWidget *entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "photo");
+    gtk_widget_set_hexpand(entry, TRUE);
+    gtk_grid_attach(GTK_GRID(grid), lbl_prefix, 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), entry, 1, 0, 1, 1);
+
+    GtkWidget *lbl_num = gtk_label_new(TR("起始编号"));
+    gtk_widget_set_halign(lbl_num, GTK_ALIGN_START);
+    GtkWidget *spin = gtk_spin_button_new_with_range(0, 9999, 1);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(spin), 1);
+    gtk_grid_attach(GTK_GRID(grid), lbl_num, 0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), spin, 1, 1, 1, 1);
+
+    gchar *hint_text = g_strdup_printf(TR("将对 %d 个文件重命名"), n);
+    GtkWidget *hint = gtk_label_new(hint_text);
+    g_free(hint_text);
+    gtk_widget_set_halign(hint, GTK_ALIGN_START);
+    gtk_grid_attach(GTK_GRID(grid), hint, 0, 2, 2, 1);
+
+    gtk_box_pack_start(GTK_BOX(box), grid, FALSE, FALSE, 0);
+    gtk_widget_show_all(dlg);
+
+    if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_OK) {
+        const char *prefix = gtk_entry_get_text(GTK_ENTRY(entry));
+        int num = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(spin));
+        int width = (num >= 100) ? 3 : 2;   /* 编号至少 2 位，超过 99 自动 3 位 */
+        int renamed = 0, skipped = 0;
+        for (GSList *l = names; l; l = l->next) {
+            const char *name = (const char *)l->data;
+            /* 扩展名取原文件名最后一个 '.' 后内容（含点），无扩展名则不加 */
+            const char *dot = strrchr(name, '.');
+            const char *ext = (dot && dot != name) ? dot : "";
+            gchar *newname;
+            if (prefix && prefix[0])
+                newname = g_strdup_printf("%s_%0*d%s", prefix, width, num, ext);
+            else
+                newname = g_strdup_printf("%0*d%s", width, num, ext);
+            gchar *oldf = g_build_filename(cwd, name, NULL);
+            gchar *newf = g_build_filename(cwd, newname, NULL);
+            /* 目标名已存在 → 跳过并计数（不覆盖） */
+            if (g_file_test(newf, G_FILE_TEST_EXISTS)) {
+                skipped++;
+            } else if (g_rename(oldf, newf) == 0) {
+                renamed++;
+            } else {
+                skipped++;
+            }
+            g_free(oldf); g_free(newf); g_free(newname);
+            num++;
+        }
+        gchar *msg = g_strdup_printf(TR("已重命名 %d 个文件（跳过 %d 个同名）"), renamed, skipped);
+        gtk_label_set_text(GTK_LABEL(status), msg);
+        g_free(msg);
+    }
+    gtk_widget_destroy(dlg);
+    g_slist_free_full(names, g_free);
+    chdir_to(cwd);
+}
+
 static void do_mkdir(void) {
     GtkWidget *dlg = gtk_dialog_new_with_buttons("新建文件夹", GTK_WINDOW(gtk_widget_get_toplevel(view)),
         GTK_DIALOG_MODAL, "_取消", GTK_RESPONSE_CANCEL, "_确定", GTK_RESPONSE_OK, NULL);
@@ -1624,6 +1716,8 @@ static void show_context_menu(GdkEvent *trigger) {
         add_menuitem(menu, TR("粘贴"), G_CALLBACK(do_paste));
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
         add_menuitem(menu, TR("重命名"), G_CALLBACK(do_rename));
+        /* 批量重命名（release 307）：始终显示，选中数 <2 时点击提示 */
+        add_menuitem(menu, TR("批量重命名…"), G_CALLBACK(do_batch_rename));
         add_menuitem(menu, TR("删除"), G_CALLBACK(do_delete));
         add_menuitem(menu, TR("属性"), G_CALLBACK(do_prop));
         /* 文件收藏（release 306）：已收藏显示「取消收藏」，否则「收藏」 */
