@@ -931,11 +931,13 @@ static const DesktopAppDef desktop_apps[] = {
 #define DESKTOP_ICON_Y0   60
 #define DESKTOP_ICON_DY   110
 #define DESKTOP_ICON_CONF "qydesktop-desktopicons.conf"
+#define DESKTOP_ICONNAME_CONF "qydesktop-iconnames.conf"
 
 /* 当前桌面图标顺序（GPtrArray<char*>，app 标识）与对应按钮
  * （GPtrArray<GtkWidget*>），两数组索引一一对应 */
 static GPtrArray *desktop_order = NULL;
 static GPtrArray *desktop_btns  = NULL;
+static GHashTable *desktop_icon_names = NULL;  /* release 305: app id -> 自定义显示名 */
 
 static const DesktopAppDef *desktop_app_find(const char *app) {
     if (!app) return NULL;
@@ -991,6 +993,62 @@ static void desktop_order_save(void) {
     g_free(path);
 }
 
+/* ---------- 桌面图标自定义名称（release 305 双击改名） ---------- */
+/* 读取 ~/.config/lanxiu/qydesktop-iconnames.conf（每行 应用id=新名称） */
+static void desktop_iconnames_load(void) {
+    if (desktop_icon_names) return;
+    desktop_icon_names = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                               g_free, g_free);
+    gchar *path = g_build_filename(g_get_home_dir(), ".config", "lanxiu",
+                                   DESKTOP_ICONNAME_CONF, NULL);
+    gchar *content = NULL;
+    if (g_file_get_contents(path, &content, NULL, NULL) && content) {
+        gchar **lines = g_strsplit(content, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            gchar *line = g_strstrip(lines[i]);
+            if (!line[0]) continue;
+            char *eq = strchr(line, '=');
+            if (!eq || eq == line) continue;
+            *eq = 0;
+            gchar *app = g_strstrip(line);
+            gchar *name = g_strstrip(eq + 1);
+            if (app[0] && name[0] && desktop_app_find(app))
+                g_hash_table_replace(desktop_icon_names, g_strdup(app), g_strdup(name));
+        }
+        g_strfreev(lines);
+        g_free(content);
+    }
+    g_free(path);
+}
+
+/* 写回 qydesktop-iconnames.conf（按 desktop_apps 稳定顺序输出） */
+static void desktop_iconnames_save(void) {
+    if (!desktop_icon_names) return;
+    gchar *dir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    gchar *path = g_build_filename(dir, DESKTOP_ICONNAME_CONF, NULL);
+    GString *s = g_string_new(NULL);
+    for (int i = 0; i < NDESKTOP_APPS; i++) {
+        const char *name = (const char *)g_hash_table_lookup(desktop_icon_names,
+                                                             desktop_apps[i].app);
+        if (name && name[0])
+            g_string_append_printf(s, "%s=%s\n", desktop_apps[i].app, name);
+    }
+    g_file_set_contents(path, s->str, (gssize)s->len, NULL);
+    g_string_free(s, TRUE);
+    g_free(dir);
+    g_free(path);
+}
+
+/* 按 app id 应用自定义显示名到图标按钮标签（无自定义名则保持默认） */
+static void desktop_icon_apply_name(GtkWidget *btn, const char *app) {
+    if (!desktop_icon_names || !btn || !app) return;
+    const char *name = (const char *)g_hash_table_lookup(desktop_icon_names, app);
+    if (!name || !name[0]) return;
+    GtkWidget *lb = (GtkWidget *)g_object_get_data(G_OBJECT(btn), "label");
+    if (lb) gtk_label_set_text(GTK_LABEL(lb), name);
+}
+
 static gboolean desktop_icon_draw_cb(GtkWidget *w, cairo_t *cr, gpointer ud) {
     QyIconId id = (QyIconId)GPOINTER_TO_INT(ud);
     GtkAllocation al;
@@ -1004,8 +1062,71 @@ static gboolean desktop_icon_draw_cb(GtkWidget *w, cairo_t *cr, gpointer ud) {
 
 static void desktop_icon_click(GtkButton *btn, gpointer ud) {
     (void)ud;
+    /* release 305: 双击改名时忽略 clicked，避免与应用启动冲突 */
+    if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(btn), "icon-2click"))) {
+        g_object_set_data(G_OBJECT(btn), "icon-2click", GINT_TO_POINTER(0));
+        return;
+    }
     const char *cmd = (const char *)g_object_get_data(G_OBJECT(btn), "cmdline");
     if (cmd) launch_cmd(cmd);
+}
+
+/* release 305: 双击图标弹出改名对话框。预填当前显示名，确定后写入
+ * ~/.config/lanxiu/qydesktop-iconnames.conf 并立即更新按钮标签。 */
+static void desktop_icon_rename_dialog(GtkWidget *btn) {
+    const char *app = (const char *)g_object_get_data(G_OBJECT(btn), "app");
+    if (!app) return;
+    GtkWidget *lb = (GtkWidget *)g_object_get_data(G_OBJECT(btn), "label");
+    const char *current = lb ? gtk_label_get_text(GTK_LABEL(lb)) : "";
+    if (!current) current = "";
+
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(
+        TR("重命名桌面图标"), NULL, GTK_DIALOG_MODAL,
+        TR("取消"), GTK_RESPONSE_CANCEL,
+        TR("确定"), GTK_RESPONSE_ACCEPT, NULL);
+    gtk_widget_set_name(dlg, "qy-rename-win");
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_ACCEPT);
+
+    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    gtk_container_set_border_width(GTK_CONTAINER(box), 12);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_container_add(GTK_CONTAINER(box), vbox);
+    GtkWidget *hint = gtk_label_new(TR("输入新的图标名称："));
+    gtk_box_pack_start(GTK_BOX(vbox), hint, FALSE, FALSE, 0);
+    GtkWidget *entry = gtk_entry_new();
+    gtk_entry_set_text(GTK_ENTRY(entry), current);
+    gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
+    gtk_box_pack_start(GTK_BOX(vbox), entry, FALSE, FALSE, 0);
+    gtk_widget_show_all(dlg);
+    gtk_widget_grab_focus(entry);
+    gtk_editable_select_region(GTK_EDITABLE(entry), 0, -1);
+
+    int resp = gtk_dialog_run(GTK_DIALOG(dlg));
+    if (resp == GTK_RESPONSE_ACCEPT) {
+        const char *text = gtk_entry_get_text(GTK_ENTRY(entry));
+        gchar *name = g_strdup(text ? text : "");
+        g_strstrip(name);
+        if (name[0]) {
+            if (!desktop_icon_names) desktop_iconnames_load();
+            g_hash_table_replace(desktop_icon_names, g_strdup(app), g_strdup(name));
+            desktop_iconnames_save();
+            if (lb) gtk_label_set_text(GTK_LABEL(lb), name);
+        }
+        g_free(name);
+    }
+    gtk_widget_destroy(dlg);
+}
+
+/* release 305: 桌面图标双击检测。GDK_2BUTTON_PRESS 时置标志并弹出改名
+ * 对话框，返回 TRUE 阻止 GTK 按钮默认处理产生额外 clicked。 */
+static gboolean desktop_icon_button_press(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)ud;
+    if (ev->button == 1 && ev->type == GDK_2BUTTON_PRESS) {
+        g_object_set_data(G_OBJECT(w), "icon-2click", GINT_TO_POINTER(1));
+        desktop_icon_rename_dialog(w);
+        return TRUE;
+    }
+    return FALSE;
 }
 
 /* 按当前顺序重排图标位置（GtkFixed 中纵向移动） */
@@ -1153,10 +1274,18 @@ static GtkWidget *desktop_icon(QyIconId iid, const char *css,
     gtk_box_pack_start(GTK_BOX(v), circle, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(v), lb, FALSE, FALSE, 0);
 
-    /* 行数据：app 供拖拽识别，cmdline 供点击启动 */
+    /* 行数据：app 供拖拽识别与改名匹配，cmdline 供点击启动，label 供改名更新 */
     g_object_set_data(G_OBJECT(btn), "app", g_strdup(app));
     g_object_set_data(G_OBJECT(btn), "cmdline", (gpointer)cmdline);
+    g_object_set_data(G_OBJECT(btn), "label", lb);
     g_signal_connect(btn, "clicked", G_CALLBACK(desktop_icon_click), NULL);
+
+    /* release 305: 双击改名事件（单击仍走 clicked 启动） */
+    gtk_widget_add_events(btn, GDK_BUTTON_PRESS_MASK);
+    g_signal_connect(btn, "button-press-event", G_CALLBACK(desktop_icon_button_press), NULL);
+
+    /* 启动时应用自定义显示名（按 app id 匹配，拖拽重排后仍保留） */
+    desktop_icon_apply_name(btn, app);
 
     /* 拖拽排序：可拖起（源），也可作为放置目标 */
     gtk_drag_source_set(btn, GDK_BUTTON1_MASK, desk_icon_targets, 1,
@@ -1174,6 +1303,7 @@ static GtkWidget *desktop_icon(QyIconId iid, const char *css,
 /* 按当前 desktop_order 创建全部桌面图标（左上竖排） */
 static void desktop_icons_create(void) {
     if (!desktop_order) desktop_order_load();
+    desktop_iconnames_load();   /* release 305: 读取自定义图标名称 */
     desktop_btns = g_ptr_array_new();
     for (guint i = 0; i < desktop_order->len; i++) {
         const char *app = (const char *)g_ptr_array_index(desktop_order, i);

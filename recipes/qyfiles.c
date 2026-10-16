@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <time.h>   /* release 287: 粘贴剪贴板文件名时间戳 */
 #include <glib/gstdio.h>
+#include <gio/gio.h>   /* release 305: g_file_move 回退 */
 #include <sys/wait.h>
 #include <sys/statvfs.h>
 
@@ -2084,6 +2085,153 @@ static void on_icon_activated(GtkIconView *iv, GtkTreePath *path, gpointer ud) {
     g_free(name);
 }
 
+/* ---------- 图标视图拖拽移动文件（release 305） ---------- */
+
+/* drag-data-get: 将图标视图选中项的绝对路径以 text/uri-list 提供给拖拽目标 */
+static void on_icon_drag_data_get(GtkWidget *w, GdkDragContext *ctx,
+                                  GtkSelectionData *sel, guint info,
+                                  guint time, gpointer ud) {
+    (void)ctx; (void)info; (void)time; (void)ud;
+    if (in_trash || !GTK_IS_ICON_VIEW(w)) return;
+    GtkIconView *iv = GTK_ICON_VIEW(w);
+    GtkTreeModel *m = gtk_icon_view_get_model(iv);
+    GList *items = gtk_icon_view_get_selected_items(iv);
+    guint n = g_list_length(items);
+    if (n == 0) return;
+    gchar **uris = g_new0(gchar *, n + 1);
+    guint k = 0;
+    for (GList *l = items; l; l = l->next) {
+        GtkTreeIter it;
+        gchar *name = NULL;
+        if (!gtk_tree_model_get_iter(m, &it, l->data)) continue;
+        gtk_tree_model_get(m, &it, 1, &name, -1);
+        if (name && name[0]) {
+            gchar *full = g_build_filename(cwd, name, NULL);
+            gchar *uri = g_filename_to_uri(full, NULL, NULL);
+            if (uri) uris[k++] = uri;
+            g_free(full);
+        }
+        g_free(name);
+    }
+    g_list_free_full(items, (GDestroyNotify)gtk_tree_path_free);
+    if (k > 0) {
+        uris[k] = NULL;
+        gtk_selection_data_set_uris(sel, uris);
+    }
+    g_strfreev(uris);
+}
+
+/* drag-data-received: 将拖入的源文件移动到光标下的目标文件夹 */
+static void on_icon_drag_data_received(GtkWidget *w, GdkDragContext *ctx,
+                                       gint x, gint y, GtkSelectionData *sel,
+                                       guint info, guint time, gpointer ud) {
+    (void)ctx; (void)info; (void)time; (void)ud;
+    if (in_trash || !GTK_IS_ICON_VIEW(w)) return;
+    GtkIconView *iv = GTK_ICON_VIEW(w);
+    GtkTreeModel *m = gtk_icon_view_get_model(iv);
+
+    /* 目标项：仅当光标落在某个图标上时处理 */
+    GtkTreePath *tpath = NULL;
+    if (!gtk_icon_view_get_item_at_pos(iv, x, y, &tpath, NULL) || !tpath)
+        return;
+    GtkTreeIter it;
+    gchar *target = NULL;
+    if (gtk_tree_model_get_iter(m, &it, tpath)) {
+        gchar *name = NULL;
+        gtk_tree_model_get(m, &it, 1, &name, -1);
+        if (name && name[0]) target = g_build_filename(cwd, name, NULL);
+        g_free(name);
+    }
+    gtk_tree_path_free(tpath);
+    if (!target || !g_file_test(target, G_FILE_TEST_IS_DIR)) {
+        g_free(target);
+        return;
+    }
+
+    gchar **uris = gtk_selection_data_get_uris(sel);
+    if (!uris) { g_free(target); return; }
+
+    int moved = 0, skipped = 0, failed = 0;
+    GString *errs = g_string_new(NULL);
+    for (guint i = 0; uris[i]; i++) {
+        gchar *src = g_filename_from_uri(uris[i], NULL, NULL);
+        if (!src) continue;
+        if (g_strcmp0(src, target) == 0) {
+            /* 不能把文件夹移动到自己内部 */
+            skipped++;
+            g_free(src);
+            continue;
+        }
+        gchar *base = g_path_get_basename(src);
+        gchar *dst = g_build_filename(target, base, NULL);
+        if (g_file_test(dst, G_FILE_TEST_EXISTS)) {
+            skipped++;               /* 目标已存在同名文件 → 跳过并计数 */
+        } else if (g_rename(src, dst) == 0) {
+            moved++;
+        } else {
+            /* g_rename 失败（如跨文件系统）→ 回退 g_file_move（复制+删除） */
+            GFile *sf = g_file_new_for_path(src);
+            GFile *df = g_file_new_for_path(dst);
+            GError *err = NULL;
+            if (g_file_move(sf, df, G_FILE_COPY_ALL_METADATA,
+                              NULL, NULL, NULL, &err)) {
+                moved++;
+            } else {
+                failed++;
+                if (err && err->message) {
+                    if (errs->len) g_string_append_c(errs, '\n');
+                    g_string_append_printf(errs, "%s: %s", base, err->message);
+                }
+                g_clear_error(&err);
+            }
+            g_object_unref(sf);
+            g_object_unref(df);
+        }
+        g_free(base);
+        g_free(dst);
+        g_free(src);
+    }
+    g_strfreev(uris);
+
+    gchar *msg = NULL;
+    if (failed == 0) {
+        if (moved > 0 && skipped > 0)
+            msg = g_strdup_printf(TR("已移动 %d 个文件到 %s（跳过 %d 个同名项）"),
+                                  moved, target, skipped);
+        else if (moved > 0)
+            msg = g_strdup_printf(TR("已移动 %d 个文件到 %s"), moved, target);
+        else if (skipped > 0)
+            msg = g_strdup_printf(TR("目标已存在同名文件，跳过 %d 项"), skipped);
+        else
+            msg = g_strdup(TR("没有可移动的文件"));
+    } else {
+        msg = g_strdup_printf(TR("移动完成：成功 %d，失败 %d，跳过 %d"),
+                              moved, failed, skipped);
+    }
+    if (status) gtk_label_set_text(GTK_LABEL(status), msg);
+    g_free(msg);
+    if (errs->len)
+        g_printerr("QYFILESDBG: drag move errors:\n%s\n", errs->str);
+    g_string_free(errs, TRUE);
+    g_free(target);
+
+    /* 刷新当前目录视图 */
+    if (cwd[0]) chdir_to(cwd);
+}
+
+/* 为图标视图启用拖拽源/目标（release 305，每个标签页的 icon view 创建时调用） */
+static void icon_view_setup_dnd(GtkWidget *iv) {
+    static GtkTargetEntry targets[] = {
+        { (gchar *)"text/uri-list", GTK_TARGET_SAME_APP, 0 },
+    };
+    gtk_drag_source_set(iv, GDK_BUTTON1_MASK, targets, G_N_ELEMENTS(targets),
+                        GDK_ACTION_MOVE);
+    gtk_drag_dest_set(iv, GTK_DEST_DEFAULT_DROP, targets, G_N_ELEMENTS(targets),
+                      GDK_ACTION_MOVE);
+    g_signal_connect(iv, "drag-data-get", G_CALLBACK(on_icon_drag_data_get), NULL);
+    g_signal_connect(iv, "drag-data-received", G_CALLBACK(on_icon_drag_data_received), NULL);
+}
+
 /* 更新视图切换按钮的图标与提示（随当前视图状态切换: 图标视图/列表视图） */
 static void set_view_btn(GtkWidget *b, gboolean icon_mode) {
     if (!b) return;
@@ -2531,6 +2679,7 @@ static QyFilesTab *create_tab(const char *path) {
     gtk_icon_view_set_spacing(GTK_ICON_VIEW(iv), 8);
     gtk_icon_view_set_column_spacing(GTK_ICON_VIEW(iv), 8);
     gtk_icon_view_set_row_spacing(GTK_ICON_VIEW(iv), 8);
+    icon_view_setup_dnd(iv);   /* release 305: 图标视图拖拽移动文件 */
     GtkWidget *scroll_icon = gtk_scrolled_window_new(NULL, NULL);
     gtk_container_add(GTK_CONTAINER(scroll_icon), iv);
 

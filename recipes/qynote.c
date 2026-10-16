@@ -25,11 +25,16 @@ static GtkWidget *b_sort = NULL;      /* 排序开关按钮 */
 static gchar *current_path   = NULL;   /* 当前打开笔记的绝对路径 */
 static gboolean loading_list = FALSE;
 static GHashTable *pinned_notes = NULL;   /* 置顶笔记集合：文件名→TRUE（release 300） */
+/* release 305: 便签多选批量删除 */
+static GtkWidget *multi_btn = NULL;   /* 「多选」切换按钮 */
+static GtkWidget *del_btn  = NULL;    /* 删除按钮（多选模式下显示「删除选中 (N)」） */
+static gboolean multi_mode = FALSE;   /* 当前是否处于多选模式 */
 
 static void refresh_note_list(void);   /* 前向声明 */
 static void on_pin_clicked(GtkButton *btn, gpointer ud);   /* 前向声明（release 300） */
 static void load_pinned_notes(void);   /* 前向声明（release 300） */
 static void save_pin_config(void);     /* 前向声明（release 300） */
+static void update_delete_button(void);   /* 前向声明（release 305） */
 
 /* ---------- 路径与文件工具 ---------- */
 static gchar *notes_dir(void) {
@@ -316,6 +321,20 @@ static void refresh_note_list(void) {
     loading_list = TRUE;
     load_pinned_notes();   /* release 300: 确保置顶集合已加载 */
 
+    /* release 305: 多选模式下重建前保存当前选中路径，重建后恢复（自动保存/搜索/置顶不丢选择） */
+    GHashTable *multi_sel = NULL;
+    if (multi_mode) {
+        multi_sel = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+        GList *ch0 = gtk_container_get_children(GTK_CONTAINER(listbox));
+        for (GList *it = ch0; it; it = it->next) {
+            if (gtk_list_box_row_is_selected(GTK_LIST_BOX_ROW(it->data))) {
+                const char *p = g_object_get_data(G_OBJECT(it->data), "note-path");
+                if (p) g_hash_table_add(multi_sel, g_strdup(p));
+            }
+        }
+        g_list_free(ch0);
+    }
+
     GList *ch = gtk_container_get_children(GTK_CONTAINER(listbox));
     for (GList *it = ch; it; it = it->next) gtk_widget_destroy(GTK_WIDGET(it->data));
     g_list_free(ch);
@@ -382,9 +401,21 @@ static void refresh_note_list(void) {
     }
     g_free(dir);
 
-    /* 恢复选中：优先当前笔记路径 */
+    /* release 305: 多选模式下先恢复重建前的选中集合 */
+    if (multi_sel) {
+        GList *rows = gtk_container_get_children(GTK_CONTAINER(listbox));
+        for (GList *l = rows; l; l = l->next) {
+            const char *p = g_object_get_data(G_OBJECT(l->data), "note-path");
+            if (p && g_hash_table_contains(multi_sel, p))
+                gtk_list_box_select_row(listbox, GTK_LIST_BOX_ROW(l->data));
+        }
+        g_list_free(rows);
+        g_hash_table_destroy(multi_sel);
+    }
+
+    /* 恢复选中：优先当前笔记路径（release 305: 多选模式下不自动单选） */
     GtkListBoxRow *sel = NULL;
-    if (current_path) {
+    if (!multi_mode && current_path) {
         GList *rows = gtk_container_get_children(GTK_CONTAINER(listbox));
         for (GList *l = rows; l; l = l->next) {
             const char *p = g_object_get_data(G_OBJECT(l->data), "note-path");
@@ -395,21 +426,27 @@ static void refresh_note_list(void) {
         }
         g_list_free(rows);
     }
-    if (sel)
+    if (!multi_mode && sel)
         gtk_list_box_select_row(listbox, sel);
-    else {
+    else if (!multi_mode) {
         GtkListBoxRow *first = gtk_list_box_get_row_at_index(listbox, 0);
         if (first) gtk_list_box_select_row(listbox, first);
     }
 
     gtk_stack_set_visible_child_name(GTK_STACK(stack), count > 0 ? "list" : "empty");
     loading_list = FALSE;
+    if (multi_mode) update_delete_button();   /* release 305: 重建后刷新「删除选中 (N)」计数 */
 }
 
 /* ---------- 信号 ---------- */
 static void on_row_selected(GtkListBox *box, GtkListBoxRow *row, gpointer ud) {
     (void)box; (void)ud;
     if (loading_list || !row) return;
+    /* release 305: 多选模式下点击行只切换选中状态，不打开笔记 */
+    if (multi_mode) {
+        update_delete_button();
+        return;
+    }
     const char *path = g_object_get_data(G_OBJECT(row), "note-path");
     if (path) {
         g_free(current_path);
@@ -438,8 +475,117 @@ static void on_new_clicked(GtkButton *b, gpointer ud) {
     g_free(dir);
 }
 
+/* release 305: 更新删除按钮文案 —— 多选模式显示「删除选中 (N)」，单选模式显示「删除」 */
+static void update_delete_button(void) {
+    if (!del_btn) return;
+    if (multi_mode) {
+        guint n = 0;
+        GList *rows = gtk_container_get_children(GTK_CONTAINER(listbox));
+        for (GList *l = rows; l; l = l->next) {
+            if (gtk_list_box_row_is_selected(GTK_LIST_BOX_ROW(l->data)))
+                n++;
+        }
+        g_list_free(rows);
+        gchar *label = g_strdup_printf(TR("删除选中 (%u)"), n);
+        gtk_button_set_label(GTK_BUTTON(del_btn), label);
+        g_free(label);
+    } else {
+        gtk_button_set_label(GTK_BUTTON(del_btn), TR("删除"));
+    }
+}
+
+/* release 305: 「多选」切换 —— 开启后 listbox 进入多选模式，可批量删除 */
+static void on_multi_toggled(GtkToggleButton *btn, gpointer ud) {
+    (void)ud;
+    multi_mode = gtk_toggle_button_get_active(btn);
+    if (multi_mode) {
+        gtk_list_box_set_selection_mode(listbox, GTK_SELECTION_MULTIPLE);
+        gtk_list_box_unselect_all(listbox);
+        if (status_lb)
+            gtk_label_set_text(GTK_LABEL(status_lb), TR("多选模式：点击行选择，可批量删除"));
+    } else {
+        gtk_list_box_set_selection_mode(listbox, GTK_SELECTION_SINGLE);
+        gtk_list_box_unselect_all(listbox);
+        /* 恢复单选：优先当前笔记，否则选第一行 */
+        if (current_path) {
+            GList *rows = gtk_container_get_children(GTK_CONTAINER(listbox));
+            for (GList *l = rows; l; l = l->next) {
+                const char *p = g_object_get_data(G_OBJECT(l->data), "note-path");
+                if (p && strcmp(p, current_path) == 0) {
+                    gtk_list_box_select_row(listbox, GTK_LIST_BOX_ROW(l->data));
+                    break;
+                }
+            }
+            g_list_free(rows);
+        } else {
+            GtkListBoxRow *first = gtk_list_box_get_row_at_index(listbox, 0);
+            if (first) gtk_list_box_select_row(listbox, first);
+        }
+        if (status_lb)
+            gtk_label_set_text(GTK_LABEL(status_lb), "");
+    }
+    update_delete_button();
+}
+
 static void on_delete_clicked(GtkButton *b, gpointer ud) {
     (void)b; (void)ud;
+
+    /* release 305: 多选模式 → 批量删除所有选中行 */
+    if (multi_mode) {
+        GList *rows = gtk_container_get_children(GTK_CONTAINER(listbox));
+        GPtrArray *paths = g_ptr_array_new_with_free_func(g_free);
+        for (GList *l = rows; l; l = l->next) {
+            if (!gtk_list_box_row_is_selected(GTK_LIST_BOX_ROW(l->data))) continue;
+            const char *p = g_object_get_data(G_OBJECT(l->data), "note-path");
+            if (p) g_ptr_array_add(paths, g_strdup(p));
+        }
+        g_list_free(rows);
+
+        if (paths->len == 0) {
+            g_ptr_array_free(paths, TRUE);
+            return;
+        }
+
+        gchar *msg = g_strdup_printf(TR("删除选中的 %d 个便签？"), paths->len);
+        GtkWidget *dlg = gtk_message_dialog_new(GTK_WINDOW(win),
+                                                GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+                                                GTK_MESSAGE_QUESTION, GTK_BUTTONS_YES_NO,
+                                                "%s", msg);
+        if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_YES) {
+            load_pinned_notes();
+            gboolean pin_changed = FALSE;
+            gboolean current_deleted = FALSE;
+            for (guint i = 0; i < paths->len; i++) {
+                const char *path = g_ptr_array_index(paths, i);
+                g_remove(path);
+                /* release 300/305: 批量删除时同步从置顶配置移除对应文件名 */
+                gchar *base = g_path_get_basename(path);
+                if (g_hash_table_remove(pinned_notes, base))
+                    pin_changed = TRUE;
+                g_free(base);
+                if (current_path && strcmp(current_path, path) == 0)
+                    current_deleted = TRUE;
+            }
+            if (pin_changed) save_pin_config();
+            if (current_deleted) {
+                g_free(current_path);
+                current_path = NULL;
+                GtkTextBuffer *buf = gtk_text_view_get_buffer(textview);
+                gtk_text_buffer_set_text(buf, "", -1);
+            }
+            refresh_note_list();
+            /* 批量删除结束后恢复单选模式并关闭「多选」按钮 */
+            if (multi_btn)
+                gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(multi_btn), FALSE);
+            if (status_lb)
+                gtk_label_set_text(GTK_LABEL(status_lb), TR("已删除"));
+        }
+        gtk_widget_destroy(dlg);
+        g_free(msg);
+        g_ptr_array_free(paths, TRUE);
+        return;
+    }
+
     if (!current_path) return;
     gchar *title = read_first_line(current_path);
     gchar *msg = g_strdup_printf(TR("删除笔记「%s」？"), title);
@@ -719,6 +865,11 @@ int main(int argc, char **argv) {
     GtkWidget *b_del = gtk_button_new_with_label(TR("删除"));
     qy_add_class(b_del, "qy-btn qy-btn-danger");
     g_signal_connect(b_del, "clicked", G_CALLBACK(on_delete_clicked), NULL);
+    del_btn = b_del;   /* release 305: 多选模式下复用显示「删除选中 (N)」 */
+    /* release 305: 多选切换按钮 */
+    multi_btn = gtk_toggle_button_new_with_label(TR("多选"));
+    qy_add_class(multi_btn, "qy-btn");
+    g_signal_connect(multi_btn, "toggled", G_CALLBACK(on_multi_toggled), NULL);
     GtkWidget *b_save = gtk_button_new_with_label(TR("保存"));
     qy_add_class(b_save, "qy-btn");
     g_signal_connect(b_save, "clicked", G_CALLBACK(on_save_clicked), NULL);
@@ -738,6 +889,7 @@ int main(int argc, char **argv) {
     qy_add_class(count_lb, "qy-note-count");
     gtk_box_pack_start(GTK_BOX(toolbar), b_new, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), b_del, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(toolbar), multi_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), b_save, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), b_exp, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(toolbar), b_time, FALSE, FALSE, 0);
@@ -774,6 +926,8 @@ int main(int argc, char **argv) {
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw_list), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     listbox = GTK_LIST_BOX(gtk_list_box_new());
     gtk_widget_set_name(GTK_WIDGET(listbox), "qy-note-list");
+    /* release 305: 显式单选；「多选」按钮开启时切换为 GTK_SELECTION_MULTIPLE */
+    gtk_list_box_set_selection_mode(listbox, GTK_SELECTION_SINGLE);
     g_signal_connect(listbox, "row-selected", G_CALLBACK(on_row_selected), NULL);
     gtk_container_add(GTK_CONTAINER(sw_list), GTK_WIDGET(listbox));
     gtk_stack_add_named(GTK_STACK(stack), sw_list, "list");

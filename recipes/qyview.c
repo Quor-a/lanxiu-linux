@@ -325,6 +325,74 @@ static gboolean save_once(gpointer ud) {
     return G_SOURCE_REMOVE;
 }
 
+/* 旋转后另存为（release 305）：把当前（可能已旋转的）pix 以 PNG 保存到用户选择路径。
+ * 使用非 native 的 GtkFileChooserDialog，避免新增 GtkFileChooserNative 指针类型 warning。 */
+static void on_rotate_save_as(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    if (!pix) {
+        if (save_status) gtk_label_set_text(GTK_LABEL(save_status), TR("没有可保存的图片"));
+        return;
+    }
+
+    /* 默认建议: 同目录下 <原名>_rotated.png（默认格式 PNG） */
+    gchar *suggest = NULL;
+    if (current_path) {
+        gchar *dir = g_path_get_dirname(current_path);
+        gchar *base = g_path_get_basename(current_path);
+        char *dot = strrchr(base, '.');
+        if (dot) *dot = 0;
+        gchar *name = g_strdup_printf("%s_rotated.png", base);
+        suggest = g_build_filename(dir, name, NULL);
+        g_free(name);
+        g_free(dir);
+        g_free(base);
+    }
+    if (!suggest) suggest = g_strdup("rotated.png");
+
+    GtkWidget *dlg = gtk_file_chooser_dialog_new(TR("另存为"), g_win,
+                                                 GTK_FILE_CHOOSER_ACTION_SAVE,
+                                                 TR("取消"), GTK_RESPONSE_CANCEL,
+                                                 TR("保存"), GTK_RESPONSE_ACCEPT,
+                                                 NULL);
+    gtk_file_chooser_set_do_overwrite_confirmation(GTK_FILE_CHOOSER(dlg), TRUE);
+    gchar *sdir = g_path_get_dirname(suggest);
+    gchar *sname = g_path_get_basename(suggest);
+    gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(dlg), sdir);
+    gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(dlg), sname);
+    g_free(sdir);
+    g_free(sname);
+
+    /* 默认只保存为 PNG */
+    GtkFileFilter *f = gtk_file_filter_new();
+    gtk_file_filter_set_name(f, "PNG");
+    gtk_file_filter_add_pattern(f, "*.png");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dlg), f);
+    gtk_file_chooser_set_filter(GTK_FILE_CHOOSER(dlg), f);
+
+    gint res = gtk_dialog_run(GTK_DIALOG(dlg));
+    if (res == GTK_RESPONSE_ACCEPT) {
+        gchar *path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dlg));
+        if (path) {
+            GError *err = NULL;
+            if (gdk_pixbuf_save(pix, path, "png", &err, NULL)) {
+                if (save_status) gtk_label_set_text(GTK_LABEL(save_status), TR("已保存"));
+            } else {
+                if (save_status) {
+                    gchar *msg = g_strdup_printf("%s: %s", TR("保存失败"),
+                                                 err ? err->message : "?");
+                    gtk_label_set_text(GTK_LABEL(save_status), msg);
+                    g_free(msg);
+                }
+                g_printerr("qyview rotate-save-as: %s\n", err ? err->message : "?");
+                g_clear_error(&err);
+            }
+            g_free(path);
+        }
+    }
+    gtk_widget_destroy(dlg);
+    g_free(suggest);
+}
+
 /* ---------- 另存为其它格式 ---------- */
 /* 返回当前下拉框选择的格式 id：png / jpeg / bmp */
 static const char *save_fmt_id(void) {
@@ -1152,6 +1220,10 @@ static void activate(GtkApplication *app, gpointer ud) {
     qy_add_class(b_zoomin, "qy-view-bar-btn");
     GtkWidget *b_fit = qy_icon_button(QY_ICON_FIT, 18, TR("适应窗口"), "qy-view-bar-btn");
     GtkWidget *b_rot = qy_icon_button(QY_ICON_ROTATE, 18, TR("旋转"), "qy-view-bar-btn");
+    /* 旋转后另存为（release 305）：把当前（可能已旋转的）图片以 PNG 另存 */
+    GtkWidget *b_saveas_rot = gtk_button_new_with_label(TR("另存为"));
+    qy_add_class(b_saveas_rot, "qy-view-bar-btn");
+    gtk_widget_set_tooltip_text(b_saveas_rot, TR("旋转后另存为 PNG"));
     GtkWidget *b_save = qy_icon_button(QY_ICON_SAVE, 18, TR("保存"), "qy-view-bar-btn");
     GtkWidget *b_info = qy_icon_button(QY_ICON_LIST, 18, TR("信息 (i)"), "qy-view-bar-btn");
     GtkWidget *b_full = qy_icon_button(QY_ICON_MAX, 18, TR("全屏 (F11)"), "qy-view-bar-btn");
@@ -1171,6 +1243,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(bar), b_zoomin, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), b_fit, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), b_rot, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(bar), b_saveas_rot, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), b_save, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), b_info, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(bar), b_full, FALSE, FALSE, 0);
@@ -1185,6 +1258,7 @@ static void activate(GtkApplication *app, gpointer ud) {
     g_signal_connect(b_zoomin, "clicked", G_CALLBACK(on_zoomin), da);
     g_signal_connect(b_fit, "clicked", G_CALLBACK(on_fit), da);
     g_signal_connect(b_rot, "clicked", G_CALLBACK(on_rotate), da);
+    g_signal_connect(b_saveas_rot, "clicked", G_CALLBACK(on_rotate_save_as), da);
     g_signal_connect(b_save, "clicked", G_CALLBACK(on_save), da);
     g_signal_connect(b_info, "clicked", G_CALLBACK(on_info), NULL);
     g_signal_connect(b_full, "clicked", G_CALLBACK(on_fullscreen), NULL);
