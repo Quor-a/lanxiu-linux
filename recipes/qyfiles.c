@@ -94,6 +94,11 @@ static GtkWidget *device_sep = NULL;     /* 设备分组上方的分隔线 */
 static GPtrArray *device_entries = NULL;  /* QyDevice* 数组 */
 static GPtrArray *recent_paths = NULL; /* 最近访问路径，最新在前，最多 6 个 */
 static int icon_size = 48;             /* 图标大小（release 295） */
+/* 侧边栏「收藏」分组（release 306：文件收藏星标） */
+static GtkWidget *fav_list = NULL;     /* 收藏行 GtkListBox */
+static GtkWidget *fav_sep = NULL;      /* 收藏分组上方分隔线 */
+static GtkWidget *fav_box = NULL;      /* 收藏分组整体容器 */
+static GPtrArray *fav_paths = NULL;    /* 收藏的绝对路径（g_free 释放） */
 static GtkWidget *zoom_combo = NULL;   /* 图标大小选择 */
 
 /* 网络挂载（release: SMB/CIFS + SSHFS） */
@@ -1336,6 +1341,193 @@ static void on_device_refresh_clicked(GtkButton *b, gpointer ud) {
     device_refresh();
 }
 
+/* ---------- 侧边栏「收藏」分组（release 306：文件收藏星标） ---------- */
+/* 收藏持久化到 ~/.config/lanxiu/qyfiles-favs.conf，每行一个绝对路径 */
+static gchar *fav_config_file(void) {
+    return g_build_filename(g_get_home_dir(), ".config", "lanxiu", "qyfiles-favs.conf", NULL);
+}
+
+static gboolean fav_contains(const char *path) {
+    if (!fav_paths || !path) return FALSE;
+    for (guint i = 0; i < fav_paths->len; i++) {
+        const char *p = (const char *)g_ptr_array_index(fav_paths, i);
+        if (p && !strcmp(p, path)) return TRUE;
+    }
+    return FALSE;
+}
+
+static void fav_save(void) {
+    gchar *dir = g_build_filename(g_get_home_dir(), ".config", "lanxiu", NULL);
+    g_mkdir_with_parents(dir, 0700);
+    g_free(dir);
+    gchar *file = fav_config_file();
+    GString *out = g_string_new(NULL);
+    if (fav_paths) {
+        for (guint i = 0; i < fav_paths->len; i++) {
+            const char *p = (const char *)g_ptr_array_index(fav_paths, i);
+            if (p && p[0]) g_string_append_printf(out, "%s\n", p);
+        }
+    }
+    g_file_set_contents(file, out->str, out->len, NULL);
+    g_string_free(out, TRUE);
+    g_free(file);
+}
+
+static void fav_load(void) {
+    if (!fav_paths) fav_paths = g_ptr_array_new_with_free_func(g_free);
+    g_ptr_array_set_size(fav_paths, 0);
+    gchar *file = fav_config_file();
+    gchar *content = NULL;
+    if (g_file_get_contents(file, &content, NULL, NULL) && content) {
+        gchar **lines = g_strsplit(content, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            gchar *line = g_strstrip(lines[i]);
+            if (line[0] && g_file_test(line, G_FILE_TEST_EXISTS))
+                g_ptr_array_add(fav_paths, g_strdup(line));
+        }
+        g_strfreev(lines);
+    }
+    g_free(content);
+    g_free(file);
+}
+
+/* 重建「收藏」行：每行显示 basename，tooltip 为完整路径（行样式沿用书签/最近） */
+static void fav_rebuild(void) {
+    if (!fav_list) return;
+    GList *rows = gtk_container_get_children(GTK_CONTAINER(fav_list));
+    for (GList *l = rows; l; l = l->next)
+        gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(rows);
+    if (!fav_paths) return;
+    for (guint i = 0; i < fav_paths->len; i++) {
+        const char *path = (const char *)g_ptr_array_index(fav_paths, i);
+        if (!path || !path[0]) continue;
+        gchar *base = g_path_get_basename(path);
+        GtkWidget *row = gtk_list_box_row_new();
+        GtkWidget *lbl = gtk_label_new(base && base[0] ? base : path);
+        gtk_label_set_xalign(GTK_LABEL(lbl), 0.0);
+        gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
+        gtk_widget_set_margin_start(lbl, 6);
+        gtk_widget_set_margin_end(lbl, 6);
+        gtk_widget_set_margin_top(lbl, 3);
+        gtk_widget_set_margin_bottom(lbl, 3);
+        gtk_container_add(GTK_CONTAINER(row), lbl);
+        gtk_widget_set_tooltip_text(row, path);
+        g_object_set_data_full(G_OBJECT(row), "path", g_strdup(path), g_free);
+        gtk_list_box_insert(GTK_LIST_BOX(fav_list), row, -1);
+        g_free(base);
+    }
+}
+
+/* 点击收藏行：目录直接进入；文件则打开其所在目录 */
+static void on_fav_activated(GtkListBox *box, GtkListBoxRow *row, gpointer ud) {
+    (void)box; (void)ud;
+    const char *path = row ? g_object_get_data(G_OBJECT(row), "path") : NULL;
+    if (!path || !path[0]) return;
+    if (g_file_test(path, G_FILE_TEST_IS_DIR)) {
+        chdir_to(path);
+    } else {
+        gchar *dir = g_path_get_dirname(path);
+        if (dir && dir[0]) chdir_to(dir);
+        g_free(dir);
+    }
+}
+
+/* 取消收藏：从数组与配置文件移除并刷新侧边栏 */
+static void on_fav_remove(GtkMenuItem *mi, gpointer ud) {
+    (void)mi;
+    const char *path = (const char *)ud;
+    if (!path || !path[0]) { g_free(ud); return; }
+    if (fav_paths) {
+        for (guint i = 0; i < fav_paths->len; i++) {
+            const char *p = (const char *)g_ptr_array_index(fav_paths, i);
+            if (p && !strcmp(p, path)) {
+                g_ptr_array_remove_index(fav_paths, i);
+                break;
+            }
+        }
+    }
+    fav_save();
+    if (fav_list) fav_rebuild();
+    gtk_label_set_text(GTK_LABEL(status), TR("已取消收藏"));
+    g_free(ud);
+}
+
+/* 收藏行右键：取消收藏 */
+static gboolean on_fav_popup(GtkWidget *w, GdkEventButton *ev, gpointer ud) {
+    (void)w; (void)ud;
+    if (ev->type != GDK_BUTTON_PRESS || ev->button != 3) return FALSE;
+    GtkListBoxRow *row = gtk_list_box_get_row_at_y(GTK_LIST_BOX(fav_list), (gint)ev->y);
+    if (!row) return TRUE;
+    gtk_list_box_select_row(GTK_LIST_BOX(fav_list), row);
+    const char *path = g_object_get_data(G_OBJECT(row), "path");
+    GtkWidget *menu = gtk_menu_new();
+    GtkWidget *mi = gtk_menu_item_new_with_label(TR("取消收藏"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_fav_remove), g_strdup(path ? path : ""));
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
+    gtk_widget_show_all(menu);
+    gtk_menu_attach_to_widget(GTK_MENU(menu), w, NULL);
+    gtk_menu_popup_at_pointer(GTK_MENU(menu), (const GdkEvent *)ev);
+    return TRUE;
+}
+
+/* 当前选中项（列表视图）的绝对路径 */
+static gchar *fav_selected_path(void) {
+    if (in_trash) return NULL;
+    gchar *name = NULL;
+    selected_name(&name);
+    if (!name || !name[0]) return NULL;
+    gchar *full = g_build_filename(cwd, name, NULL);
+    g_free(name);
+    return full;
+}
+
+/* 右键菜单「收藏」：当前选中文件/文件夹加入收藏并立即刷新侧边栏 */
+static void do_add_fav(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    gchar *full = fav_selected_path();
+    if (!full) {
+        gtk_label_set_text(GTK_LABEL(status), TR("请先选择一个文件"));
+        return;
+    }
+    if (fav_contains(full)) {
+        gtk_label_set_text(GTK_LABEL(status), TR("已在收藏中"));
+        g_free(full);
+        return;
+    }
+    if (!fav_paths) fav_paths = g_ptr_array_new_with_free_func(g_free);
+    g_ptr_array_add(fav_paths, g_strdup(full));
+    fav_save();
+    if (fav_list) fav_rebuild();
+    gchar *msg = g_strdup_printf(TR("已收藏 %s"), full);
+    gtk_label_set_text(GTK_LABEL(status), msg);
+    g_free(msg);
+    g_free(full);
+}
+
+/* 右键菜单「取消收藏」：移除当前选中项并写回配置、刷新侧边栏 */
+static void do_remove_fav(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    gchar *full = fav_selected_path();
+    if (!full) {
+        gtk_label_set_text(GTK_LABEL(status), TR("请先选择一个文件"));
+        return;
+    }
+    if (fav_paths) {
+        for (guint i = 0; i < fav_paths->len; i++) {
+            const char *p = (const char *)g_ptr_array_index(fav_paths, i);
+            if (p && !strcmp(p, full)) {
+                g_ptr_array_remove_index(fav_paths, i);
+                break;
+            }
+        }
+    }
+    fav_save();
+    if (fav_list) fav_rebuild();
+    gtk_label_set_text(GTK_LABEL(status), TR("已取消收藏"));
+    g_free(full);
+}
+
 /* ---------- 打开方式子菜单（release 256） ---------- */
 static void do_open_with(GtkMenuItem *mi, gpointer ud) {
     (void)mi;
@@ -1434,6 +1626,19 @@ static void show_context_menu(GdkEvent *trigger) {
         add_menuitem(menu, TR("重命名"), G_CALLBACK(do_rename));
         add_menuitem(menu, TR("删除"), G_CALLBACK(do_delete));
         add_menuitem(menu, TR("属性"), G_CALLBACK(do_prop));
+        /* 文件收藏（release 306）：已收藏显示「取消收藏」，否则「收藏」 */
+        {
+            gchar *sel = NULL;
+            gchar *full = NULL;
+            selected_name(&sel);
+            if (sel && sel[0]) full = g_build_filename(cwd, sel, NULL);
+            g_free(sel);
+            if (full && fav_contains(full))
+                add_menuitem(menu, TR("取消收藏"), G_CALLBACK(do_remove_fav));
+            else
+                add_menuitem(menu, TR("收藏"), G_CALLBACK(do_add_fav));
+            g_free(full);
+        }
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
         /* 压缩 / 解压（release 283） */
         gchar *sel = NULL;
@@ -2997,6 +3202,24 @@ static void activate(GtkApplication *app, gpointer ud) {
     gtk_box_pack_start(GTK_BOX(device_box), device_none_lb, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(side), device_box, FALSE, FALSE, 0);
     device_refresh();
+    /* 「收藏」分组（release 306）：位于「设备」与「书签」之间 */
+    fav_sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_box_pack_start(GTK_BOX(side), fav_sep, FALSE, FALSE, 4);
+    fav_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    GtkWidget *fav_hdr = gtk_label_new(TR("收藏"));
+    gtk_widget_set_halign(fav_hdr, GTK_ALIGN_START);
+    add_class(fav_hdr, "qy-files-bm-header");
+    gtk_box_pack_start(GTK_BOX(fav_box), fav_hdr, FALSE, FALSE, 0);
+    fav_list = gtk_list_box_new();
+    qy_add_class(fav_list, "qy-files-book");
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(fav_list), GTK_SELECTION_SINGLE);
+    gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(fav_list), TRUE);
+    g_signal_connect(fav_list, "row-activated", G_CALLBACK(on_fav_activated), NULL);
+    g_signal_connect(fav_list, "button-press-event", G_CALLBACK(on_fav_popup), NULL);
+    gtk_box_pack_start(GTK_BOX(fav_box), fav_list, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(side), fav_box, FALSE, FALSE, 0);
+    fav_load();
+    fav_rebuild();
     /* 书签分组（release 256） */
     gtk_box_pack_start(GTK_BOX(side), gtk_separator_new(GTK_ORIENTATION_HORIZONTAL), FALSE, FALSE, 4);
     GtkWidget *bm_hdr = gtk_label_new(TR("书签"));

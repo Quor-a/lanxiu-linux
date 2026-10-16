@@ -25,6 +25,11 @@ static GtkWidget *fdesc_lb[FORECAST_DAYS];
 static GtkWidget *entry   = NULL;
 static gboolean fetch_busy = FALSE;
 
+/* release 306: 多城市管理 */
+#define MAX_SAVED_CITIES 8
+static GtkWidget *combo = NULL;           /* 已保存城市下拉 */
+static gboolean combo_updating = FALSE;    /* 程序化更新下拉时抑制 changed 查询 */
+
 /* 解析结果（线程填充，idle 回调读取） */
 typedef struct {
     gboolean ok;
@@ -218,6 +223,150 @@ static void on_entry_activate(GtkEntry *e, gpointer ud) {
     start_fetch(gtk_entry_get_text(e));
 }
 
+/* ---------- 多城市管理（release 306） ---------- */
+static gchar *cities_config_path(void) {
+    return g_build_filename(g_get_home_dir(), ".config/lanxiu/qyweather-cities.conf", NULL);
+}
+
+/* 当前下拉是否已含 city（用 g_strcmp0 去重比较） */
+static gboolean cities_contains(const char *city) {
+    if (!city || !city[0]) return FALSE;
+    GtkTreeModel *model = gtk_combo_box_get_model(GTK_COMBO_BOX(combo));
+    GtkTreeIter iter;
+    if (gtk_tree_model_get_iter_first(model, &iter)) {
+        do {
+            gchar *s = NULL;
+            gtk_tree_model_get(model, &iter, 0, &s, -1);
+            gboolean same = (s && g_strcmp0(s, city) == 0);
+            g_free(s);
+            if (same) return TRUE;
+        } while (gtk_tree_model_iter_next(model, &iter));
+    }
+    return FALSE;
+}
+
+static int cities_count(void) {
+    GtkTreeModel *model = gtk_combo_box_get_model(GTK_COMBO_BOX(combo));
+    return gtk_tree_model_iter_n_children(model, NULL);
+}
+
+/* 把下拉当前内容写回配置文件（每行一个城市名） */
+static void cities_save(void) {
+    gchar *path = cities_config_path();
+    gchar *dir = g_path_get_dirname(path);
+    g_mkdir_with_parents(dir, 0755);
+    g_free(dir);
+
+    GString *buf = g_string_new(NULL);
+    GtkTreeModel *model = gtk_combo_box_get_model(GTK_COMBO_BOX(combo));
+    GtkTreeIter iter;
+    if (gtk_tree_model_get_iter_first(model, &iter)) {
+        do {
+            gchar *s = NULL;
+            gtk_tree_model_get(model, &iter, 0, &s, -1);
+            if (s && s[0]) {
+                g_string_append(buf, s);
+                g_string_append_c(buf, '\n');
+            }
+            g_free(s);
+        } while (gtk_tree_model_iter_next(model, &iter));
+    }
+    g_file_set_contents(path, buf->str, (gssize)buf->len, NULL);
+    g_string_free(buf, TRUE);
+    g_free(path);
+}
+
+/* 启动时从配置文件加载城市列表填充下拉（去重，最多 8 个） */
+static void cities_load(void) {
+    gchar *path = cities_config_path();
+    gchar *content = NULL;
+    if (g_file_get_contents(path, &content, NULL, NULL) && content) {
+        gchar **lines = g_strsplit(content, "\n", -1);
+        for (int i = 0; lines[i] && cities_count() < MAX_SAVED_CITIES; i++) {
+            gchar *city = g_strstrip(lines[i]);
+            if (city[0] && !cities_contains(city))
+                gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combo), city);
+        }
+        g_strfreev(lines);
+    }
+    g_free(content);
+    g_free(path);
+    gtk_combo_box_set_active(GTK_COMBO_BOX(combo), -1);
+}
+
+/* 选中下拉中指定城市（不触发查询） */
+static void cities_select(const char *city) {
+    if (!city || !city[0]) return;
+    GtkTreeModel *model = gtk_combo_box_get_model(GTK_COMBO_BOX(combo));
+    GtkTreeIter iter;
+    int idx = 0;
+    if (gtk_tree_model_get_iter_first(model, &iter)) {
+        do {
+            gchar *s = NULL;
+            gtk_tree_model_get(model, &iter, 0, &s, -1);
+            gboolean same = (s && g_strcmp0(s, city) == 0);
+            g_free(s);
+            if (same) {
+                combo_updating = TRUE;
+                gtk_combo_box_set_active(GTK_COMBO_BOX(combo), idx);
+                combo_updating = FALSE;
+                return;
+            }
+            idx++;
+        } while (gtk_tree_model_iter_next(model, &iter));
+    }
+}
+
+/* 把城市加入下拉并写回配置（去重，最多 8 个）；已存在则只选中 */
+static gboolean cities_add(const char *city) {
+    gchar *trimmed = g_strstrip(g_strdup(city));
+    if (!trimmed[0]) { g_free(trimmed); return FALSE; }
+    if (!cities_contains(trimmed)) {
+        if (cities_count() >= MAX_SAVED_CITIES) {
+            gtk_label_set_text(GTK_LABEL(err_lb), TR("最多保存 8 个城市"));
+            gtk_widget_show(err_lb);
+            g_free(trimmed);
+            return FALSE;
+        }
+        combo_updating = TRUE;
+        gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(combo), trimmed);
+        combo_updating = FALSE;
+        cities_save();
+    }
+    cities_select(trimmed);
+    g_free(trimmed);
+    return TRUE;
+}
+
+/* 「保存城市」：把当前输入的城市保存到列表 */
+static void on_save_city(GtkButton *btn, gpointer ud) {
+    (void)btn; (void)ud;
+    const gchar *text = gtk_entry_get_text(GTK_ENTRY(entry));
+    if (text && text[0]) cities_add(text);
+}
+
+/* 「删除城市」：删除下拉当前选中的城市并写回配置 */
+static void on_delete_city(GtkButton *btn, gpointer ud) {
+    (void)btn; (void)ud;
+    int active = gtk_combo_box_get_active(GTK_COMBO_BOX(combo));
+    if (active < 0) return;
+    combo_updating = TRUE;
+    gtk_combo_box_text_remove(GTK_COMBO_BOX_TEXT(combo), active);
+    combo_updating = FALSE;
+    cities_save();
+}
+
+/* 下拉选择某个城市后自动查询该城市天气 */
+static void on_combo_changed(GtkComboBox *cb, gpointer ud) {
+    (void)ud;
+    if (combo_updating) return;
+    const gchar *city = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(cb));
+    if (city && city[0]) {
+        gtk_entry_set_text(GTK_ENTRY(entry), city);
+        start_fetch(city);
+    }
+}
+
 /* ---------- UI ---------- */
 static GtkWidget *make_day_card(int idx) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
@@ -292,6 +441,20 @@ int main(int argc, char **argv) {
         gtk_grid_attach(GTK_GRID(grid), make_day_card(i), i, 0, 1, 1);
     gtk_box_pack_start(GTK_BOX(card), grid, TRUE, TRUE, 2);
 
+    /* 城市管理行（release 306）：已保存城市下拉 + 删除城市 */
+    GtkWidget *city_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    combo = gtk_combo_box_text_new();
+    gtk_widget_set_name(combo, "qyweather-city-combo");
+    gtk_widget_set_hexpand(combo, TRUE);
+    gtk_combo_box_set_active(GTK_COMBO_BOX(combo), -1);
+    cities_load();   /* 启动时加载已保存城市填充下拉 */
+    GtkWidget *del_btn = gtk_button_new_with_label(TR("删除城市"));
+    qy_add_class(del_btn, "qy-btn-danger");
+    g_signal_connect(del_btn, "clicked", G_CALLBACK(on_delete_city), NULL);
+    gtk_box_pack_start(GTK_BOX(city_row), combo, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(city_row), del_btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(outer), city_row, FALSE, FALSE, 0);
+
     /* 城市输入行 */
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     entry = gtk_entry_new();
@@ -302,8 +465,12 @@ int main(int argc, char **argv) {
     GtkWidget *btn = gtk_button_new_with_label(TR("查询"));
     qy_add_class(btn, "qy-btn");
     g_signal_connect(btn, "clicked", G_CALLBACK(on_entry_activate), NULL);
+    GtkWidget *save_btn = gtk_button_new_with_label(TR("保存城市"));
+    qy_add_class(save_btn, "qy-btn");
+    g_signal_connect(save_btn, "clicked", G_CALLBACK(on_save_city), NULL);
     gtk_box_pack_start(GTK_BOX(row), entry, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(row), btn, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(row), save_btn, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(outer), row, FALSE, FALSE, 0);
 
     gtk_widget_show_all(win);
@@ -314,6 +481,7 @@ int main(int argc, char **argv) {
     if (city && city[0]) {
         gtk_entry_set_text(GTK_ENTRY(entry), city);
         start_fetch(city);
+        cities_add(city);   /* release 306: 环境变量指定城市可加入列表 */
     } else {
         gchar *path = g_build_filename(g_get_home_dir(), ".config/lanxiu/qyweather-city.conf", NULL);
         gchar *content = NULL;
@@ -328,6 +496,9 @@ int main(int argc, char **argv) {
         g_free(content);
         g_free(path);
     }
+
+    /* release 306: 下拉选择查询。启动填充完成后才连接，避免加载/环境变量加入时误触发 */
+    g_signal_connect(combo, "changed", G_CALLBACK(on_combo_changed), NULL);
 
     gtk_main();
     curl_global_cleanup();

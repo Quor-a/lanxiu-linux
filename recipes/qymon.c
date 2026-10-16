@@ -1104,6 +1104,156 @@ static void on_menu_copy_pid(GtkMenuItem *mi, gpointer ud) {
     ctx_pid = 0;
 }
 
+/* 进程详情对话框（release 306）：向 grid 添加一行「键: 值」，
+ * 值标签使用等宽字体且可选中复制。 */
+static void detail_add_row(GtkGrid *grid, int *row, const char *key, const char *val) {
+    GtkWidget *kl = gtk_label_new(key);
+    gtk_widget_set_halign(kl, GTK_ALIGN_START);
+    gtk_label_set_xalign(GTK_LABEL(kl), 0.0);
+
+    GtkWidget *vl = gtk_label_new(val ? val : "-");
+    gtk_widget_set_halign(vl, GTK_ALIGN_START);
+    gtk_label_set_xalign(GTK_LABEL(vl), 0.0);
+    gtk_label_set_selectable(GTK_LABEL(vl), TRUE);
+    gtk_label_set_line_wrap(GTK_LABEL(vl), TRUE);
+    gtk_label_set_max_width_chars(GTK_LABEL(vl), 60);
+    /* 等宽字体：Pango 字体族属性（等价 CSS font-family: monospace） */
+    PangoAttrList *al = pango_attr_list_new();
+    pango_attr_list_insert(al, pango_attr_family_new("Monospace"));
+    gtk_label_set_attributes(GTK_LABEL(vl), al);
+    pango_attr_list_unref(al);
+
+    gtk_grid_attach(grid, kl, 0, *row, 1, 1);
+    gtk_grid_attach(grid, vl, 1, *row, 1, 1);
+    (*row)++;
+}
+
+/* 右键菜单：进程详情（release 306）
+ * 模态对话框展示 /proc/<pid>/status 的 State/VmRSS/PPid/Threads、
+ * 模型当前行的 CPU%，以及 /proc/<pid>/cmdline 命令行。
+ * 读取失败（进程已退出）时显示「进程已退出」并保留已知字段。 */
+static void on_menu_details(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    if (ctx_pid <= 0) return;
+
+    /* CPU%: 从进程列表模型当前选中行的 CPU 列取；模型被刷新/无选中时显示 - */
+    double cpu = -1.0;
+    if (proc_tv && proc_store) {
+        GtkTreeSelection *sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(proc_tv));
+        GtkTreeIter it;
+        if (gtk_tree_selection_get_selected(sel, NULL, &it))
+            gtk_tree_model_get(GTK_TREE_MODEL(proc_store), &it, P_CPU, &cpu, -1);
+    }
+
+    /* /proc/<pid>/status: State / VmRSS / PPid / Threads */
+    gchar *status = NULL;
+    gchar *sp = g_strdup_printf("/proc/%d/status", ctx_pid);
+    gboolean status_ok = g_file_get_contents(sp, &status, NULL, NULL) && status != NULL;
+    g_free(sp);
+
+    char state[32] = "-", ppid[32] = "-", threads[32] = "-";
+    long rss_kb = -1;
+    if (status_ok) {
+        char *p;
+        if ((p = strstr(status, "State:"))) {
+            char *v = p + 6;
+            while (*v == ' ' || *v == '\t') v++;
+            char *nl = strchr(v, '\n');
+            if (nl) *nl = 0;
+            g_strlcpy(state, v, sizeof state);
+        }
+        if ((p = strstr(status, "PPid:"))) {
+            char *v = p + 5;
+            while (*v == ' ' || *v == '\t') v++;
+            char *nl = strchr(v, '\n');
+            if (nl) *nl = 0;
+            g_strlcpy(ppid, v, sizeof ppid);
+        }
+        if ((p = strstr(status, "Threads:"))) {
+            char *v = p + 8;
+            while (*v == ' ' || *v == '\t') v++;
+            char *nl = strchr(v, '\n');
+            if (nl) *nl = 0;
+            g_strlcpy(threads, v, sizeof threads);
+        }
+        if ((p = strstr(status, "VmRSS:")))
+            rss_kb = atol(p + 7);
+    }
+
+    /* 启动命令行: /proc/<pid>/cmdline，NUL 分隔符替换为空格 */
+    gchar *cmdline = NULL;
+    gchar *clp = g_strdup_printf("/proc/%d/cmdline", ctx_pid);
+    gchar *raw = NULL;
+    if (g_file_get_contents(clp, &raw, NULL, NULL) && raw) {
+        GString *gs = g_string_new(NULL);
+        gsize len = strlen(raw);
+        for (gsize i = 0; i < len; i++)
+            g_string_append_c(gs, raw[i] ? raw[i] : ' ');
+        cmdline = g_string_free(gs, FALSE);
+        g_strstrip(cmdline);
+        if (!cmdline[0]) { g_free(cmdline); cmdline = NULL; }
+    }
+    g_free(clp);
+    g_free(raw);
+
+    gchar *title = g_strdup_printf(TR("进程详情 - %s"), ctx_name ? ctx_name : "?");
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(
+        title, NULL,
+        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
+        TR("关闭"), GTK_RESPONSE_CLOSE, NULL);
+    g_free(title);
+    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_CLOSE);
+
+    GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_container_set_border_width(GTK_CONTAINER(box), 12);
+    gtk_container_add(GTK_CONTAINER(content), box);
+
+    if (!status_ok) {
+        gchar *markup = g_strdup_printf("<span foreground='#ff5c5c' weight='bold'>%s</span>",
+                                        TR("进程已退出"));
+        GtkWidget *gone = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(gone), markup);
+        g_free(markup);
+        gtk_widget_set_halign(gone, GTK_ALIGN_START);
+        gtk_label_set_xalign(GTK_LABEL(gone), 0.0);
+        gtk_box_pack_start(GTK_BOX(box), gone, FALSE, FALSE, 0);
+    }
+
+    GtkWidget *grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
+    gtk_box_pack_start(GTK_BOX(box), grid, FALSE, FALSE, 0);
+
+    int row = 0;
+    detail_add_row(GTK_GRID(grid), &row, TR("进程名:"), ctx_name ? ctx_name : "?");
+    gchar *pid_s = g_strdup_printf("%d", ctx_pid);
+    detail_add_row(GTK_GRID(grid), &row, "PID:", pid_s);
+    g_free(pid_s);
+    detail_add_row(GTK_GRID(grid), &row, TR("状态:"), state);
+    gchar *mem_s = rss_kb >= 0 ? g_strdup_printf("%.1f MB", rss_kb / 1024.0)
+                               : g_strdup("-");
+    detail_add_row(GTK_GRID(grid), &row, TR("内存:"), mem_s);
+    g_free(mem_s);
+    detail_add_row(GTK_GRID(grid), &row, TR("父进程:"), ppid);
+    detail_add_row(GTK_GRID(grid), &row, TR("线程数:"), threads);
+    gchar *cpu_s = cpu >= 0 ? g_strdup_printf("%.1f%%", cpu) : g_strdup("-");
+    detail_add_row(GTK_GRID(grid), &row, TR("CPU:"), cpu_s);
+    g_free(cpu_s);
+    detail_add_row(GTK_GRID(grid), &row, TR("启动命令行:"), cmdline ? cmdline : "-");
+
+    g_free(status);
+    g_free(cmdline);
+
+    gtk_widget_show_all(dlg);
+    gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+
+    g_free(ctx_name);
+    ctx_name = NULL;
+    ctx_pid = 0;
+}
+
 /* 进程列表右键：选中行并弹出信号菜单 */
 static gboolean on_proc_button_press(GtkWidget *tv, GdkEventButton *ev, gpointer ud) {
     (void)ud;
@@ -1138,6 +1288,10 @@ static gboolean on_proc_button_press(GtkWidget *tv, GdkEventButton *ev, gpointer
     g_signal_connect(mi, "activate", G_CALLBACK(on_menu_sigcont), NULL);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+    /* 进程详情（release 306）：放在「复制进程名」上方 */
+    mi = gtk_menu_item_new_with_label(TR("详情"));
+    g_signal_connect(mi, "activate", G_CALLBACK(on_menu_details), NULL);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);
     mi = gtk_menu_item_new_with_label(TR("复制进程名"));
     g_signal_connect(mi, "activate", G_CALLBACK(on_menu_copy_name), NULL);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi);

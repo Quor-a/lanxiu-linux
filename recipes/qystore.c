@@ -34,6 +34,7 @@ static GtkTreeView *g_tv = NULL;      /* 主列表视图（release 283：搜索�
 static void search_cfg_save(const char *kw);   /* 前向声明（release 289：搜索记忆） */
 static GtkWidget *g_open_btn = NULL;   /* 「打开」按钮（release 284：未安装时禁用） */
 static GtkWidget *g_copy_link_btn = NULL; /* 「复制链接」按钮（release 301） */
+static GtkWidget *g_reinstall_btn = NULL; /* 「重新安装」按钮（release 306：已安装时显示） */
 
 /* 空状态插图（cairo，深蓝底 + 橙色放大镜） */
 static gboolean empty_draw_cb(GtkWidget *w, cairo_t *cr, gpointer ud) {
@@ -418,6 +419,7 @@ static void on_cursor_changed(GtkTreeView *tv, gpointer ud) {
     gtk_tree_view_get_cursor(tv, &path, NULL);
     if (!path) {
         if (g_copy_link_btn) gtk_widget_set_sensitive(g_copy_link_btn, FALSE);
+        if (g_reinstall_btn) gtk_widget_hide(g_reinstall_btn);   /* release 306 */
         return;
     }
     GtkTreeIter it;
@@ -484,6 +486,13 @@ static void show_row(GtkTreeView *tv, GtkTreeIter *itp) {
         g_status[0] == 'i' ? TR("卸载") : TR("安装"));
     if (g_open_btn) gtk_widget_set_sensitive(g_open_btn, g_status[0] == 'i');   /* release 284 */
     if (g_copy_link_btn) gtk_widget_set_sensitive(g_copy_link_btn, TRUE);       /* release 301 */
+    /* 「重新安装」按钮：仅已安装包显示（release 306） */
+    if (g_reinstall_btn) {
+        if (g_status[0] == 'i')
+            gtk_widget_show(g_reinstall_btn);
+        else
+            gtk_widget_hide(g_reinstall_btn);
+    }
     g_free(name); g_free(ver); g_free(file);
 }
 
@@ -573,6 +582,54 @@ static void on_act(GtkWidget *w, gpointer ud) {
     refresh_row_status();
 }
 
+/* 「重新安装」按钮：已安装包覆盖安装当前版本（release 306）
+ * 点击弹出确认框，确认后复用与「安装」完全相同的命令（build_install_cmd）。 */
+static void on_reinstall_clicked(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (!g_file[0] || g_status[0] != 'i') return;
+
+    /* 覆盖安装确认（GTK_MESSAGE_QUESTION + YES/NO） */
+    GtkWidget *dlg = gtk_message_dialog_new(GTK_WINDOW(gtk_widget_get_toplevel(w)),
+                                            GTK_DIALOG_MODAL, GTK_MESSAGE_QUESTION,
+                                            GTK_BUTTONS_YES_NO,
+                                            TR("重新安装 %s 将覆盖当前版本，是否继续？"), g_name);
+    int ans = gtk_dialog_run(GTK_DIALOG(dlg));
+    gtk_widget_destroy(dlg);
+    if (ans != GTK_RESPONSE_YES) return;
+
+    /* 复用现有安装命令构建逻辑 */
+    char cmd[1024];
+    build_install_cmd(g_file, cmd, sizeof cmd);
+
+    /* 状态提示：正在重新安装 <包名>… */
+    char busy[256];
+    snprintf(busy, sizeof busy, "%s %s…", TR("正在重新安装"), g_name);
+    append_log(busy);
+
+    /* 安装进行中禁用操作按钮，防止并发操作（沿用 release 283 busy 处理） */
+    gtk_widget_set_sensitive(btn_act, FALSE);
+    gtk_widget_set_sensitive(g_reinstall_btn, FALSE);
+    gtk_button_set_label(GTK_BUTTON(g_reinstall_btn), TR("执行中…"));
+    if (spinner) {
+        gtk_spinner_start(GTK_SPINNER(spinner));
+        while (gtk_events_pending()) gtk_main_iteration();
+    }
+    int rc = system(cmd);
+    if (spinner) gtk_spinner_stop(GTK_SPINNER(spinner));
+
+    /* 完成提示：重新安装完成 / 失败错误（沿用现有状态提示写法） */
+    char msg[128];
+    snprintf(msg, sizeof msg, rc == 0 ? TR("重新安装完成") : TR("失败 (rc=%d)"), rc);
+    append_log(msg);
+
+    snprintf(g_status, sizeof g_status, "%s", is_installed(g_name) ? "installed" : "available");
+    gtk_widget_set_sensitive(btn_act, TRUE);
+    gtk_button_set_label(GTK_BUTTON(btn_act), g_status[0] == 'i' ? TR("卸载") : TR("安装"));
+    gtk_widget_set_sensitive(g_reinstall_btn, TRUE);
+    gtk_button_set_label(GTK_BUTTON(g_reinstall_btn), TR("重新安装"));
+    refresh_row_status();
+}
+
 static void select_first_row(void);   /* 前向声明（on_search 提前引用） */
 
 static void on_search(GtkSearchEntry *e, gpointer ud) {
@@ -602,6 +659,7 @@ static void select_first_row(void) {
         gtk_button_set_label(GTK_BUTTON(btn_act), TR("安装"));
         if (g_open_btn) gtk_widget_set_sensitive(g_open_btn, FALSE);
         if (g_copy_link_btn) gtk_widget_set_sensitive(g_copy_link_btn, FALSE);  /* release 301 */
+        if (g_reinstall_btn) gtk_widget_hide(g_reinstall_btn);                  /* release 306 */
     }
 }
 
@@ -753,7 +811,7 @@ int main(int argc, char **argv) {
     gtk_container_add(GTK_CONTAINER(card), info_label);
     gtk_box_pack_start(GTK_BOX(vbox), card, FALSE, FALSE, 0);
 
-    /* 详情卡按钮行（release 301）：打开 / 复制包名 / 复制链接 / 安装 */
+    /* 详情卡按钮行（release 301/306）：打开 / 复制包名 / 复制链接 / 安装 / 重新安装 */
     g_open_btn = gtk_button_new_with_label(TR("打开"));
     g_signal_connect(g_open_btn, "clicked", G_CALLBACK(on_open_clicked), NULL);
     GtkWidget *b_copy = gtk_button_new_with_label(TR("复制包名"));
@@ -765,11 +823,18 @@ int main(int argc, char **argv) {
     btn_act = gtk_button_new_with_label(TR("安装"));
     g_signal_connect(btn_act, "clicked", G_CALLBACK(on_act), NULL);
 
+    /* 「重新安装」按钮（release 306）：已安装包显示，覆盖安装当前版本 */
+    g_reinstall_btn = gtk_button_new_with_label(TR("重新安装"));
+    gtk_widget_set_tooltip_text(g_reinstall_btn, TR("覆盖安装当前版本"));
+    g_signal_connect(g_reinstall_btn, "clicked", G_CALLBACK(on_reinstall_clicked), NULL);
+    gtk_widget_hide(g_reinstall_btn);   /* 初始隐藏，选中已安装包时显示 */
+
     GtkWidget *btn_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_box_pack_start(GTK_BOX(btn_row), g_open_btn, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(btn_row), b_copy, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(btn_row), g_copy_link_btn, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(btn_row), btn_act, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(btn_row), g_reinstall_btn, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), btn_row, FALSE, FALSE, 0);
 
     load_repo(NULL, 0);
