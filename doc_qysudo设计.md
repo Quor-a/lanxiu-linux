@@ -7,4 +7,4 @@ qysudo 设计 (v1.6.0):
 - 安全: 组为 wheel + /etc/shadow root:600
 配套:
 - /etc/shadow (root:600): root 密码默认空锁 (!), 首次登录 qyinit 提示设置? v1.6.0: root 无密码锁住, 用户用 busybox passwd root 设置
-- busybox adduser -D? 启元无 useradd → 提供 qyuseradd 包装脚本调 busybox adduser + 自动加 wheel 组
+- busybox adduser -D? LANXIU无 useradd → 提供 qyuseradd 包装脚本调 busybox adduser + 自动加 wheel 组

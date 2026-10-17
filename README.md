@@ -2439,8 +2439,8 @@ ngs-about-v2.png`。
 
 ### 品牌原创：澜岫 LANXIU OS（v0.1.0-237，2026-10 实测）
 
-- **全面去品牌化**：原「启元/Qiyuan」为常见词有商标冲突风险，联网排查后原创 **「澜岫 LANXIU」**（无已知商标）
-- 全库替换：启元 196 / Qiyuan 32 / qiyuan 68 → 澜岫 / LANXIU / lanxiu（recipes/README/docs/scripts）
+- **全面去品牌化**：原「LANXIU/LANXIU」为常见词有商标冲突风险，联网排查后原创 **「澜岫 LANXIU」**（无已知商标）
+- 全库替换：LANXIU 196 / LANXIU 32 / lanxiu 68 → 澜岫 / LANXIU / lanxiu（recipes/README/docs/scripts）
 - 品牌资产：`docs/brand/lanxiu-logo.svg/png`、`lanxiu-brand.svg/png`（山脊+涟漪+上升三角，深蓝底+品牌橙）
 - Slogan：自由如澜 · 坚固如岫（FREEDOM FLOWS · THE PEAK STANDS）
 - 18 应用编译全部 rc=0；构建产物 `qydesktop 0.1.0-237`；后续 ISO 前缀 `lanxiu-linux-*`
@@ -2450,7 +2450,7 @@ ngs-about-v2.png`。
 - **开机动画**（qyboot.c v2 纯 fb）：深蓝渐变 + 品牌 Logo 动画（白色山脊浮现 + 橙色涟漪扩散 + 橙色三角上升）+ 橙色增长进度条 + 淡出，约 33fps
 - **锁屏**（qylock）：深蓝渐变底 + cairo 品牌 Logo + 标语「自由如澜 · 坚固如岫」+ 品牌橙解锁按钮/密码框
 - **欢迎/登录页**（qywelcome）：「欢迎使用澜岫 Linux」+ 品牌卡片/字标/标语 + 品牌橙完成按钮
-- **CSS**：追加重启品牌段（锁屏+欢迎页全套）；「启元」残留清零
+- **CSS**：追加重启品牌段（锁屏+欢迎页全套）；「LANXIU」残留清零
 - 构建产物 `qydesktop 0.1.0-239`
 
 ### 修复 weston 输入 seat + weston.ini 品牌路径（v0.1.0-240）
