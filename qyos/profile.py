@@ -207,7 +207,7 @@ def validate(profile: Profile, available: set) -> dict:
 
 
 def render_sysctl(profile: Profile) -> str:
-    lines = [f"# 由启元形态 {profile.name}（{profile.title}）生成"]
+    lines = [f"# 由LANXIU形态 {profile.name}（{profile.title}）生成"]
     for k, v in sorted(profile.sysctl.items()):
         lines.append(f"{k} = {v}")
     return "\n".join(lines) + "\n"

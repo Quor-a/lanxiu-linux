@@ -390,7 +390,7 @@ def smartcard_report() -> str:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qyio",
-                                 description="启元 Linux 输入设备与外设")
+                                 description="LANXIU Linux 输入设备与外设")
     ap.add_argument("--root", default="/")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

@@ -1,4 +1,4 @@
-"""启元 Linux 构建配方。
+"""LANXIU Linux 构建配方。
 
 配方是纯 Python 模块，声明式字段 + build()/package() 两个函数：
 

@@ -404,7 +404,7 @@ def audit_all(root: Path) -> list:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qyperms",
-                                 description="启元 Linux 权限框架")
+                                 description="LANXIU Linux 权限框架")
     ap.add_argument("--root", default="/")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

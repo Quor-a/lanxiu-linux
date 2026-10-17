@@ -33,7 +33,7 @@ def package(ctx):
     # 移动网络接入的 NetworkManager 连接模板（APN 由用户或运营商配置填充）
     ctx.write("{}/usr/share/qiyuan/mobile-connection.nmconnection".format(
         ctx.destdir), """\
-# 由启元 Linux mobile-data 元包提供的蜂窝连接模板。
+# 由澜岫 Linux mobile-data 元包提供的蜂窝连接模板。
 # 复制到 /etc/NetworkManager/system-connections/ 并填入你的 APN。
 [connection]
 id=gsm-auto

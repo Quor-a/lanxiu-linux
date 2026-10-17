@@ -343,7 +343,7 @@ def open_cmd(root: Path, path: Path, installed: set | None = None) -> str:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qyfiles",
-                                 description="启元 Linux 文件类型与解压")
+                                 description="LANXIU Linux 文件类型与解压")
     ap.add_argument("--root", default="/")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

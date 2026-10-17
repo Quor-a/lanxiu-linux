@@ -172,7 +172,7 @@ def alias_for(module: str) -> dict:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(
-        prog="qydrv", description="启元 Linux 驱动管理")
+        prog="qydrv", description="LANXIU Linux 驱动管理")
     ap.add_argument("--root", default="/")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

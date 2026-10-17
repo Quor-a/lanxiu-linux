@@ -168,7 +168,7 @@ def merge(base: dict, fragments: list) -> tuple:
 
 def render(cfg: dict) -> str:
     """渲染成 .config 文本（有序输出，保证可复现）。"""
-    lines = ["# 由启元 Linux 内核配置管理生成，请勿手工编辑"]
+    lines = ["# 由LANXIU Linux 内核配置管理生成，请勿手工编辑"]
     for k in sorted(cfg):
         v = cfg[k]
         if v == "n":

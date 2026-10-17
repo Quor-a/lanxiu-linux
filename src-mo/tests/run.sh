@@ -35,7 +35,7 @@ for d in $(cd "$(dirname "$0")/.." && pwd)/tests/*/; do
   # 标准库始终从 lib/ 取最新一份，再拷测试自己的文件（可覆盖）。
   # 这样 tests/*/ 下不需要维护库副本，也就不会出现副本与 lib/ 不同步。
   cp $(cd "$(dirname "$0")/.." && pwd)/lib/*.mo /tmp/mot/
-  # 【启元】拷整个测试目录内容（含子目录数据），保持相对路径结构
+  # 【LANXIU】拷整个测试目录内容（含子目录数据），保持相对路径结构
   cp -r "$d"* /tmp/mot/ && mv /tmp/mot/main.mo /tmp/mot/test.mo
   run_one "$(basename $d)/" "$exp"
 done

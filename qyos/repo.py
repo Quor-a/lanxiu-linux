@@ -104,7 +104,7 @@ def build_index(repo_dir: Path, arch: str = util.ARCH) -> dict:
     entries = _newest_only(entries)
     index = {
         "format": 1,
-        "distro": "Qiyuan Linux",
+        "distro": "LANXIU Linux",
         "arch": arch,
         "generated": int(util.timer()),
         "count": len(entries),
@@ -240,7 +240,7 @@ def write_manifest(repo_dir: Path, priv_path: Path | None = None) -> Path:
         })
     manifest = {
         "format": 1,
-        "distro": "Qiyuan Linux",
+        "distro": "LANXIU Linux",
         "generated": int(util.timer()),
         "architectures": [e["arch"] for e in entries],
         "repos": entries,

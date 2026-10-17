@@ -269,7 +269,7 @@ BUILTIN = {"install": INSTALL_STEPS, "upgrade": UPGRADE_STEPS}
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qyrun",
-                                 description="启元 Linux 脚本执行系统")
+                                 description="澜岫 Linux 脚本执行系统")
     ap.add_argument("--root", default="/")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

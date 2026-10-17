@@ -397,7 +397,7 @@ def gates_report(results: list) -> str:
 
 def main_cli(argv=None) -> int:
     import argparse
-    ap = argparse.ArgumentParser(prog="qyci", description="启元 Linux 持续集成")
+    ap = argparse.ArgumentParser(prog="qyci", description="澜岫 Linux 持续集成")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("plan", help="检测变更并算出重编计划")

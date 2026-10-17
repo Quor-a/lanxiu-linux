@@ -40,8 +40,8 @@ def kernel_cmdline(root_uuid: str, root_fs: str = "ext4",
 
 
 def grub_cfg(kernel: str, initrd: str, cmdline: str,
-             title: str = "Qiyuan Linux",
-             fallback_title: str = "Qiyuan Linux (救援模式)",
+             title: str = "LANXIU Linux",
+             fallback_title: str = "LANXIU Linux (救援模式)",
              extra_entries: list | None = None) -> str:
     """生成 grub.cfg。
 
@@ -50,7 +50,7 @@ def grub_cfg(kernel: str, initrd: str, cmdline: str,
     """
     rescue = cmdline.replace("quiet", "").replace("  ", " ").strip()
     lines = [
-        "# 由启元安装器生成，请勿手工编辑",
+        "# 由LANXIU安装器生成，请勿手工编辑",
         "set default=0",
         "set timeout=5",
         "insmod part_gpt",
@@ -85,7 +85,7 @@ def render_grub_install(layout, target: str = "/mnt/qiyuan",
     uefi = layout.uefi
     lines = [
         "#!/bin/bash",
-        "# 安装 GRUB —— 由启元安装器生成，需在 chroot 到目标系统后执行",
+        "# 安装 GRUB —— 由LANXIU安装器生成，需在 chroot 到目标系统后执行",
         "set -euo pipefail",
         f'TARGET="{target}"',
         "",
@@ -96,19 +96,19 @@ def render_grub_install(layout, target: str = "/mnt/qiyuan",
             'mkdir -p "$TARGET/boot/efi"',
             "grub-install --target=x86_64-efi \\",
             '    --efi-directory="$TARGET/boot/efi" \\',
-            '    --bootloader-id=Qiyuan \\',
+            '    --bootloader-id=LANXIU \\',
             "    --recheck",
             "",
             "# 有些主板固件不接受 efibootmgr 写入，失败不致命：",
             "# 固件会回退到 EFI 默认路径 /EFI/BOOT/BOOTX64.EFI，",
             "# 所以下面这一行允许失败",
             "efibootmgr --create --disk \"${DISK}\" --part 1 \\",
-            "    --label 'Qiyuan Linux' \\",
-            "    --loader '\\EFI\\Qiyuan\\grubx64.efi' || true",
+            "    --label 'LANXIU Linux' \\",
+            "    --loader '\\EFI\\LANXIU\\grubx64.efi' || true",
             "",
             "# 兜底：再放一份到默认路径，固件找不到启动项时用它",
             'mkdir -p "$TARGET/boot/efi/EFI/BOOT"',
-            'cp "$TARGET/boot/efi/EFI/Qiyuan/grubx64.efi" \\',
+            'cp "$TARGET/boot/efi/EFI/LANXIU/grubx64.efi" \\',
             '   "$TARGET/boot/efi/EFI/BOOT/BOOTX64.EFI" 2>/dev/null || true',
         ]
     else:
@@ -122,7 +122,7 @@ def render_grub_install(layout, target: str = "/mnt/qiyuan",
 
 def render_efistub_install(kernel_src: str, initrd_src: str, cmdline: str,
                            esp: str = "/boot/efi",
-                           entry_name: str = "Qiyuan") -> str:
+                           entry_name: str = "LANXIU") -> str:
     """生成 EFI stub 直启的脚本。
 
     内核开了 CONFIG_EFI_STUB 就可以让固件直接加载内核，完全跳过 GRUB。
@@ -135,9 +135,9 @@ def render_efistub_install(kernel_src: str, initrd_src: str, cmdline: str,
         f'ESP="{esp}"',
         f'CMDLINE="{cmdline}"',
         "",
-        'mkdir -p "$ESP/EFI/Qiyuan"',
-        f'cp {kernel_src} "$ESP/EFI/Qiyuan/vmlinuz.efi"',
-        f'cp {initrd_src} "$ESP/EFI/Qiyuan/initramfs.img"',
+        'mkdir -p "$ESP/EFI/LANXIU"',
+        f'cp {kernel_src} "$ESP/EFI/LANXIU/vmlinuz.efi"',
+        f'cp {initrd_src} "$ESP/EFI/LANXIU/initramfs.img"',
         "",
         "# 把内核命令行写进内核镜像的 .cmdline 段",
         "# 这样就不依赖 GRUB 传参，固件直接加载即可",
@@ -145,7 +145,7 @@ def render_efistub_install(kernel_src: str, initrd_src: str, cmdline: str,
         "objcopy \\",
         '    --add-section .cmdline=/tmp/cmdline.txt \\',
         "    --change-section-vma .cmdline=0x30000 \\",
-        '    "$ESP/EFI/Qiyuan/vmlinuz.efi"',
+        '    "$ESP/EFI/LANXIU/vmlinuz.efi"',
         "rm -f /tmp/cmdline.txt",
         "",
         "# 注册启动项（失败不致命，固件会回退到默认路径）",
@@ -166,7 +166,7 @@ def render_chroot_script(target: str, steps: list) -> str:
     """
     lines = [
         "#!/bin/bash",
-        "# 在目标系统内执行 —— 由启元安装器生成",
+        "# 在目标系统内执行 —— 由LANXIU安装器生成",
         "set -euo pipefail",
         f'TARGET="{target}"',
         "",

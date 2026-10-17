@@ -4,20 +4,20 @@
 ============
 用户接手一台设备时，上面往往已经装着别的系统（Ubuntu、Fedora、Alpine、
 Arch）的包。不支持外来格式 = 必须先擦盘重装，这是不能接受的迁移成本。
-启元要能"就地接管"。
+LANXIU要能"就地接管"。
 
 但绝不能把外来包**直接释放**：
-* 外来包的控制脚本（preinst/postinst）是别人写的，在启元上语义不明，
+* 外来包的控制脚本（preinst/postinst）是别人写的，在LANXIU上语义不明，
   静默执行等于把系统的命运交给一段没审过的 shell；
-* 依赖名体系不同（别的发行版叫 libssl3，启元叫 openssl），
+* 依赖名体系不同（别的发行版叫 libssl3，LANXIU叫 openssl），
   不翻译就会装上"看起来成功、跑起来找不到库"的包；
 * 架构必须校验，x86_64 的 deb 装进 aarch64 系统必须拒绝。
 
 所以本模块的原则：
-1. **只解析与提取，绝不执行**外来脚本。装进来的文件由启元 qypkg 自己
+1. **只解析与提取，绝不执行**外来脚本。装进来的文件由LANXIU qypkg 自己
    记录进数据库，之后才能升级 / 卸载 / 校验。
 2. **依赖名翻译**：能翻译的翻译，翻译不出来的显式列出（不静默丢弃）。
-3. **架构校验**：外来架构名映射到启元架构名后再比对。
+3. **架构校验**：外来架构名映射到LANXIU架构名后再比对。
 
 支持格式
 ========
@@ -26,7 +26,7 @@ deb               ar 容器：debian-binary + control.tar.* + data.tar.*
 rpm               lead + signature header + main header + cpio 载荷
 apk               Alpine：gzip 流（签名 / .PKGINFO / 数据 tar）
 pacman            Arch：.pkg.tar.zst，内含 .PKGINFO + .MTREE
-qyp               启元原生格式（走 format.py，不在这里处理）
+qyp               LANXIU原生格式（走 format.py，不在这里处理）
 ================  ==================================================
 
 压缩后端只用标准库（gzip / lzma / bz2）加可选外部 zstd；装不上
@@ -125,7 +125,7 @@ def detect_compression(name: str, blob: bytes = b"") -> str:
 
 # ---------------------------------------------------------------- 架构映射
 
-# 外来发行版用的架构名 → 启元（Linux 内核）架构名。
+# 外来发行版用的架构名 → LANXIU（Linux 内核）架构名。
 # 不统一映射的话，"这个包能不能装"就无法自动判断，
 # 用户只能靠"装了才知道报格式错误"。
 ARCH_ALIASES = {
@@ -145,11 +145,11 @@ ARCH_ALIASES = {
 
 
 def normalize_arch(a: str) -> str:
-    """把外来架构名映射成启元架构名。"""
+    """把外来架构名映射成LANXIU架构名。"""
     return ARCH_ALIASES.get((a or "").strip().lower(), (a or "").strip().lower())
 
 
-# 外来依赖名 → 启元包名。只收录确定等价的；拿不准的不写，
+# 外来依赖名 → LANXIU包名。只收录确定等价的；拿不准的不写，
 # 由调用方显式报告"未翻译"，这比猜错要好。
 DEP_ALIASES = {
     # Debian/Ubuntu
@@ -742,7 +742,7 @@ def read_foreign(path: Path) -> ForeignPackage:
     """解析任意支持的外来包，返回统一视图。"""
     kind = detect_format(path)
     if kind == "qyp":
-        raise ForeignError("这是启元原生包，用 qypkg install 直接装")
+        raise ForeignError("这是LANXIU原生包，用 qypkg install 直接装")
     return _READERS[kind](Path(path))
 
 
@@ -764,7 +764,7 @@ def describe(pkg: ForeignPackage) -> str:
         lines.append(f"依赖(译)  {' '.join(ok)}")
     if unknown:
         lines.append(f"依赖(未译) {' '.join(unknown)}"
-                     "   ← 启元仓库里没有对应名字，装前请确认")
+                     "   ← LANXIU仓库里没有对应名字，装前请确认")
     if pkg.scripts:
         lines.append(f"控制脚本  {' '.join(sorted(pkg.scripts))}"
                      "（不会执行）")
@@ -782,7 +782,7 @@ def matches_arch(pkg: ForeignPackage, want: str) -> bool:
 def install_foreign(path: Path, root: Path, *, kind: str | None = None,
                     force_arch: bool = False, dry_run: bool = False,
                     record: bool = True) -> dict:
-    """把外来包释放进 root 并记入启元包数据库。
+    """把外来包释放进 root 并记入LANXIU包数据库。
 
     设计要点：
     * 不执行外来脚本 —— 只释放文件；
@@ -826,7 +826,7 @@ def install_foreign(path: Path, root: Path, *, kind: str | None = None,
     if dry_run or not record:
         return result
 
-    # 记进启元数据库：这样 qypkg -Q/-Qo/-R 对这批文件同样有效。
+    # 记进LANXIU数据库：这样 qypkg -Q/-Qo/-R 对这批文件同样有效。
     meta = fmt.Meta(
         name=pkg.name, version=pkg.version, release=pkg.release or 1,
         arch=pkg.target_arch, summary=pkg.summary,
@@ -872,7 +872,7 @@ def _after_extract(root: Path, files: list[str], kind: str) -> None:
     """外来包释放后的兼容层收尾（ISO 实测教训，2026-10-10）。
 
     deb/rpm 的库放在 /usr/lib/<triplet>/ 或 /lib/<triplet>/（多架构目录），
-    启元的 ld.so 默认不搜这些路径——直接装完跑不起来（file 报
+    LANXIU的 ld.so 默认不搜这些路径——直接装完跑不起来（file 报
     libmagic.so.1 找不到）。这里自动登记目录 + 跑 ldconfig（若 root 里有）。
     """
     root = Path(root)

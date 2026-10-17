@@ -28,7 +28,7 @@ step "2. 基础 /etc 文件"
 for f in os-release passwd group hosts fstab profile hostname; do
   [ -f "$R/etc/$f" ] && ok "/etc/$f 存在" || bad "缺少 /etc/$f"
 done
-grep -q "Qiyuan Linux" "$R/etc/os-release" && ok "os-release 标识正确" || bad "os-release 内容不对"
+grep -q "LANXIU Linux" "$R/etc/os-release" && ok "os-release 标识正确" || bad "os-release 内容不对"
 
 step "3. 可启动性检查（bootcheck）"
 ./bin/qypkg --root "$R" bootcheck >/tmp/qy-bc.log 2>&1 && ok "无致命问题（可启动）" \

@@ -334,7 +334,7 @@ def mirror_plan(src: Source, arch: str, local_repo: Path) -> dict:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qysource",
-                                 description="启元 Linux 软件源管理")
+                                 description="LANXIU Linux 软件源管理")
     sub = ap.add_subparsers(dest="cmd", required=True)
     ap.add_argument("--root", default=".")
 

@@ -336,7 +336,7 @@ def sandbox_policy(app: App) -> str:
     默认全给的话，权限声明就形同虚设。
     """
     L = [f"# {app.name}（{app.app_id}）的沙箱策略",
-         "# 由启元 Linux 生成：只放行已申请的权限", "",
+         "# 由LANXIU Linux 生成：只放行已申请的权限", "",
          "bwrap \\",
          "  --die-with-parent \\",
          "  --ro-bind /usr /usr \\",
@@ -370,7 +370,7 @@ def sandbox_policy(app: App) -> str:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qyapp",
-                                 description="启元 Linux 通用包与运行时")
+                                 description="LANXIU Linux 通用包与运行时")
     sub = ap.add_subparsers(dest="cmd", required=True)
     ap.add_argument("--root", default=".")
 

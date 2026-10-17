@@ -481,7 +481,7 @@ def find_tool(keyword: str) -> list:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qyproc",
-                                 description="启元 Linux 进程与资源")
+                                 description="LANXIU Linux 进程与资源")
     ap.add_argument("--root", default="/")
     sub = ap.add_parsers = ap.add_subparsers(dest="cmd", required=True)
 

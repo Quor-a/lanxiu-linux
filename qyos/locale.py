@@ -108,7 +108,7 @@ def gen_locales(root: Path, wanted: list) -> str:
     """
     p = locales_path(root)
     p.parent.mkdir(parents=True, exist_ok=True)
-    L = ["# 由启元 Linux 生成",
+    L = ["# 由LANXIU Linux 生成",
          "# 这里没启用的 locale 不会被生成；",
          "# 设了 LANG 却没生成会静默回退到 C（表现为乱码但不报错）", ""]
     for w in wanted:
@@ -256,7 +256,7 @@ def install_prompt(default: str = "zh_CN") -> dict:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qylocale",
-                                 description="启元 Linux 语言与键盘布局")
+                                 description="LANXIU Linux 语言与键盘布局")
     ap.add_argument("--root", default="/")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

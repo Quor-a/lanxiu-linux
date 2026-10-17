@@ -593,7 +593,7 @@ def overview(root: Path = Path("/")) -> str:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qyctl",
-                                 description="启元 Linux 系统控制")
+                                 description="LANXIU Linux 系统控制")
     ap.add_argument("--root", default="/")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

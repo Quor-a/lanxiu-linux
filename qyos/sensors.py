@@ -510,7 +510,7 @@ def flight_mode_cmd(on: bool) -> str:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qysensor",
-                                 description="启元 Linux 传感器与平台控制")
+                                 description="LANXIU Linux 传感器与平台控制")
     ap.add_argument("--root", default="/")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

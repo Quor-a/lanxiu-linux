@@ -77,11 +77,11 @@ DEV_NODES = [
     ("dev/ptmx", "c", 5, 2, 0o666),
 ]
 
-OS_RELEASE = """NAME="Qiyuan Linux"
+OS_RELEASE = """NAME="LANXIU Linux"
 VERSION="{version}"
 ID=qiyuan
 VERSION_ID="{version}"
-PRETTY_NAME="Qiyuan Linux {version}"
+PRETTY_NAME="LANXIU Linux {version}"
 HOME_URL="https://example.invalid/qiyuan"
 BUG_REPORT_URL="https://example.invalid/qiyuan/bugs"
 """

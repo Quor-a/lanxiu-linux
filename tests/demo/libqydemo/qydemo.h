@@ -1,4 +1,4 @@
-/* libqydemo —— 启元 Linux 构建系统的演示库 */
+/* libqydemo —— LANXIU Linux 构建系统的演示库 */
 #ifndef QYDEMO_H
 #define QYDEMO_H
 

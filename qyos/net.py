@@ -184,7 +184,7 @@ def sshd_config(root: Path, port: int = 22,
     要开必须显式声明。
     """
     L = [
-        "# 由启元 Linux 生成",
+        "# 由LANXIU Linux 生成",
         f"Port {port}",
         "AddressFamily inet",
         "ListenAddress 0.0.0.0",
@@ -250,7 +250,7 @@ class Export:
 
 def nfs_exports(root: Path, exports: list) -> str:
     """生成 /etc/exports。"""
-    L = ["# 由启元 Linux 生成"]
+    L = ["# 由LANXIU Linux 生成"]
     for e in exports:
         L.append(f"{e.path}\t{e.clients}({e.options})")
     return "\n".join(L) + "\n"
@@ -295,7 +295,7 @@ def vsftpd_config(root: Path, anonymous: bool = False,
     而 FTP 是明文协议，凭据在链路上能被直接看到。
     """
     L = [
-        "# 由启元 Linux 生成",
+        "# 由LANXIU Linux 生成",
         "listen=YES",
         "listen_ipv6=NO",
         f"anonymous_enable={'YES' if anonymous else 'NO'}",
@@ -383,7 +383,7 @@ def firewall_rules(ports: list, tunnels: list | None = None) -> str:
     只放行登记过的端口：没登记却能被访问，说明有别的东西在监听，
     那正是要排查的。
     """
-    L = ["#!/usr/sbin/nft -f", "# 由启元 Linux 生成", "",
+    L = ["#!/usr/sbin/nft -f", "# 由LANXIU Linux 生成", "",
          "table inet filter {", "  chain input {",
          "    type filter hook input priority 0; policy drop;", "",
          "    # 已建立的连接和本机回环必须放行，",
@@ -409,7 +409,7 @@ def firewall_rules(ports: list, tunnels: list | None = None) -> str:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qynet",
-                                 description="启元 Linux 网络服务与端口")
+                                 description="LANXIU Linux 网络服务与端口")
     ap.add_argument("--root", default=".")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

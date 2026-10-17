@@ -6,10 +6,10 @@
 两者都要动原系统。这个模块给出的第三条路：
 
     原系统根 = overlayfs 只读下层（lowerdir）
-    启元包   = 写入上层（upperdir）
+    LANXIU包   = 写入上层（upperdir）
     合成视图 = merged 目录
 
-原系统一个字节都不改；启元 qypkg 的 --root 指向 merged，装进来的包、
+原系统一个字节都不改；LANXIU qypkg 的 --root 指向 merged，装进来的包、
 foreign.py 适配的 deb/apk 都落上层；不要了就 umount——上层目录一删，
 机器回到接管前状态。这是"支持其他系统包"的安全底座。
 
@@ -39,7 +39,7 @@ class LayerError(Exception):
 class LayerMount:
     """一次 overlay 挂载的全部参数（便于挂/卸/巡检）。"""
     lower: Path          # 原系统根（只读）
-    upper: Path          # 启元写入层
+    upper: Path          # LANXIU写入层
     work: Path           # overlayfs 内部工作目录
     merged: Path         # 合成视图（qypkg --root 指这里）
 
@@ -75,7 +75,7 @@ def create_layer(base: Path, name: str,
 
     目录布局（默认 state_root=/var/lib/qypkg/layers）：
         <state_root>/<name>/
-            upper/    启元写的东西全在这
+            upper/    LANXIU写的东西全在这
             work/     overlayfs 内部用
             merged/   合成视图，qypkg --root 指这里
             meta.json 挂载参数（rollback/巡检要读）

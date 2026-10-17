@@ -432,7 +432,7 @@ def fastboot_script(slot: str = "_a", wipe: bool = False,
                     vbmeta: bool = True) -> str:
     """生成 fastboot 刷机脚本。"""
     L = ["#!/bin/bash",
-         "# 启元 Linux 安卓设备刷机脚本 —— 由 qyandroid 生成",
+         "# LANXIU Linux 安卓设备刷机脚本 —— 由 qyandroid 生成",
          "set -euo pipefail",
          "",
          FASTBOOT_WARN,
@@ -584,7 +584,7 @@ def gen_kernel_fragment() -> str:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qyandroid",
-                                 description="启元 Linux 安卓设备适配")
+                                 description="LANXIU Linux 安卓设备适配")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("bootimg", help="打包 boot.img")

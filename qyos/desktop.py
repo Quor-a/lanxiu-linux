@@ -287,7 +287,7 @@ def polkit_policy(actions: list | None = None) -> str:
          ' "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">',
          '<policyconfig>',
          '',
-         '  <vendor>启元 Linux</vendor>',
+         '  <vendor>LANXIU Linux</vendor>',
          '  <vendor_url>https://qiyuan-linux.org</vendor_url>',
          '',
          '  <!-- 默认 auth_admin：每次提权都要输管理员密码。',
@@ -357,7 +357,7 @@ def desktop_entry(a: Action) -> str:
         f"Name={a.title}",
         f"Comment={a.desc or a.title}",
         f"Exec={exec_}",
-        f"Categories=Settings;X-Qiyuan-{a.panel};",
+        f"Categories=Settings;X-LANXIU-{a.panel};",
         "Icon=preferences-system",
         "Terminal=false",
         "NoDisplay=true",
@@ -413,7 +413,7 @@ def check_layout(root: Path) -> list:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qydesktop",
-                                 description="启元 Linux 桌面外壳")
+                                 description="LANXIU Linux 桌面外壳")
     ap.add_argument("--root", default="/")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("actions", help="列出可调动作")

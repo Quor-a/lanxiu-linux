@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""启元 weston 补丁: desktop-shell 顶栏时钟支持 clock-format-string (自定义 strftime, 实现中文日期时间)"""
+"""LANXIU weston 补丁: desktop-shell 顶栏时钟支持 clock-format-string (自定义 strftime, 实现中文日期时间)"""
 import sys, os, glob
 
 cands = glob.glob("clients/desktop-shell.c") + glob.glob("*/clients/desktop-shell.c")

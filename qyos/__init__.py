@@ -1,4 +1,4 @@
-"""启元 Linux（Qiyuan Linux）构建与包管理内核。
+"""LANXIU Linux（LANXIU Linux）构建与包管理内核。
 
 模块划分：
     util     哈希/归档/下载/进程/日志
@@ -12,4 +12,4 @@
     cli      命令行入口
 """
 __version__ = "0.1.0"
-__distro__ = "Qiyuan Linux"
+__distro__ = "LANXIU Linux"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# mkiso-a64.sh — 启元 Linux aarch64 live ISO 打包
+# mkiso-a64.sh — LANXIU Linux aarch64 live ISO 打包
 # 前置：
 #   1. var/pkgs/kernel-arm64-7.2.9-1.aarch64.qyp（ARM64 Image，qybuild 交叉构建）
 #   2. /tmp/a64rootfs（55 包全量 rootfs，qypkg assemble --arch aarch64 组装）
@@ -62,7 +62,7 @@ cp /tmp/a64-live-initramfs.img /tmp/qyiso-a64/boot/initramfs.img
 cat > /tmp/qyiso-a64/boot/grub/grub.cfg <<'EOF'
 set timeout=3
 set default=0
-menuentry "Qiyuan Linux aarch64 (live)" {
+menuentry "LANXIU Linux aarch64 (live)" {
     linux /boot/vmlinuz console=ttyAMA0
     initrd /boot/initramfs.img
 }

@@ -271,7 +271,7 @@ def render_fstab(parts: list, uuids: dict | None = None) -> str:
             return (depth(p) + 10, p.mount)   # EFI 放最后，它挂在 /boot 之下
         return (depth(p), p.mount)
     lines = [
-        "# /etc/fstab —— 由启元安装器生成",
+        "# /etc/fstab —— 由LANXIU安装器生成",
         "# 一律使用 UUID：设备名 (/dev/sda1) 在加装硬盘后会漂移，",
         "# 用设备名是装机后系统起不来的头号原因。",
         "#",
@@ -311,7 +311,7 @@ def render_partition_script(layout: Layout, total_bytes: int | None = None) -> s
         offs = compute_offsets(layout, total_bytes)
     lines = [
         "#!/bin/bash",
-        "# 启元 Linux 分区脚本 —— 由安装器生成",
+        "# LANXIU Linux 分区脚本 —— 由安装器生成",
         "# 执行前请确认目标磁盘正确，脚本会清空磁盘上的所有数据",
         "set -euo pipefail",
         f'DISK="{layout.disk}"',
@@ -385,7 +385,7 @@ def render_mount_script(layout: Layout, target: str = "/mnt/qiyuan") -> str:
 
     lines = [
         "#!/bin/bash",
-        "# 启元 Linux 挂载脚本 —— 由安装器生成",
+        "# LANXIU Linux 挂载脚本 —— 由安装器生成",
         "set -euo pipefail",
         f'DISK="{layout.disk}"',
         f'TARGET="{target}"',
@@ -413,7 +413,7 @@ def render_umount_script(layout: Layout, target: str = "/mnt/qiyuan") -> str:
                    reverse=True)
     lines = [
         "#!/bin/bash",
-        "# 启元 Linux 卸载脚本 —— 由安装器生成（逆序）",
+        "# LANXIU Linux 卸载脚本 —— 由安装器生成（逆序）",
         "set -uo pipefail",
         f'TARGET="{target}"',
         "",

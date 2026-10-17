@@ -350,7 +350,7 @@ def check_package(pkg_path: Path) -> list:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qyrepro",
-                                 description="启元 Linux 可复现构建")
+                                 description="澜岫 Linux 可复现构建")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("epoch", help="显示当前会用的构建时间戳")

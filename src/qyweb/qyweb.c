@@ -1,4 +1,4 @@
-/* 启元 Linux 轻量浏览器 —— 极简 WebKitGTK 外壳
+/* 澜岫 Linux 轻量浏览器 —— 极简 WebKitGTK 外壳
  *
  * 设计依据：用户 2026-10-08 决策"轻量浏览器"。
  * 依赖只有 WebKitGTK + GTK3，编译后二进制 < 50KB，
@@ -74,7 +74,7 @@ static GtkWidget *add_tab(const gchar *url, gboolean switch_to)
     webkit_settings_set_user_agent(
         settings,
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 "
-        "(KHTML, like Gecko) QiyuanBrowser/1.0 Safari/605.1.15");
+        "(KHTML, like Gecko) LanxiuBrowser/1.0 Safari/605.1.15");
 
     gtk_container_add(GTK_CONTAINER(scrolled), GTK_WIDGET(view));
 
@@ -197,7 +197,7 @@ int main(int argc, char **argv)
 
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_default_size(GTK_WINDOW(win), 1100, 750);
-    gtk_window_set_title(GTK_WINDOW(win), "启元浏览器");
+    gtk_window_set_title(GTK_WINDOW(win), "澜岫浏览器");
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_container_add(GTK_CONTAINER(win), vbox);

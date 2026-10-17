@@ -67,8 +67,8 @@ assert lst, "没加载到补丁"
 applied = P.apply_patches(root, 'qydemo', srcdir.resolve(), lst)
 assert applied, "补丁没应用"
 txt = (srcdir/'main.c').read_text()
-assert "Qiyuan Linux" in txt, f"补丁没生效: {txt[:120]}"
-print("  补丁已生效，源码含 'Qiyuan Linux'")
+assert "LANXIU Linux" in txt, f"补丁没生效: {txt[:120]}"
+print("  补丁已生效，源码含 'LANXIU Linux'")
 PYEOF
 [ $? -eq 0 ] && ok "补丁真正修改了源码" || bad "补丁未生效"
 
@@ -136,7 +136,7 @@ fake = Path('/tmp/qy-fake-repo')
 shutil.rmtree(fake, ignore_errors=True)
 (fake/'aarch64').mkdir(parents=True)
 shutil.copy('var/pkgs/qydemo-0.1.0-1.x86_64.qyp', str(fake/'aarch64'))
-idx = {"format": 1, "distro": "Qiyuan Linux", "arch": "aarch64",
+idx = {"format": 1, "distro": "LANXIU Linux", "arch": "aarch64",
        "generated": 0, "count": 1,
        "packages": [{"name": "qydemo", "version": "0.1.0", "release": 1,
                      "arch": "aarch64", "pkgid": "qydemo-0.1.0-1",

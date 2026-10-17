@@ -427,7 +427,7 @@ def browser_report() -> str:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qyshell",
-                                 description="启元 Linux 桌面外壳")
+                                 description="LANXIU Linux 桌面外壳")
     ap.add_argument("--root", default="/")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

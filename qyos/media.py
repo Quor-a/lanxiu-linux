@@ -275,7 +275,7 @@ def check_manifest(root: Path, m: MediaManifest) -> list:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qymedia",
-                                 description="启元 Linux 媒体与个人数据")
+                                 description="LANXIU Linux 媒体与个人数据")
     ap.add_argument("--root", default="/")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("kinds", help="列出数据类别")

@@ -19,7 +19,7 @@ def build_main(argv=None) -> int:
     from qyos import builder as B
     from qyos import format as fmt
 
-    p = argparse.ArgumentParser(prog="qybuild", description="启元 Linux 构建系统")
+    p = argparse.ArgumentParser(prog="qybuild", description="LANXIU Linux 构建系统")
     p.add_argument("targets", nargs="*", help="包名；留空或 all 表示全部")
     p.add_argument("--root", default=str(ROOT), help="项目根目录")
     p.add_argument("-j", "--jobs", type=int, default=os.cpu_count())
@@ -236,7 +236,7 @@ def build_main(argv=None) -> int:
 
 def repo_main(argv=None) -> int:
     from qyos import repo as R
-    p = argparse.ArgumentParser(prog="qyrepo", description="启元 Linux 仓库工具")
+    p = argparse.ArgumentParser(prog="qyrepo", description="LANXIU Linux 仓库工具")
     p.add_argument("action", choices=["add", "index", "list", "verify",
                                       "prune", "sync", "archs", "manifest"])
     p.add_argument("--repo", default=str(ROOT / "var" / "repo"))
@@ -344,7 +344,7 @@ def release_main(argv=None) -> int:
     from qyos import release as RLM
     from qyos import profile as PFM
 
-    ap = _ap.ArgumentParser(prog="qyrelease", description="启元 Linux 发布工程")
+    ap = _ap.ArgumentParser(prog="qyrelease", description="LANXIU Linux 发布工程")
     ap.add_argument("action", choices=["profiles", "bump", "manifest",
                                        "verify", "changelog"])
     ap.add_argument("--version", default="0.1.0-alpha.1")
@@ -449,7 +449,7 @@ def security_main(argv=None) -> int:
     import argparse as _ap
     from qyos import security as SE
 
-    ap = _ap.ArgumentParser(prog="qysec", description="启元 Linux 安全响应")
+    ap = _ap.ArgumentParser(prog="qysec", description="LANXIU Linux 安全响应")
     ap.add_argument("action", choices=["scan", "list", "show", "add",
                                        "rebuild", "by-cve"])
     ap.add_argument("--root", help="要扫描的已装系统根目录")
@@ -522,7 +522,7 @@ def disk_main(argv=None) -> int:
     from qyos import image as IM
     from qyos import bootloader as BL
 
-    ap = _ap.ArgumentParser(prog="qydisk", description="启元 Linux 磁盘与镜像")
+    ap = _ap.ArgumentParser(prog="qydisk", description="LANXIU Linux 磁盘与镜像")
     ap.add_argument("action", choices=["layout", "scripts", "image", "verify"])
     ap.add_argument("--disk", default="/dev/sda")
     ap.add_argument("--size", default="100G", help="磁盘大小，如 100G / 500G")
@@ -612,7 +612,7 @@ def pkg_main(argv=None) -> int:
     from qyos import pkgmgr as PM
     from qyos import transaction as txn
     from qyos import repo as R
-    p = argparse.ArgumentParser(prog="qypkg", description="启元 Linux 包管理器")
+    p = argparse.ArgumentParser(prog="qypkg", description="LANXIU Linux 包管理器")
     p.add_argument("--root", default="/", help="目标根文件系统（测试用）")
     p.add_argument("--repo", default=str(ROOT / "var" / "repo"))
     p.add_argument("--pubkey", default=str(ROOT / "var" / "repo" / "keys" / "qiyuan.pub"))
@@ -805,7 +805,7 @@ def pkg_main(argv=None) -> int:
                          f"（{r['kind']}，{r['arch']}，"
                          f"{r['files']} 个文件）")
                 if r["untranslated"]:
-                    util.log("warn", "依赖未自动对应启元包名: "
+                    util.log("warn", "依赖未自动对应LANXIU包名: "
                              + " ".join(r["untranslated"])
                              + " —— 装完若跑不起来先查这些")
             return rc

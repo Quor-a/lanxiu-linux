@@ -203,7 +203,7 @@ def rules_path(root: Path) -> Path:
 def write_rules(root: Path, blocks: list) -> Path:
     p = rules_path(root)
     p.parent.mkdir(parents=True, exist_ok=True)
-    head = ("# 由启元 Linux 生成\n"
+    head = ("# 由LANXIU Linux 生成\n"
             "# 修改后需执行：udevadm control --reload && "
             "udevadm trigger\n"
             "# 不重载的话规则不生效，会以为是规则写错了\n\n")
@@ -286,7 +286,7 @@ def access_report(root: Path = Path("/")) -> str:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qyudev",
-                                 description="启元 Linux 设备节点权限")
+                                 description="LANXIU Linux 设备节点权限")
     ap.add_argument("--root", default="/")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

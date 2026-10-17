@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""启元 Linux 工具链引导器。
+"""LANXIU Linux 工具链引导器。
 
 把 Linux From Scratch 的手工步骤变成可无人值守、可断点续跑的自动化流程。
 这是「原创发行版」的地基：地基不稳，后面每个包都不可控。
@@ -352,7 +352,7 @@ class Bootstrap:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="启元 Linux 工具链引导器")
+    p = argparse.ArgumentParser(description="LANXIU Linux 工具链引导器")
     p.add_argument("action", choices=["preflight", "plan", "run", "status", "clean"])
     p.add_argument("--builddir", default="/opt/qiyuan/build")
     p.add_argument("--from", dest="from_stage", help="从指定阶段开始（会重跑该阶段）")

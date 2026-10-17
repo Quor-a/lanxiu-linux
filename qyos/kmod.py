@@ -251,7 +251,7 @@ def param_content(mod: str, params: dict) -> str:
     只在命令行 modprobe 传参，重启就没了——
     用户会以为"设置了没生效"。所以必须落文件。
     """
-    L = [f"# {mod} 的模块参数（由启元 Linux 生成）"]
+    L = [f"# {mod} 的模块参数（由澜岫 Linux 生成）"]
     for k, v in params.items():
         L.append(f"options {mod} {k}={v}")
     return "\n".join(L) + "\n"
@@ -334,7 +334,7 @@ def report_for(text: str) -> str:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qykmod",
-                                 description="启元 Linux 内核模块管理")
+                                 description="澜岫 Linux 内核模块管理")
     ap.add_argument("--root", default="/")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

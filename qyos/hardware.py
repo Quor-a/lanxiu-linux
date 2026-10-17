@@ -275,7 +275,7 @@ def main_cli(argv=None) -> int:
     import subprocess
 
     ap = argparse.ArgumentParser(prog="qyhw",
-                                 description="启元 Linux 硬件支持与固件检测")
+                                 description="澜岫 Linux 硬件支持与固件检测")
     ap.add_argument("--root", default="/")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("scan", help="扫描设备并检查固件")

@@ -166,7 +166,7 @@ def pam_report(root: Path) -> str:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qypam",
-                                 description="启元 Linux PAM 配置")
+                                 description="LANXIU Linux PAM 配置")
     ap.add_argument("--root", default="/")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("show", help="查看 /etc/pam.d")

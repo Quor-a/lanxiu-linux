@@ -263,7 +263,7 @@ def capability_matrix() -> str:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qynotify",
-                                 description="启元 Linux 通知与窗口")
+                                 description="LANXIU Linux 通知与窗口")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("matrix", help="能力矩阵")

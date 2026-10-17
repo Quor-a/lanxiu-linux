@@ -301,7 +301,7 @@ def stale_patches(patches: dict, recipes: dict) -> list:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qypatch",
-                                 description="启元 Linux 补丁管理")
+                                 description="LANXIU Linux 补丁管理")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("list", help="列出全系统补丁")

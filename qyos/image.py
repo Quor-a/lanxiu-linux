@@ -240,7 +240,7 @@ DEFAULT_PROFILES = [
 
 def render_installer_banner(version: str = "0.1") -> str:
     return f"""
-    启元 Linux {version} 安装器
+    LANXIU Linux {version} 安装器
     ================================
 
     本安装器会清空目标磁盘上的所有数据。

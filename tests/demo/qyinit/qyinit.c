@@ -1,4 +1,4 @@
-/* qyinit —— 启元 Linux 的 1 号进程
+/* qyinit —— 澜岫 Linux 的 1 号进程
  *
  * 职责（一个真正的 init 该做的事，一件都不能少）：
  *   1. 挂载 /proc /sys /dev，创建必要设备节点
@@ -483,7 +483,7 @@ int main(int argc, char **argv)
     logf = fopen(log_path, "a");
     if (!logf) logf = stderr;
 
-    logmsg("=== 启元 Linux init 启动（pid %d%s）===",
+    logmsg("=== 澜岫 Linux init 启动（pid %d%s）===",
            getpid(), as_pid1 ? "" : "，非 1 号进程模式");
 
     if (as_pid1 && !oneshot)

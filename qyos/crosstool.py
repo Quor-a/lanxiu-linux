@@ -336,7 +336,7 @@ def cmake_toolchain(t: Triple, sysroot: Path | None = None) -> str:
     if not t.cross:
         return ""
     L = [
-        "# 启元 Linux CMake 交叉工具链 —— 由 qyos/crosstool.py 生成",
+        "# LANXIU Linux CMake 交叉工具链 —— 由 qyos/crosstool.py 生成",
         "# 不指定这个文件，CMake 会按构建机检测，编出错误架构的产物",
         "",
         f"set(CMAKE_SYSTEM_NAME Linux)",
@@ -370,7 +370,7 @@ def meson_cross_file(t: Triple, sysroot: Path | None = None) -> str:
         return ""
     pre = tool_prefix(t.host)
     L = [
-        "# 启元 Linux meson 交叉描述 —— 由 qyos/crosstool.py 生成",
+        "# LANXIU Linux meson 交叉描述 —— 由 qyos/crosstool.py 生成",
         "[binaries]",
         f"c = '{pre}gcc'",
         f"cpp = '{pre}g++'",
@@ -473,7 +473,7 @@ def scan_pkg_arch(pkg_path: Path, want: str) -> list:
 def main_cli(argv=None) -> int:
     import argparse
     ap = argparse.ArgumentParser(prog="qycross",
-                                 description="启元 Linux 交叉编译")
+                                 description="LANXIU Linux 交叉编译")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("info", help="显示当前三元组")
